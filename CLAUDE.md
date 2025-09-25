@@ -20,9 +20,13 @@ API仕様は検討中。
 ## ビルド方法
 
 ```
-docker run --rm --group-add=dialout --group-add=plugdev --privileged $DEVICE_ARGS --user $(id -u):$(id -g) -v $PWD/..:/project -v /dev/bus/usb:/dev/bus/usb esp32_build_container:v5.5.1 idf.py build
+docker run --rm --group-add=dialout --group-add=plugdev --privileged $DEVICE_ARGS --user $(id -u):$(id -g) -v $PWD:/project -v /dev/bus/usb:/dev/bus/usb esp32_build_container:v5.5.1 idf.py build
 ```
 
+## LovyanGFXについて
+
+以下参照
+components/LovyanGFX/doc/Panel_CVBS.md
 
 ## apu_emuの使い方例
 

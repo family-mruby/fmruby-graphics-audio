@@ -1,7 +1,6 @@
 idf_component_register(
-  SRCS "main.c"
-  #REQUIRES picoruby-esp32 m5unified
-  #PRIV_REQUIRES spi_flash
+  SRCS "main.c" "lgfx_wrapper.cpp"
+  REQUIRES LovyanGFX
   INCLUDE_DIRS ""
 )
 
