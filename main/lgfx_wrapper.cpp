@@ -10,6 +10,34 @@
 #include <inttypes.h>
 #include "esp_heap_caps.h"
 
+// PSRAMメモリ詳細診断関数
+extern "C" void lgfx_print_detailed_memory_info(void) {
+    printf("=== PSRAM Memory Diagnosis ===\n");
+
+    // 基本統計情報
+    size_t free_bytes = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    size_t total_size = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    size_t min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+
+    printf("PSRAM Total: %u bytes\n", (unsigned)total_size);
+    printf("PSRAM Free: %u bytes\n", (unsigned)free_bytes);
+    printf("PSRAM Largest Block: %u bytes\n", (unsigned)largest_block);
+    printf("PSRAM Min Free Ever: %u bytes\n", (unsigned)min_free);
+    printf("Required for 720x480 sprite: 326656 bytes\n");
+    printf("Can allocate 720x480? %s\n", largest_block >= 326656 ? "YES" : "NO");
+
+    // 詳細ヒープ情報
+    printf("\n=== Detailed PSRAM Heap Info ===\n");
+    heap_caps_print_heap_info(MALLOC_CAP_SPIRAM);
+
+    // ヒープダンプ（ブロック詳細）
+    printf("\n=== PSRAM Heap Dump ===\n");
+    heap_caps_dump(MALLOC_CAP_SPIRAM);
+
+    printf("=== End Memory Diagnosis ===\n\n");
+}
+
 class LGFX : public lgfx::LGFX_Device
 {
 public:
@@ -21,12 +49,14 @@ public:
       auto cfg = _panel_instance.config();    // 表示パネル設定用の構造体を取得します。
 
       // 出力解像度を設定
-      cfg.memory_width  = 480; // 出力解像度 幅
-      cfg.memory_height = 320; // 出力解像度 高さ
+      cfg.memory_width  = 720; // 出力解像度 幅
+      cfg.memory_height = 480; // 出力解像度 高さ
+      // cfg.memory_width  = 480; // 出力解像度 幅
+      // cfg.memory_height = 320; // 出力解像度 高さ
 
       // 実際に利用する解像度を設定
-      cfg.panel_width  = 480-16;  // 実際に使用する幅   (memory_width と同値か小さい値を設定する)
-      cfg.panel_height = 320-16;  // 実際に使用する高さ (memory_heightと同値か小さい値を設定する)
+      cfg.panel_width  = cfg.memory_width-16;  // 実際に使用する幅   (memory_width と同値か小さい値を設定する)
+      cfg.panel_height = cfg.memory_height-16;  // 実際に使用する高さ (memory_heightと同値か小さい値を設定する)
 
       // 表示位置オフセット量を設定
       cfg.offset_x = 8;       // 表示位置を右にずらす量 (初期値 0)
@@ -45,7 +75,7 @@ public:
       cfg.pin_dac = 26;
 
       // PSRAMメモリ割当の設定（ESP32-WROVER-Eの場合）
-      cfg.use_psram = 2;      // 0=PSRAM不使用 / 1=PSRAMとSRAMを半々使用 / 2=全部PSRAM使用
+      cfg.use_psram = 1;      // 0=PSRAM不使用 / 1=PSRAMとSRAMを半々使用 / 2=全部PSRAM使用
 
       // 出力信号の振幅の強さを設定
       cfg.output_level = 140; // 初期値128
@@ -133,14 +163,25 @@ extern "C" {
     printf("After init - Free PSRAM: %zu bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     // スプライトの初期化（ダブルバッファ用）
-    printf("Creating sprites...\n");
+    printf("Creating sprites with PSRAM...\n");
     for (int i = 0; i < 2; i++) {
+      sprites[i].setPsram(true);  // PSRAMの明示的使用を設定
       sprites[i].setColorDepth(gfx.getColorDepth());
+
+      printf("Before Sprite[%d] creation - PSRAM largest block: %u bytes\n", i,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+
       bool sprite_result = sprites[i].createSprite(gfx.width(), gfx.height());
+
       printf("Sprite[%d] creation: %s (size: %" PRId32 "x%" PRId32 ")\n", i,
              sprite_result ? "SUCCESS" : "FAILED", gfx.width(), gfx.height());
+
       if (sprite_result) {
         sprites[i].setFont(&lgfx::fonts::Font2);
+        printf("Sprite[%d] buffer allocated successfully\n", i);
+      } else {
+        printf("Sprite[%d] FAILED - After failure PSRAM largest block: %u bytes\n", i,
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
       }
     }
 
@@ -351,5 +392,9 @@ extern "C" {
     printf("Largest free block (heap): %zu bytes\n", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     printf("Largest free block (PSRAM): %zu bytes\n", heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
     printf("========================\n\n");
+  }
+  
+  void lgfx_draw_test(){
+    gfx.fillRect(rand() % gfx.width() - 8, rand() % gfx.height() - 8, 100, 100, rand());
   }
 }

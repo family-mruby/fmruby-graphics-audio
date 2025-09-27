@@ -18,6 +18,8 @@ void lgfx_set_test_mode(int mode);
 int lgfx_get_test_mode(void);
 void lgfx_test_resolution(int width, int height);
 void lgfx_print_memory_info(void);
+void lgfx_draw_test(void);
+void lgfx_print_detailed_memory_info(void);
 
 #ifdef __cplusplus
 }
@@ -25,11 +27,19 @@ void lgfx_print_memory_info(void);
 
 void app_main(void)
 {
-  printf("Starting NTSC output with Sprite API test...\n");
+  printf("Starting NTSC output with memory diagnosis...\n");
+
+  // 最優先でメモリ診断を実行
+  printf("=== Memory state before LGFX init ===\n");
+  lgfx_print_detailed_memory_info();
 
   // LovyanGFXの初期化
   lgfx_init();
   printf("LGFX initialized with sprite buffers\n");
+
+  // 初期化後の状態も確認
+  printf("=== Memory state after LGFX init ===\n");
+  lgfx_print_detailed_memory_info();
 
   // 初期テストモードの設定
   int current_mode = 0;
@@ -40,6 +50,11 @@ void app_main(void)
 
   // メモリ情報を定期的に出力
   lgfx_print_memory_info();
+
+  while(1){
+    lgfx_draw_test();
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
 
   // メインループ：異なるテストモードをサイクル実行
   while(1) {
