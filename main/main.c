@@ -3,9 +3,6 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 // C++のLGFX関数を呼び出すためのラッパー関数を宣言
 void lgfx_init(void);
@@ -21,9 +18,7 @@ void lgfx_print_memory_info(void);
 void lgfx_draw_test(void);
 void lgfx_print_detailed_memory_info(void);
 
-#ifdef __cplusplus
-}
-#endif
+void audio_task_impl(void);
 
 void gfx_test()
 {
@@ -86,8 +81,8 @@ void gfx_test()
     // FPS更新
     lgfx_update_fps();
 
-    // フレームレート制御（約60FPS）
-    vTaskDelay(pdMS_TO_TICKS(1)); // 16ms待機 ≈ 62.5FPS
+    // フレームレート制御
+    vTaskDelay(pdMS_TO_TICKS(16));
   }
 }
 
@@ -100,19 +95,10 @@ void gfx_task(void* arg) {
 
 // Core0で動作するタスク2: ユーザーインターフェース処理用
 void audio_task(void* arg) {
-    printf("Audio task started on core %d\n", xPortGetCoreID());
-    uint32_t count = 0;
-
-    while(1) {
-        // UIイベント処理をシミュレート
-        count++;
-        if (count % 1000 == 0) {  // 10秒ごとに出力
-            printf("Audio task running... count=%lu (core %d)\n", count, xPortGetCoreID());
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(10));  // 100Hz実行
-    }
+  printf("Audio task started on core %d\n", xPortGetCoreID());
+  audio_task_impl();
 }
+
 
 void app_main(void)
 {
@@ -151,7 +137,7 @@ void app_main(void)
       "audio_task",         // タスク名
       2048,              // スタックサイズ
       NULL,              // パラメータ
-      4,                 // 優先度
+      6,                 // 優先度
       NULL,              // タスクハンドル
       0                  // Core0に固定
   );

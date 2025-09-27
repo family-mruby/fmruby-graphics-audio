@@ -11,6 +11,10 @@
 #include "driver/dac.h"
 #include "driver/gptimer.h"
 
+#ifndef USE_I2S
+#define USE_I2S
+#endif
+
 extern "C" {
 
 #include <stdio.h>
@@ -44,7 +48,7 @@ void apuif_hw_init_i2s(){
     printf("Use I2S for audio output\n");
     
     // I2S channel configuration
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     
     // Create I2S TX channel

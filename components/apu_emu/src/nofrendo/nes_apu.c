@@ -1188,8 +1188,8 @@ apu_t *apu_create(double base_freq, int sample_rate, int refresh_rate, int sampl
    temp_apu->ext = NULL;
    
    // Debug: Check function pointer address immediately after assignment
-   printf("APU_CREATE: apu_process function address: %p\n", apu_process);
-   printf("APU_CREATE: temp_apu->process assigned to: %p\n", temp_apu->process);
+   // printf("APU_CREATE: apu_process function address: %p\n", apu_process);
+   // printf("APU_CREATE: temp_apu->process assigned to: %p\n", temp_apu->process);
    if (temp_apu->process != apu_process) {
        printf("APU_CREATE: ERROR - Function pointer assignment failed!\n");
    }
@@ -1210,8 +1210,8 @@ apu_t *apu_create(double base_freq, int sample_rate, int refresh_rate, int sampl
    apu_getcontext(temp_apu);
 
    // Debug: Final check of function pointer before returning
-   printf("APU_CREATE: Final temp_apu->process: %p\n", temp_apu->process);
-   printf("APU_CREATE: Expected apu_process: %p\n", apu_process);
+   // printf("APU_CREATE: Final temp_apu->process: %p\n", temp_apu->process);
+   // printf("APU_CREATE: Expected apu_process: %p\n", apu_process);
    if (temp_apu->process != apu_process) {
        printf("APU_CREATE: ERROR - Function pointer corrupted during creation!\n");
    } else {

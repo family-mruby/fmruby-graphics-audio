@@ -9,9 +9,9 @@ extern "C" {
 #define USE_I2S
 
 #ifdef USE_I2S
-#define PIN_BCK   GPIO_NUM_26
-#define PIN_WS    GPIO_NUM_25
-#define PIN_DOUT  GPIO_NUM_33
+#define PIN_BCK   GPIO_NUM_32
+#define PIN_WS    GPIO_NUM_33
+#define PIN_DOUT  GPIO_NUM_27
 #else
 #define AUDIO_PIN   26
 #endif
