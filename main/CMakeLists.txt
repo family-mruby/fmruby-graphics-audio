@@ -1,6 +1,6 @@
 idf_component_register(
   SRCS "main.c" "lgfx_wrapper.cpp"
-  REQUIRES LovyanGFX
+  REQUIRES LovyanGFX apu_emu
   INCLUDE_DIRS ""
 )
 

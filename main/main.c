@@ -16,6 +16,8 @@ void lgfx_draw_random_rect(void);
 void lgfx_update_fps(void);
 void lgfx_set_test_mode(int mode);
 int lgfx_get_test_mode(void);
+void lgfx_test_resolution(int width, int height);
+void lgfx_print_memory_info(void);
 
 #ifdef __cplusplus
 }
@@ -35,6 +37,9 @@ void app_main(void)
   const uint64_t mode_change_interval = 10000000; // 10秒間隔
 
   printf("Starting test modes cycle...\n");
+
+  // メモリ情報を定期的に出力
+  lgfx_print_memory_info();
 
   // メインループ：異なるテストモードをサイクル実行
   while(1) {
@@ -79,6 +84,6 @@ void app_main(void)
     lgfx_update_fps();
 
     // フレームレート制御（約60FPS）
-    vTaskDelay(pdMS_TO_TICKS(16)); // 16ms待機 ≈ 62.5FPS
+    vTaskDelay(pdMS_TO_TICKS(33)); // 16ms待機 ≈ 62.5FPS
   }
 }

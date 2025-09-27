@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include <math.h>
 #include <inttypes.h>
+#include "esp_heap_caps.h"
 
 class LGFX : public lgfx::LGFX_Device
 {
@@ -20,16 +21,16 @@ public:
       auto cfg = _panel_instance.config();    // 表示パネル設定用の構造体を取得します。
 
       // 出力解像度を設定
-      cfg.memory_width  = 240; // 出力解像度 幅
-      cfg.memory_height = 160; // 出力解像度 高さ
+      cfg.memory_width  = 480; // 出力解像度 幅
+      cfg.memory_height = 320; // 出力解像度 高さ
 
       // 実際に利用する解像度を設定
-      cfg.panel_width  = 208;  // 実際に使用する幅   (memory_width と同値か小さい値を設定する)
-      cfg.panel_height = 128;  // 実際に使用する高さ (memory_heightと同値か小さい値を設定する)
+      cfg.panel_width  = 480-16;  // 実際に使用する幅   (memory_width と同値か小さい値を設定する)
+      cfg.panel_height = 320-16;  // 実際に使用する高さ (memory_heightと同値か小さい値を設定する)
 
       // 表示位置オフセット量を設定
-      cfg.offset_x = 16;       // 表示位置を右にずらす量 (初期値 0)
-      cfg.offset_y = 16;       // 表示位置を下にずらす量 (初期値 0)
+      cfg.offset_x = 8;       // 表示位置を右にずらす量 (初期値 0)
+      cfg.offset_y = 8;       // 表示位置を下にずらす量 (初期値 0)
 
       _panel_instance.config(cfg);
     }
@@ -44,19 +45,19 @@ public:
       cfg.pin_dac = 26;
 
       // PSRAMメモリ割当の設定（ESP32-WROVER-Eの場合）
-      cfg.use_psram = 1;      // 0=PSRAM不使用 / 1=PSRAMとSRAMを半々使用 / 2=全部PSRAM使用
+      cfg.use_psram = 2;      // 0=PSRAM不使用 / 1=PSRAMとSRAMを半々使用 / 2=全部PSRAM使用
 
       // 出力信号の振幅の強さを設定
-      cfg.output_level = 128; // 初期値128
+      cfg.output_level = 140; // 初期値128
 
       // 彩度信号の振幅の強さを設定
-      cfg.chroma_level = 128; // 初期値128
+      cfg.chroma_level = 140; // 初期値128
 
       // バックグラウンドでPSRAMの読出しを行うタスクの優先度を設定
       cfg.task_priority = 25;
 
       // バックグラウンドでPSRAMの読出しを行うタスクを実行するCPUを選択
-      cfg.task_pinned_core = 0; // PRO_CPU_NUM
+      cfg.task_pinned_core = 1; //
 
       _panel_instance.config_detail(cfg);
     }
@@ -103,17 +104,49 @@ static int test_mode = 0; // 0:カラーバー, 1:動く円, 2:物理シミュ�
 
 extern "C" {
   void lgfx_init(void) {
+    printf("=== LGFX Initialization Debug ===\n");
+
+    // メモリ状況の確認
+    printf("Before init - Free heap: %" PRIu32 " bytes\n", esp_get_free_heap_size());
+    printf("Before init - Free PSRAM: %zu bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
     // 色数の指定 (省略時は rgb332_1Byte)
     gfx.setColorDepth(lgfx::color_depth_t::rgb332_1Byte);   // RGB332 256色
-    gfx.init();
+    bool init_result = gfx.init();
+    printf("LGFX init result: %s\n", init_result ? "SUCCESS" : "FAILED");
+
+    if (!init_result) {
+      printf("ERROR: LGFX initialization failed!\n");
+      return;
+    }
+
     gfx.startWrite();
 
+    // 初期化後の表示情報
+    printf("Display size: %" PRId32 " x %" PRId32 "\n", gfx.width(), gfx.height());
+    printf("Color depth: %d bits\n", gfx.getColorDepth());
+    printf("Buffer size needed: %" PRId32 " bytes per buffer\n", gfx.width() * gfx.height());
+    printf("Total buffer size: %" PRId32 " bytes (x2 for double buffer)\n", gfx.width() * gfx.height() * 2);
+
+    // メモリ状況の再確認
+    printf("After init - Free heap: %" PRIu32 " bytes\n", esp_get_free_heap_size());
+    printf("After init - Free PSRAM: %zu bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
     // スプライトの初期化（ダブルバッファ用）
+    printf("Creating sprites...\n");
     for (int i = 0; i < 2; i++) {
       sprites[i].setColorDepth(gfx.getColorDepth());
-      sprites[i].createSprite(gfx.width(), gfx.height());
-      sprites[i].setFont(&lgfx::fonts::Font2);
+      bool sprite_result = sprites[i].createSprite(gfx.width(), gfx.height());
+      printf("Sprite[%d] creation: %s (size: %" PRId32 "x%" PRId32 ")\n", i,
+             sprite_result ? "SUCCESS" : "FAILED", gfx.width(), gfx.height());
+      if (sprite_result) {
+        sprites[i].setFont(&lgfx::fonts::Font2);
+      }
     }
+
+    // 最終メモリ状況
+    printf("After sprites - Free heap: %" PRIu32 " bytes\n", esp_get_free_heap_size());
+    printf("After sprites - Free PSRAM: %zu bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     // オブジェクトの初期化
     for (int i = 0; i < MAX_OBJECTS; i++) {
@@ -126,6 +159,7 @@ extern "C" {
     }
 
     last_time = esp_timer_get_time() / 1000;
+    printf("=== LGFX Initialization Complete ===\n");
   }
 
   void lgfx_draw_test_pattern(void) {
@@ -296,5 +330,26 @@ extern "C" {
     uint32_t color = rand();
 
     gfx.fillRect(x, y, w, h, color);
+  }
+
+  void lgfx_test_resolution(int width, int height) {
+    printf("=== Testing Resolution %dx%d ===\n", width, height);
+
+    // 新しい解像度で設定を変更（実際にはこの方法では動的変更できない）
+    printf("Resolution test would require recompilation with new settings\n");
+    printf("Suggested memory usage: %d bytes per buffer\n", width * height);
+    printf("Total memory needed: %d bytes (x2 for double buffer)\n", width * height * 2);
+
+    // 現在の設定情報を表示
+    printf("Current display size: %" PRId32 " x %" PRId32 "\n", gfx.width(), gfx.height());
+  }
+
+  void lgfx_print_memory_info(void) {
+    printf("\n=== Memory Status ===\n");
+    printf("Free heap: %" PRIu32 " bytes\n", esp_get_free_heap_size());
+    printf("Free PSRAM: %zu bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    printf("Largest free block (heap): %zu bytes\n", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    printf("Largest free block (PSRAM): %zu bytes\n", heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    printf("========================\n\n");
   }
 }
