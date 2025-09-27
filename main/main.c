@@ -25,22 +25,8 @@ void lgfx_print_detailed_memory_info(void);
 }
 #endif
 
-void app_main(void)
+void gfx_test()
 {
-  printf("Starting NTSC output with memory diagnosis...\n");
-
-  // 最優先でメモリ診断を実行
-  printf("=== Memory state before LGFX init ===\n");
-  lgfx_print_detailed_memory_info();
-
-  // LovyanGFXの初期化
-  lgfx_init();
-  printf("LGFX initialized with sprite buffers\n");
-
-  // 初期化後の状態も確認
-  printf("=== Memory state after LGFX init ===\n");
-  lgfx_print_detailed_memory_info();
-
   // 初期テストモードの設定
   int current_mode = 2;
   uint64_t last_mode_change = esp_timer_get_time();
@@ -102,5 +88,84 @@ void app_main(void)
 
     // フレームレート制御（約60FPS）
     vTaskDelay(pdMS_TO_TICKS(1)); // 16ms待機 ≈ 62.5FPS
+  }
+}
+
+// Core0で動作するタスク1: Windowシステム管理用
+void gfx_task(void* arg) {
+  printf("Window task started on core %d\n", xPortGetCoreID());
+
+  gfx_test();
+}
+
+// Core0で動作するタスク2: ユーザーインターフェース処理用
+void audio_task(void* arg) {
+    printf("Audio task started on core %d\n", xPortGetCoreID());
+    uint32_t count = 0;
+
+    while(1) {
+        // UIイベント処理をシミュレート
+        count++;
+        if (count % 1000 == 0) {  // 10秒ごとに出力
+            printf("Audio task running... count=%lu (core %d)\n", count, xPortGetCoreID());
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));  // 100Hz実行
+    }
+}
+
+void app_main(void)
+{
+  printf("Starting NTSC output with memory diagnosis...\n");
+
+  // 最優先でメモリ診断を実行
+  printf("=== Memory state before LGFX init ===\n");
+  lgfx_print_detailed_memory_info();
+
+  // LovyanGFXの初期化
+  lgfx_init();
+  printf("LGFX initialized with sprite buffers\n");
+
+  // 初期化後の状態も確認
+  printf("=== Memory state after LGFX init ===\n");
+  lgfx_print_detailed_memory_info();
+
+  //gfx_test();
+
+  // Core0でタスク1を起動
+  printf("Creating gfx task on Core0...\n");
+  xTaskCreatePinnedToCore(
+      gfx_task,        // タスク関数
+      "gfx_task",      // タスク名
+      4096,              // スタックサイズ
+      NULL,              // パラメータ
+      5,                 // 優先度
+      NULL,              // タスクハンドル
+      0                  // Core0に固定
+  );
+
+  // Core0でタスク2を起動
+  printf("Creating Audio task on Core0...\n");
+  xTaskCreatePinnedToCore(
+      audio_task,           // タスク関数
+      "audio_task",         // タスク名
+      2048,              // スタックサイズ
+      NULL,              // パラメータ
+      4,                 // 優先度
+      NULL,              // タスクハンドル
+      0                  // Core0に固定
+  );
+
+  printf("Both tasks created successfully!\n");
+
+  int count=0;
+  while(1) {
+    // UIイベント処理をシミュレート
+    count++;
+    if (count % 10 == 0) {  // 10秒ごとに出力
+        printf("UI task running... count=%u (core %d)\n", count, xPortGetCoreID());
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
