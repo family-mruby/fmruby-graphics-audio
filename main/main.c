@@ -42,18 +42,20 @@ void app_main(void)
   lgfx_print_detailed_memory_info();
 
   // 初期テストモードの設定
-  int current_mode = 0;
+  int current_mode = 2;
   uint64_t last_mode_change = esp_timer_get_time();
-  const uint64_t mode_change_interval = 10000000; // 10秒間隔
+  const uint64_t mode_change_interval = 10000000*3; // 10秒間隔
 
   printf("Starting test modes cycle...\n");
 
   // メモリ情報を定期的に出力
   lgfx_print_memory_info();
 
-  while(1){
+  int cnt=0;
+  while(cnt < 100){
     lgfx_draw_test();
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(1));
+    cnt++;
   }
 
   // メインループ：異なるテストモードをサイクル実行
@@ -99,6 +101,6 @@ void app_main(void)
     lgfx_update_fps();
 
     // フレームレート制御（約60FPS）
-    vTaskDelay(pdMS_TO_TICKS(33)); // 16ms待機 ≈ 62.5FPS
+    vTaskDelay(pdMS_TO_TICKS(1)); // 16ms待機 ≈ 62.5FPS
   }
 }

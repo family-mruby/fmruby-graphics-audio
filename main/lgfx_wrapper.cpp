@@ -51,16 +51,16 @@ public:
       // 出力解像度を設定
       cfg.memory_width  = 720; // 出力解像度 幅
       cfg.memory_height = 480; // 出力解像度 高さ
-      // cfg.memory_width  = 480; // 出力解像度 幅
-      // cfg.memory_height = 320; // 出力解像度 高さ
+      //cfg.memory_width  = 480; // 出力解像度 幅
+      //cfg.memory_height = 320; // 出力解像度 高さ
 
       // 実際に利用する解像度を設定
-      cfg.panel_width  = cfg.memory_width-16;  // 実際に使用する幅   (memory_width と同値か小さい値を設定する)
-      cfg.panel_height = cfg.memory_height-16;  // 実際に使用する高さ (memory_heightと同値か小さい値を設定する)
+      cfg.panel_width  = cfg.memory_width-32;  // 実際に使用する幅   (memory_width と同値か小さい値を設定する)
+      cfg.panel_height = cfg.memory_height-32;  // 実際に使用する高さ (memory_heightと同値か小さい値を設定する)
 
       // 表示位置オフセット量を設定
-      cfg.offset_x = 8;       // 表示位置を右にずらす量 (初期値 0)
-      cfg.offset_y = 8;       // 表示位置を下にずらす量 (初期値 0)
+      cfg.offset_x = 16;       // 表示位置を右にずらす量 (初期値 0)
+      cfg.offset_y = 16;       // 表示位置を下にずらす量 (初期値 0)
 
       _panel_instance.config(cfg);
     }
@@ -78,10 +78,10 @@ public:
       cfg.use_psram = 1;      // 0=PSRAM不使用 / 1=PSRAMとSRAMを半々使用 / 2=全部PSRAM使用
 
       // 出力信号の振幅の強さを設定
-      cfg.output_level = 140; // 初期値128
+      cfg.output_level = 128; // 初期値128
 
       // 彩度信号の振幅の強さを設定
-      cfg.chroma_level = 140; // 初期値128
+      cfg.chroma_level = 128; // 初期値128
 
       // バックグラウンドでPSRAMの読出しを行うタスクの優先度を設定
       cfg.task_priority = 25;
