@@ -1,11 +1,17 @@
 # fmruby-graphics-audio
 
-## build
+Targeting ESP32-WROVER-E/IE, provides the following two functions:
+- Video
+  - NTSC-J output using LovyanGFX
+- Audio
+  - I2S output using apu_emu
 
-### set target
+These functions are used via SPI RPC from Family murby core running on a separate ESP32-S3.
 
-docker run --rm --group-add=dialout --group-add=plugdev --privileged $DEVICE_ARGS --user $(id -u):$(id -g) -v $PWD:/project -v /dev/bus/usb:/dev/bus/usb esp32_build_container:v5.5.1 idf.py set-target esp32
+API specification is under consideration.
 
-### build
+## License
 
-docker run --rm --group-add=dialout --group-add=plugdev --privileged $DEVICE_ARGS --user $(id -u):$(id -g) -v $PWD:/project -v /dev/bus/usb:/dev/bus/usb esp32_build_container:v5.5.1 idf.py build
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+For third-party software licenses, see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
