@@ -74,8 +74,7 @@ end
 namespace :build do
   desc "Linux target build (dev/test)"
   task :linux do
-    # Build host SDL2 first
-    sh "cd host/sdl2 && mkdir -p build && cd build && cmake .. && make"
+    # Note: host/sdl2 is now integrated into main/, no separate build needed
 
     unless Dir.exist?('build')
       Rake::Task['set_target:linux'].invoke

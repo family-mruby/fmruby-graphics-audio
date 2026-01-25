@@ -1,14 +1,12 @@
-idf_component_register(
-    SRCS "src/apu_if.cpp" 
-         "src/nofrendo/nes_apu.c"
-    INCLUDE_DIRS
-        "include"
-    PRIV_INCLUDE_DIRS
-        "src"
-        "src/nofrendo"
-    REQUIRES 
-        "spiffs" 
-        "driver" 
+# Set required components based on target
+if (IDF_TARGET STREQUAL "linux")
+    set(APU_REQUIRES
+        "freertos"
+    )
+else()
+    set(APU_REQUIRES
+        "spiffs"
+        "driver"
         "esp_partition"
         "esp_timer"
         "freertos"
@@ -16,6 +14,18 @@ idf_component_register(
         "soc"
         "esp_hw_support"
         "spi_flash"
+    )
+endif()
+
+idf_component_register(
+    SRCS "src/apu_if.cpp"
+         "src/nofrendo/nes_apu.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "src"
+        "src/nofrendo"
+    REQUIRES ${APU_REQUIRES}
 )
 
 target_compile_options(__idf_apu_emu PRIVATE 
