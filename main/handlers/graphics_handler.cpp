@@ -252,9 +252,7 @@ static LovyanGFX* get_current_target() {
     return g_lgfx;  // Fallback to screen
 }
 
-extern "C" int graphics_handler_init(SDL_Renderer *renderer) {
-    (void)renderer; // SDL_Renderer is not used with LovyanGFX
-
+extern "C" int graphics_handler_init(void) {
     // Prevent multiple initializations
     if (g_graphics_initialized) {
         GFX_LOG_E("Graphics handler already initialized, ignoring request");
@@ -314,9 +312,7 @@ extern "C" void graphics_handler_cleanup(void) {
     GFX_LOG_I("Graphics handler cleaned up");
 }
 
-extern "C" SDL_Renderer* graphics_handler_get_renderer(void) {
-    return nullptr; // Not used with LovyanGFX
-}
+// SDL_Renderer function removed - not needed in abstracted interface
 
 extern "C" void graphics_handler_render_frame(void) {
     if (!g_lgfx) {

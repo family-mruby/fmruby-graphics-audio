@@ -47,8 +47,7 @@ int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth) 
     }
 
     // Initialize graphics handler
-    void *lgfx = display->get_lgfx();
-    if (graphics_handler_init(lgfx) < 0) {
+    if (graphics_handler_init() < 0) {
         ESP_LOGE(TAG, "Graphics handler initialization failed");
         display->cleanup();
         return -1;
