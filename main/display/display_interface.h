@@ -52,6 +52,17 @@ const display_interface_t* display_get_interface(void);
 
 #ifdef __cplusplus
 }
+
+// Global LGFX instance (defined in display implementation)
+// Note: This is a C++ pointer, so only accessible from C++ code
+// LGFX is a type alias or subclass of lgfx::v1::LovyanGFX
+namespace lgfx {
+    inline namespace v1 {
+        class LovyanGFX;
+    }
+}
+using LGFX = lgfx::v1::LovyanGFX;
+extern LGFX* g_lgfx;
 #endif
 
 #endif // DISPLAY_INTERFACE_H

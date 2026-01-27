@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "comm_interface.h"
 
 #ifdef CONFIG_IDF_TARGET_LINUX

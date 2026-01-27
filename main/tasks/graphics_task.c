@@ -5,10 +5,6 @@
 #include "../display/display_interface.h"
 #include "../handlers/graphics_handler.h"
 
-#ifdef CONFIG_IDF_TARGET_LINUX
-#include <LovyanGFX.hpp>
-#endif
-
 static const char *TAG = "graphics_task";
 static volatile int task_running = 1;
 

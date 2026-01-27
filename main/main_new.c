@@ -54,6 +54,7 @@ int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth) 
         return -1;
     }
 
+#ifndef CONFIG_IDF_TARGET_LINUX
     // Initialize audio handler
     if (audio_handler_init() < 0) {
         ESP_LOGE(TAG, "Audio handler initialization failed");
@@ -61,6 +62,7 @@ int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth) 
         display->cleanup();
         return -1;
     }
+#endif
 
 #ifdef CONFIG_IDF_TARGET_LINUX
     // Initialize input handler (Linux only)

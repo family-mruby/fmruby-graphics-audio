@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "../../common/audio_commands.h"
+#include "audio_commands.h"
 
 #ifdef __cplusplus
 extern "C" {

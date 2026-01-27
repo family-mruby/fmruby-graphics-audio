@@ -1,6 +1,8 @@
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
+#if !defined(CONFIG_IDF_TARGET_LINUX) && !defined(LGFX_USE_SDL)
 #include <LGFX_AUTODETECT.hpp>
+#endif
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -10,6 +12,9 @@ extern "C" {
 #include "fmrb_link_protocol.h"
 #include "fmrb_gfx.h"
 }
+
+#include "../display/display_interface.h"
+#include "../communication/comm_interface.h"
 
 // Current log level (can be controlled via environment variable or compile-time)
 static gfx_log_level_t g_gfx_log_level = GFX_LOG_ERROR;  // Default: errors only
@@ -27,8 +32,9 @@ extern "C" void graphics_handler_set_log_level(int level) {
     }
 }
 
-// External reference to LGFX instance created in main.cpp
-extern LGFX* g_lgfx;
+// External reference to LGFX instance (declared in display_interface.h)
+// For ESP32: defined in lgfx_wrapper.cpp
+// For Linux: defined in display_sdl2.cpp
 
 // Canvas state structure
 typedef struct {
@@ -319,8 +325,8 @@ extern "C" void graphics_handler_render_frame(void) {
     graphics_handler_render_frame_internal();
 }
 
-// Forward declaration - implemented in socket_server.c
-extern "C" int socket_server_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len);
+// Use comm_interface send_ack function
+// (No forward declaration needed - using COMM_INTERFACE macro)
 
 // Next canvas ID to allocate
 static uint16_t g_next_canvas_id = 1;
@@ -732,7 +738,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 GFX_LOG_I("Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, cmd->width, cmd->height, cmd->z_order);
 
                 // Send ACK with canvas_id
-                socket_server_send_ack(msg_type, seq, (const uint8_t*)&canvas_id, sizeof(canvas_id));
+                COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&canvas_id, sizeof(canvas_id));
                 return 0;
             }
             break;
