@@ -3,7 +3,6 @@ set(SRCS
     "main_new.c"
     "common/fmrb_link_cobs.c"
     "handlers/graphics_handler.cpp"
-    "handlers/audio_handler.c"
     "tasks/graphics_task.c"
     "tasks/comm_task.c"
     "tasks/audio_task.c"
@@ -15,15 +14,17 @@ if(NOT CONFIG_IDF_TARGET_LINUX)
     list(APPEND SRCS "audio.cpp")
 endif()
 
-# Display abstraction layer
+# Display and audio abstraction layer
 if(CONFIG_IDF_TARGET_LINUX)
     list(APPEND SRCS "display/display_sdl2.cpp")
     list(APPEND SRCS "communication/comm_socket.c")
     list(APPEND SRCS "handlers/input_handler.c")
     list(APPEND SRCS "handlers/input_socket.c")
+    list(APPEND SRCS "handlers/audio_handler_sdl2.c")
 else()
     list(APPEND SRCS "display/display_esp32.cpp")
     list(APPEND SRCS "communication/comm_spi.c")
+    list(APPEND SRCS "handlers/audio_handler_esp32.c")
 endif()
 
 # Include directories

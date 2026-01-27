@@ -5,6 +5,7 @@
 #endif
 #include <cstdio>
 #include <cstring>
+#include <cinttypes>
 #include <map>
 
 extern "C" {
@@ -287,7 +288,7 @@ extern "C" int graphics_handler_init(void) {
 
     g_graphics_initialized = true;  // Mark as initialized
     GFX_LOG_I("Graphics handler initialized with screen buffer (%dx%d)",
-              g_lgfx->width(), g_lgfx->height());
+              (int)g_lgfx->width(), (int)g_lgfx->height());
     GFX_LOG_I("Cursor sprite initialized (8x8) at position (%d, %d)", g_cursor_x, g_cursor_y);
     return 0;
 }
@@ -647,7 +648,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 text_buf[len] = '\0';
 
                 GFX_LOG_D("DRAW_STRING: canvas_id=%u, x=%d, y=%d, color=0x%02x, bg_color=0x%02x, bg_transparent=%d, text='%s'",
-                       text_cmd->canvas_id, text_cmd->x, text_cmd->y, text_cmd->color,
+                       text_cmd->canvas_id, (int)text_cmd->x, (int)text_cmd->y, text_cmd->color,
                        text_cmd->bg_color, text_cmd->bg_transparent, text_buf);
 
                 // Get target from command
@@ -724,14 +725,14 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 canvas_state_t* canvas = canvas_state_alloc(canvas_id, cmd->width, cmd->height);
                 if (!canvas) {
                     GFX_LOG_E("Failed to allocate canvas %u (%dx%d)",
-                            canvas_id, cmd->width, cmd->height);
+                            canvas_id, (int)cmd->width, (int)cmd->height);
                     return -1;
                 }
 
                 // Override z_order with value from Core
                 canvas->z_order = cmd->z_order;
 
-                GFX_LOG_I("Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, cmd->width, cmd->height, cmd->z_order);
+                GFX_LOG_I("Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, (int)cmd->width, (int)cmd->height, (int)cmd->z_order);
 
                 // Send ACK with canvas_id
                 COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&canvas_id, sizeof(canvas_id));
@@ -788,7 +789,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 }
 
                 GFX_LOG_I("UPDATE_WINDOW: canvas_id=%u, pos=(%d,%d), active_size=%dx%d",
-                          cmd->canvas_id, cmd->x, cmd->y, cmd->width, cmd->height);
+                          cmd->canvas_id, (int)cmd->x, (int)cmd->y, (int)cmd->width, (int)cmd->height);
 
                 // Update position
                 canvas->push_x = cmd->x;
@@ -878,7 +879,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 LGFX_Sprite* src_sprite = src_canvas->draw_buffer;
                 GFX_LOG_D("PUSH_CANVAS: src=%p (active=%dx%d), dst=%p (%s), push_at=(%d,%d), save_pos=(%d,%d)",
                        src_sprite, src_canvas->active_width, src_canvas->active_height, dst, dst_name,
-                       push_x, push_y, cmd->x, cmd->y);
+                       push_x, push_y, (int)cmd->x, (int)cmd->y);
 
                 // Since setBuffer configures sprite to active size, pushSprite transfers only active region
                 if (cmd->use_transparency) {

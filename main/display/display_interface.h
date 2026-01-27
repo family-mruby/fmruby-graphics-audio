@@ -65,7 +65,7 @@ namespace lgfx {
 using LGFX = lgfx::v1::LovyanGFX;
 #else
 // For ESP32: LGFX is defined by LGFX_AUTODETECT.hpp
-class LGFX;
+// Don't declare anything here - LGFX must be defined by including LGFX_AUTODETECT.hpp first
 #endif
 extern LGFX* g_lgfx;
 #endif

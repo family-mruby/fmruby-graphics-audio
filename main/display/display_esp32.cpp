@@ -1,5 +1,3 @@
-#include "display_interface.h"
-
 #ifndef CONFIG_IDF_TARGET_LINUX
 
 #define LGFX_USE_V1
@@ -67,7 +65,10 @@ public:
   }
 };
 
-static LGFX* g_lgfx = nullptr;
+// Include display_interface.h after LGFX class definition
+#include "display_interface.h"
+
+LGFX* g_lgfx = nullptr;
 
 extern "C" {
 
