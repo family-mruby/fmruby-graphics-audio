@@ -2,8 +2,9 @@
 
 ## 基本的な注意事項
 
-- コミュニケーションは日本語で
-- 勝手にgit操作しない
+- コミュニケーションは日本語で行う
+- 無断でにgit操作しない
+- 無断でファイルを削除しない
 
 ## 目的
 
@@ -19,14 +20,25 @@ API仕様は検討中。
 
 ## ビルド方法
 
+### ESP32向け
+
 ```
-docker run --rm --group-add=dialout --group-add=plugdev --privileged $DEVICE_ARGS --user $(id -u):$(id -g) -v $PWD:/project -v /dev/bus/usb:/dev/bus/usb esp32_build_container:v5.5.1 idf.py build
+rake build:esp32
+```
+
+### Linuxシミュレーション
+
+```
+rake build:linux
 ```
 
 ## LovyanGFXについて
 
+ESP32では、CVBS実装を利用する。
 以下参照
 components/LovyanGFX/doc/Panel_CVBS.md
+
+Linuxシミュレーションでは、SDL2を用いる。
 
 ## apu_emuの使い方例
 
