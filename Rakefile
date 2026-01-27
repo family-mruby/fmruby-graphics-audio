@@ -59,14 +59,35 @@ DOCKER_CMD_INTERACTIVE = [
   IMAGE
 ].join(" ")
 
+desc "Apply LovyanGFX patches"
+task :apply_patches do
+  patch_file = "patches/lovyangfx-esp-idf-linux-support.patch"
+  lovyangfx_dir = "components/LovyanGFX"
+
+  if File.exist?(patch_file)
+    # Check if patch is already applied
+    sh "cd #{lovyangfx_dir} && git diff --quiet || git diff --quiet --cached", verbose: false do |ok, res|
+      if ok
+        puts "Applying LovyanGFX patches..."
+        sh "cd #{lovyangfx_dir} && git apply ../../#{patch_file}"
+        puts "Patches applied successfully"
+      else
+        puts "Patches already applied or LovyanGFX has local changes"
+      end
+    end
+  else
+    puts "Warning: Patch file not found: #{patch_file}"
+  end
+end
+
 namespace :set_target do
   desc "Linux target (dev/test)"
-  task :linux do
+  task :linux => :apply_patches do
     sh "#{DOCKER_CMD} idf.py --preview set-target linux"
   end
 
   desc "Set ESP32 target"
-  task :esp32 do
+  task :esp32 => :apply_patches do
     sh "#{DOCKER_CMD} idf.py set-target esp32"
   end
 end
