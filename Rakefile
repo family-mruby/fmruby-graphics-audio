@@ -153,45 +153,53 @@ task :monitor do
   sh "#{DOCKER_CMD_INTERACTIVE} idf.py -p #{USB_SERIAL_PORT} monitor"
 end
 
-namespace :host do
-  desc "Build SDL2 host process"
-  task :build do
-    sh "cd host/sdl2 && mkdir -p build && cd build && cmake .. && make"
-  end
+# Note: host/ directory has been removed - it was just for reference
+# The Linux build (build/fmruby-graphics-audio.elf) now provides the same functionality
+# Use 'rake build:linux' instead to build the graphics-audio service
+#
+# namespace :host do
+#   desc "Build SDL2 host process"
+#   task :build do
+#     sh "cd host/sdl2 && mkdir -p build && cd build && cmake .. && make"
+#   end
+#
+#   desc "Run SDL2 host process in background"
+#   task :run => :build do
+#     puts "Starting SDL2 host process..."
+#     sh "cd host/sdl2/build && ./fmrb_host_sdl2 &"
+#     sleep 1
+#     puts "SDL2 host running"
+#   end
+#
+#   desc "Clean SDL2 host build"
+#   task :clean do
+#     sh "rm -rf host/sdl2/build"
+#   end
+# end
 
-  desc "Run SDL2 host process in background"
-  task :run => :build do
-    puts "Starting SDL2 host process..."
-    sh "cd host/sdl2/build && ./fmrb_graphics_audio_host &"
-    sleep 1
-    puts "SDL2 host running"
-  end
-
-  desc "Clean SDL2 host build"
-  task :clean do
-    sh "rm -rf host/sdl2/build"
-  end
-end
-
-namespace :test do
-  desc "Integration test: Run both core and host processes"
-  task :integration => ['build:linux', 'host:build'] do
-    puts "Starting integration test..."
-
-    # SDL2ホストをバックグラウンドで起動
-    host_pid = Process.spawn("cd host/sdl2/build && ./fmrb_graphics_audio_host")
-    sleep 2  # 起動待ち
-
-    begin
-      puts "Starting fmruby-graphics-audio..."
-      sh "./build/fmruby-graphics-audio.elf"
-    ensure
-      # 終了処理
-      Process.kill("TERM", host_pid) rescue nil
-      puts "Integration test completed"
-    end
-  end
-end
+# Note: Integration test disabled because host/ directory was removed
+# The Linux build now runs standalone without separate host process
+# Use 'rake run_linux' to run the graphics-audio service
+#
+# namespace :test do
+#   desc "Integration test: Run both core and host processes"
+#   task :integration => ['build:linux', 'host:build'] do
+#     puts "Starting integration test..."
+#
+#     # SDL2ホストをバックグラウンドで起動
+#     host_pid = Process.spawn("cd host/sdl2/build && ./fmrb_graphics_audio_host")
+#     sleep 2  # 起動待ち
+#
+#     begin
+#       puts "Starting fmruby-graphics-audio..."
+#       sh "./build/fmruby-graphics-audio.elf"
+#     ensure
+#       # 終了処理
+#       Process.kill("TERM", host_pid) rescue nil
+#       puts "Integration test completed"
+#     end
+#   end
+# end
 
 desc "Run Linux build (depends on build:linux)"
 task :run_linux => 'build:linux' do
