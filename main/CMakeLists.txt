@@ -1,12 +1,18 @@
 # Source files - conditional compilation based on target
 set(SRCS
-    "main_new.c"
     "common/fmrb_link_cobs.c"
     "handlers/graphics_handler.cpp"
     "tasks/graphics_task.c"
     "tasks/comm_task.c"
     "tasks/audio_task.c"
 )
+
+# Main file selection based on target
+if(CONFIG_IDF_TARGET_LINUX)
+    list(APPEND SRCS "main_test.cpp")  # Minimal test for Linux
+else()
+    list(APPEND SRCS "main_new.cpp")   # Full implementation for ESP32
+endif()
 
 # Add ESP32-specific sources
 if(NOT CONFIG_IDF_TARGET_LINUX)

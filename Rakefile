@@ -59,25 +59,34 @@ DOCKER_CMD_INTERACTIVE = [
   IMAGE
 ].join(" ")
 
-desc "Apply LovyanGFX patches"
+desc "Apply LovyanGFX patches (file replacement)"
 task :apply_patches do
-  patch_file = "patches/lovyangfx-esp-idf-linux-support.patch"
   lovyangfx_dir = "components/LovyanGFX"
+  patch_files_dir = "patches/lovyangfx-files"
 
-  if File.exist?(patch_file)
-    # Check if patch is already applied
-    sh "cd #{lovyangfx_dir} && git diff --quiet || git diff --quiet --cached", verbose: false do |ok, res|
-      if ok
-        puts "Applying LovyanGFX patches..."
-        sh "cd #{lovyangfx_dir} && git apply ../../#{patch_file}"
-        puts "Patches applied successfully"
-      else
-        puts "Patches already applied or LovyanGFX has local changes"
-      end
-    end
-  else
-    puts "Warning: Patch file not found: #{patch_file}"
+  unless Dir.exist?(patch_files_dir)
+    puts "Warning: Patch files directory not found: #{patch_files_dir}"
+    next
   end
+
+  # File mappings: source => destination
+  file_mappings = {
+    "#{patch_files_dir}/esp-idf.cmake" => "#{lovyangfx_dir}/boards.cmake/esp-idf.cmake",
+    "#{patch_files_dir}/common.hpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/common.hpp",
+    "#{patch_files_dir}/device.hpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/device.hpp",
+    "#{patch_files_dir}/Panel_sdl.cpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/sdl/Panel_sdl.cpp"
+  }
+
+  puts "Applying LovyanGFX patches (file replacement)..."
+  file_mappings.each do |src, dst|
+    if File.exist?(src)
+      sh "cp #{src} #{dst}"
+      puts "  ✓ #{File.basename(src)} -> #{dst}"
+    else
+      puts "  ✗ Warning: Source file not found: #{src}"
+    end
+  end
+  puts "Patches applied successfully"
 end
 
 namespace :set_target do
@@ -93,15 +102,19 @@ namespace :set_target do
 end
 
 namespace :build do
-  desc "Linux target build (dev/test)"
+  desc "Linux native build (SDL2 host)"
   task :linux do
-    # Note: host/sdl2 is now integrated into main/, no separate build needed
+    sh "cd host && mkdir -p build && cd build && cmake .. && make"
+    puts 'Linux native build complete. Run with: ./host/build/fmrb_graphics_audio_host'
+  end
 
+  desc "ESP-IDF Linux target build (for testing)"
+  task :esp_linux do
     unless Dir.exist?('build')
       Rake::Task['set_target:linux'].invoke
     end
     sh "#{DOCKER_CMD} bash -c 'export IDF_TARGET=linux && idf.py --preview -DCMAKE_BUILD_TYPE=Debug build'"
-    puts 'Linux build complete. Run with: ./build/fmruby-graphics-audio.elf'
+    puts 'ESP-IDF Linux build complete. Run with: ./build/fmruby-graphics-audio.elf'
   end
 
   desc "ESP32 build"
@@ -141,11 +154,17 @@ desc "Full clean build artifacts (including host)"
 task :clean_all do
   sh "rm -f sdkconfig"
   sh "rm -rf build"
+  sh "rm -rf host/build"
 end
 
-desc "Clean build artifacts"
+desc "Clean ESP32 build artifacts"
 task :clean do
   sh "rm -rf build"
+end
+
+desc "Clean Linux native build"
+task :clean_linux do
+  sh "rm -rf host/build"
 end
 
 desc "Serial monitor"
@@ -153,29 +172,8 @@ task :monitor do
   sh "#{DOCKER_CMD_INTERACTIVE} idf.py -p #{USB_SERIAL_PORT} monitor"
 end
 
-# Note: host/ directory has been removed - it was just for reference
-# The Linux build (build/fmruby-graphics-audio.elf) now provides the same functionality
-# Use 'rake build:linux' instead to build the graphics-audio service
-#
-# namespace :host do
-#   desc "Build SDL2 host process"
-#   task :build do
-#     sh "cd host/sdl2 && mkdir -p build && cd build && cmake .. && make"
-#   end
-#
-#   desc "Run SDL2 host process in background"
-#   task :run => :build do
-#     puts "Starting SDL2 host process..."
-#     sh "cd host/sdl2/build && ./fmrb_host_sdl2 &"
-#     sleep 1
-#     puts "SDL2 host running"
-#   end
-#
-#   desc "Clean SDL2 host build"
-#   task :clean do
-#     sh "rm -rf host/sdl2/build"
-#   end
-# end
+# Removed: host namespace
+# Use 'rake build:linux' for native Linux build
 
 # Note: Integration test disabled because host/ directory was removed
 # The Linux build now runs standalone without separate host process
@@ -201,9 +199,9 @@ end
 #   end
 # end
 
-desc "Run Linux build (depends on build:linux)"
+desc "Run native Linux build"
 task :run_linux => 'build:linux' do
-  sh "./build/fmruby-graphics-audio.elf"
+  sh "./host/build/fmrb_graphics_audio_host"
 end
 
 desc "List available tasks"
