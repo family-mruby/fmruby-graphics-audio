@@ -102,14 +102,8 @@ namespace :set_target do
 end
 
 namespace :build do
-  desc "Linux native build (SDL2 host)"
+  desc "ESP-IDF Linux simulation build (SDL2 host)"
   task :linux do
-    sh "cd host && mkdir -p build && cd build && cmake .. && make"
-    puts 'Linux native build complete. Run with: ./host/build/fmrb_graphics_audio_host'
-  end
-
-  desc "ESP-IDF Linux target build (for testing)"
-  task :esp_linux do
     unless Dir.exist?('build')
       Rake::Task['set_target:linux'].invoke
     end

@@ -1,0 +1,9 @@
+# Linux-specific configuration for fmruby-graphics-audio
+
+# Increase stack sizes for LovyanGFX with SDL2
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
