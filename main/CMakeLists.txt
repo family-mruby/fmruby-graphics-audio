@@ -88,11 +88,18 @@ set(SRCS
     "main.cpp"
 )
 
-# Add SDL platform implementation for Linux
+# Add platform-specific sources
 if(CONFIG_IDF_TARGET_LINUX)
+    # Linux/SDL platform implementation
     list(APPEND SRCS
         "../components/LovyanGFX/src/lgfx/v1/platforms/sdl/Panel_sdl.cpp"
         "../components/LovyanGFX/src/lgfx/v1/platforms/sdl/common.cpp"
+    )
+else()
+    # ESP32 platform implementation
+    list(APPEND SRCS
+        "lgfx_wrapper.cpp"
+        "audio.cpp"
     )
 endif()
 
@@ -100,9 +107,22 @@ set(INCLUDE_DIRS
     "."
 )
 
+# Add apu_emu include directory only for ESP32
+if(NOT CONFIG_IDF_TARGET_LINUX)
+    list(APPEND INCLUDE_DIRS "../components/apu_emu/src")
+endif()
+
 set(REQUIRES
     LovyanGFX
 )
+
+# Add ESP32-specific requirements
+if(NOT CONFIG_IDF_TARGET_LINUX)
+    list(APPEND REQUIRES
+        apu_emu
+        msgpack-esp32
+    )
+endif()
 
 idf_component_register(
     SRCS ${SRCS}

@@ -5,6 +5,7 @@
 
 
 // C++のLGFX関数を呼び出すためのラッパー関数を宣言
+extern "C" {
 void lgfx_init(void);
 void lgfx_draw_test_pattern(void);
 void lgfx_draw_moving_circles(void);
@@ -19,6 +20,7 @@ void lgfx_draw_test(void);
 void lgfx_print_detailed_memory_info(void);
 
 void audio_task_impl(void);
+}
 
 void gfx_test()
 {
@@ -100,7 +102,7 @@ void audio_task(void* arg) {
 }
 
 
-void app_main(void)
+extern "C" void app_main(void)
 {
   printf("Starting NTSC output with memory diagnosis...\n");
 
