@@ -8,7 +8,7 @@
 // Linux向けSDL設定（手動設定 - LGFX_AUTODETECTは使用しない）
 class LGFX : public lgfx::LGFX_Device
 {
-    lgfx::Panel_sdl _panel_instance;
+    lgfx::Panel_sdl* _panel_instance;
 
     bool init_impl(bool use_reset, bool use_clear) override
     {
@@ -17,31 +17,39 @@ class LGFX : public lgfx::LGFX_Device
 
 public:
     LGFX(int width = 256, int height = 240, uint_fast8_t scaling_x = 2, uint_fast8_t scaling_y = 2)
+        : _panel_instance(nullptr)
     {
-        auto cfg = _panel_instance.config();
+        _panel_instance = new lgfx::Panel_sdl();
+        auto cfg = _panel_instance->config();
         cfg.memory_width = width;
         cfg.panel_width = width;
         cfg.memory_height = height;
         cfg.panel_height = height;
-        _panel_instance.config(cfg);
+        _panel_instance->config(cfg);
 
         if (scaling_x == 0) { scaling_x = 1; }
         if (scaling_y == 0) { scaling_y = scaling_x; }
-        _panel_instance.setScaling(scaling_x, scaling_y);
+        _panel_instance->setScaling(scaling_x, scaling_y);
 
-        setPanel(&_panel_instance);
+        setPanel(_panel_instance);
         _board = lgfx::board_t::board_SDL;
     }
-};
 
-#ifdef CONFIG_IDF_TARGET_LINUX
+    ~LGFX()
+    {
+        // Don't delete _panel_instance here - let Panel_sdl::main() clean up SDL
+        // Just detach it
+        setPanel(nullptr);
+        _panel_instance = nullptr;
+    }
+};
 
 static LGFX* lcd = nullptr;
 static bool setup_done = false;
 
 void setup(void)
 {
-    printf("=== LovyanGFX Test (main_test2.cpp) ===\n");
+    printf("=== LovyanGFX Test (main_linux.cpp) ===\n");
     printf("DISPLAY=%s\n", getenv("DISPLAY") ? getenv("DISPLAY") : "not set");
     printf("WAYLAND_DISPLAY=%s\n", getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "not set");
 
@@ -98,7 +106,8 @@ void loop(void)
     if (lcd) {
         lcd->display();
     }
-    // Nothing else to do in loop
+    // Add small delay to reduce CPU usage
+    lgfx::delay(16); // ~60fps
 }
 
 int user_func(bool* running)
@@ -107,6 +116,14 @@ int user_func(bool* running)
     while (*running) {
         loop();
     }
+
+    // Cleanup
+    printf("Cleaning up...\n");
+    if (lcd) {
+        delete lcd;
+        lcd = nullptr;
+    }
+
     return 0;
 }
 
@@ -114,18 +131,3 @@ extern "C" int app_main(void)
 {
     return lgfx::Panel_sdl::main(user_func);
 }
-#else
-// ESP32 build
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-
-extern "C" void app_main(void)
-{
-    printf("=== LovyanGFX Test (main_test2.cpp) ===\n");
-    printf("ESP32 build not configured for this test\n");
-
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-#endif

@@ -81,9 +81,9 @@ task :apply_patches do
   file_mappings.each do |src, dst|
     if File.exist?(src)
       sh "cp #{src} #{dst}"
-      puts "  ✓ #{File.basename(src)} -> #{dst}"
+      puts "  OK #{File.basename(src)} -> #{dst}"
     else
-      puts "  ✗ Warning: Source file not found: #{src}"
+      puts "  Warning: Source file not found: #{src}"
     end
   end
   puts "Patches applied successfully"
@@ -148,7 +148,6 @@ desc "Full clean build artifacts (including host)"
 task :clean_all do
   sh "rm -f sdkconfig"
   sh "rm -rf build"
-  sh "rm -rf host/build"
 end
 
 desc "Clean ESP32 build artifacts"
@@ -156,46 +155,9 @@ task :clean do
   sh "rm -rf build"
 end
 
-desc "Clean Linux native build"
-task :clean_linux do
-  sh "rm -rf host/build"
-end
-
 desc "Serial monitor"
 task :monitor do
   sh "#{DOCKER_CMD_INTERACTIVE} idf.py -p #{USB_SERIAL_PORT} monitor"
-end
-
-# Removed: host namespace
-# Use 'rake build:linux' for native Linux build
-
-# Note: Integration test disabled because host/ directory was removed
-# The Linux build now runs standalone without separate host process
-# Use 'rake run_linux' to run the graphics-audio service
-#
-# namespace :test do
-#   desc "Integration test: Run both core and host processes"
-#   task :integration => ['build:linux', 'host:build'] do
-#     puts "Starting integration test..."
-#
-#     # SDL2ホストをバックグラウンドで起動
-#     host_pid = Process.spawn("cd host/sdl2/build && ./fmrb_graphics_audio_host")
-#     sleep 2  # 起動待ち
-#
-#     begin
-#       puts "Starting fmruby-graphics-audio..."
-#       sh "./build/fmruby-graphics-audio.elf"
-#     ensure
-#       # 終了処理
-#       Process.kill("TERM", host_pid) rescue nil
-#       puts "Integration test completed"
-#     end
-#   end
-# end
-
-desc "Run native Linux build"
-task :run_linux => 'build:linux' do
-  sh "./host/build/fmrb_graphics_audio_host"
 end
 
 desc "List available tasks"

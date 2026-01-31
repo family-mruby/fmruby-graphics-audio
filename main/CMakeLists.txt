@@ -81,11 +81,11 @@
 # endif()
 # ========== END OF COMMENTED OUT CONTENT ==========
 
-# ========== TEST BUILD FOR main_test2.cpp ==========
-# Simplified build configuration for testing LovyanGFX
+# ========== BUILD CONFIGURATION ==========
+# Build main.cpp which includes platform-specific implementation
 
 set(SRCS
-    "main_test2.cpp"
+    "main.cpp"
 )
 
 # Add SDL platform implementation for Linux
