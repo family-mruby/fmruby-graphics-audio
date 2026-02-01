@@ -59,33 +59,50 @@ DOCKER_CMD_INTERACTIVE = [
   IMAGE
 ].join(" ")
 
-desc "Apply LovyanGFX patches (file replacement)"
+desc "Apply component patches (file replacement)"
 task :apply_patches do
+  # LovyanGFX patches
   lovyangfx_dir = "components/LovyanGFX"
-  patch_files_dir = "patches/lovyangfx-files"
+  lovyangfx_patch_dir = "patches/lovyangfx-files"
 
-  unless Dir.exist?(patch_files_dir)
-    puts "Warning: Patch files directory not found: #{patch_files_dir}"
-    next
-  end
-
-  # File mappings: source => destination
-  file_mappings = {
-    "#{patch_files_dir}/esp-idf.cmake" => "#{lovyangfx_dir}/boards.cmake/esp-idf.cmake",
-    "#{patch_files_dir}/common.hpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/common.hpp",
-    "#{patch_files_dir}/device.hpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/device.hpp",
-    "#{patch_files_dir}/Panel_sdl.cpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/sdl/Panel_sdl.cpp"
+  lovyangfx_mappings = {
+    "#{lovyangfx_patch_dir}/esp-idf.cmake" => "#{lovyangfx_dir}/boards.cmake/esp-idf.cmake",
+    "#{lovyangfx_patch_dir}/common.hpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/common.hpp",
+    "#{lovyangfx_patch_dir}/device.hpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/device.hpp",
+    "#{lovyangfx_patch_dir}/Panel_sdl.cpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/sdl/Panel_sdl.cpp"
   }
 
-  puts "Applying LovyanGFX patches (file replacement)..."
-  file_mappings.each do |src, dst|
+  # esp_littlefs patches
+  esp_littlefs_dir = "components/esp_littlefs"
+  esp_littlefs_patch_dir = "patches/esp_littlefs-files"
+
+  esp_littlefs_mappings = {
+    "#{esp_littlefs_patch_dir}/CMakeLists.txt" => "#{esp_littlefs_dir}/CMakeLists.txt"
+  }
+
+  # Apply all patches
+  puts "Applying component patches (file replacement)..."
+
+  puts "  LovyanGFX patches:"
+  lovyangfx_mappings.each do |src, dst|
     if File.exist?(src)
       sh "cp #{src} #{dst}"
-      puts "  OK #{File.basename(src)} -> #{dst}"
+      puts "    OK #{File.basename(src)} -> #{dst}"
     else
-      puts "  Warning: Source file not found: #{src}"
+      puts "    Warning: Source file not found: #{src}"
     end
   end
+
+  puts "  esp_littlefs patches:"
+  esp_littlefs_mappings.each do |src, dst|
+    if File.exist?(src)
+      sh "cp #{src} #{dst}"
+      puts "    OK #{File.basename(src)} -> #{dst}"
+    else
+      puts "    Warning: Source file not found: #{src}"
+    end
+  end
+
   puts "Patches applied successfully"
 end
 
