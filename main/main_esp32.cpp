@@ -177,7 +177,7 @@ extern "C" void app_main(void)
   );
 
   // Core0でタスク2を起動
-  printf("Creating Audio task on Core1...\n");
+  printf("Creating Audio task on Core0...\n");
   xTaskCreatePinnedToCore(
       audio_task,           // タスク関数
       "audio_task",         // タスク名
@@ -185,7 +185,7 @@ extern "C" void app_main(void)
       NULL,              // パラメータ
       6,                 // 優先度
       NULL,              // タスクハンドル
-      1                  // Core1に固定
+      0                  // Core0に固定
   );
 
   // Core0でSPIタスクを起動
