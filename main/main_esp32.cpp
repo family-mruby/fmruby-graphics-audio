@@ -28,7 +28,7 @@ void gfx_test()
   // 初期テストモードの設定
   int current_mode = 2;
   uint64_t last_mode_change = esp_timer_get_time();
-  const uint64_t mode_change_interval = 10000000*3; // 10秒間隔
+  const uint64_t mode_change_interval = 10000000; // 10秒間隔
 
   printf("Starting test modes cycle...\n");
 
@@ -36,7 +36,7 @@ void gfx_test()
   lgfx_print_memory_info();
 
   int cnt=0;
-  while(cnt < 100){
+  while(cnt < 1000){
     lgfx_draw_test();
     vTaskDelay(pdMS_TO_TICKS(1));
     cnt++;
@@ -85,7 +85,7 @@ void gfx_test()
     lgfx_update_fps();
 
     // フレームレート制御
-    vTaskDelay(pdMS_TO_TICKS(16));
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
 
@@ -96,7 +96,7 @@ void gfx_task(void* arg) {
   gfx_test();
 }
 
-// Core0で動作するタスク2: ユーザーインターフェース処理用
+// Core1で動作するタスク2: ユーザーインターフェース処理用
 void audio_task(void* arg) {
   printf("Audio task started on core %d\n", xPortGetCoreID());
   audio_task_impl();
@@ -188,7 +188,7 @@ extern "C" void app_main(void)
       1                  // Core1に固定
   );
 
-  // Core1でSPIタスクを起動
+  // Core0でSPIタスクを起動
   printf("Creating SPI task on Core1...\n");
   xTaskCreatePinnedToCore(
       spi_task,             // タスク関数
@@ -197,8 +197,10 @@ extern "C" void app_main(void)
       NULL,              // パラメータ
       5,                 // 優先度
       NULL,              // タスクハンドル
-      1                  // Core1に固定
+      0                  // Core0に固定
   );
+
+  // Core1 はLovyanGFXのメモリアクセス専用
 
   printf("All tasks created successfully!\n");
 

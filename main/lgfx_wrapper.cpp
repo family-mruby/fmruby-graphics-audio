@@ -49,10 +49,10 @@ public:
       auto cfg = _panel_instance.config();    // 表示パネル設定用の構造体を取得します。
 
       // 出力解像度を設定
-      cfg.memory_width  = 720; // 出力解像度 幅
-      cfg.memory_height = 480; // 出力解像度 高さ
-      //cfg.memory_width  = 480; // 出力解像度 幅
-      //cfg.memory_height = 320; // 出力解像度 高さ
+      // cfg.memory_width  = 720; // 出力解像度 幅
+      // cfg.memory_height = 480; // 出力解像度 高さ
+      cfg.memory_width  = 480; // 出力解像度 幅
+      cfg.memory_height = 320; // 出力解像度 高さ
 
       // 実際に利用する解像度を設定
       cfg.panel_width  = cfg.memory_width-32;  // 実際に使用する幅   (memory_width と同値か小さい値を設定する)
@@ -177,7 +177,8 @@ extern "C" {
              sprite_result ? "SUCCESS" : "FAILED", gfx.width(), gfx.height());
 
       if (sprite_result) {
-        sprites[i].setFont(&lgfx::fonts::Font2);
+        sprites[i].setFont(&lgfx::fonts::Font4);  // Larger font
+        sprites[i].setTextSize(1);  // Text scaling factor
         printf("Sprite[%d] buffer allocated successfully\n", i);
       } else {
         printf("Sprite[%d] FAILED - After failure PSRAM largest block: %u bytes\n", i,
@@ -191,11 +192,11 @@ extern "C" {
 
     // オブジェクトの初期化
     for (int i = 0; i < MAX_OBJECTS; i++) {
-      objects[i].x = rand() % (gfx.width() - 20) + 10;
-      objects[i].y = rand() % (gfx.height() - 20) + 10;
-      objects[i].dx = (rand() % 400 - 200) / 100.0f; // -2.0 to 2.0
-      objects[i].dy = (rand() % 400 - 200) / 100.0f;
-      objects[i].radius = 3 + (rand() % 8);
+      objects[i].x = rand() % (gfx.width() - 40) + 20;
+      objects[i].y = rand() % (gfx.height() - 40) + 20;
+      objects[i].dx = (rand() % 800 - 400) / 100.0f; // -4.0 to 4.0 (faster)
+      objects[i].dy = (rand() % 800 - 400) / 100.0f;
+      objects[i].radius = 10 + (rand() % 15);  // 10-24 (larger)
       objects[i].color = rand() | 0x808080; // 明るい色になるようビット操作
     }
 
@@ -348,11 +349,11 @@ extern "C" {
     // モード変更時にオブジェクトをリセット
     if (mode == 2) { // 物理シミュレーションモード
       for (int i = 0; i < MAX_OBJECTS; i++) {
-        objects[i].x = rand() % (gfx.width() - 20) + 10;
-        objects[i].y = rand() % (gfx.height() / 2) + 10; // 上半分に配置
-        objects[i].dx = (rand() % 200 - 100) / 100.0f; // -1.0 to 1.0
-        objects[i].dy = (rand() % 100) / 100.0f; // 0 to 1.0（下向き）
-        objects[i].radius = 2 + (rand() % 6);
+        objects[i].x = rand() % (gfx.width() - 40) + 20;
+        objects[i].y = rand() % (gfx.height() / 2) + 20; // 上半分に配置
+        objects[i].dx = (rand() % 400 - 200) / 100.0f; // -2.0 to 2.0 (faster)
+        objects[i].dy = (rand() % 200) / 100.0f; // 0 to 2.0（下向き、faster）
+        objects[i].radius = 8 + (rand() % 12);  // 8-19 (larger)
         objects[i].color = rand() | 0x404040;
       }
     }
