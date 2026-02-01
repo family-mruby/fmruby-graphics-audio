@@ -100,11 +100,13 @@ else()
     list(APPEND SRCS
         "lgfx_wrapper.cpp"
         "audio.cpp"
+        "communication/comm_spi.c"
     )
 endif()
 
 set(INCLUDE_DIRS
     "."
+    "communication"
 )
 
 # Add apu_emu include directory only for ESP32
@@ -121,6 +123,7 @@ if(NOT CONFIG_IDF_TARGET_LINUX)
     list(APPEND REQUIRES
         apu_emu
         msgpack-esp32
+        esp_littlefs
     )
 endif()
 

@@ -5,6 +5,7 @@ project(fmruby-graphics-audio)
 
 # Generate Flash data (ESP32 only)
 if (NOT IDF_TARGET STREQUAL "linux")
-    spiffs_create_partition_image(audio storage FLASH_IN_PROJECT)
+    #spiffs_create_partition_image(audio storage FLASH_IN_PROJECT)
     #fatfs_create_rawflash_image(storage fatfs FLASH_IN_PROJECT PRESERVE_TIME)
+    littlefs_create_partition_image(storage flash FLASH_IN_PROJECT)
 endif()

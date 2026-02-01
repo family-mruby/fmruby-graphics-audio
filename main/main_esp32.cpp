@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "communication/comm_interface.h"
 
 
 // C++のLGFX関数を呼び出すためのラッパー関数を宣言
@@ -101,6 +102,49 @@ void audio_task(void* arg) {
   audio_task_impl();
 }
 
+// Core1で動作するSPI通信タスク
+void spi_task(void* arg) {
+  printf("SPI task started on core %d\n", xPortGetCoreID());
+
+  const comm_interface_t* comm = comm_get_interface();
+
+  // SPI初期化
+  if (comm->init() != 0) {
+    printf("SPI initialization failed!\n");
+    vTaskDelete(NULL);
+    return;
+  }
+
+  printf("SPI initialized successfully, starting communication loop...\n");
+
+  // テスト用のダミーデータ
+  uint8_t test_data[] = {0xAA, 0x55, 0x01, 0x02, 0x03, 0x04};
+  int send_count = 0;
+
+  while (1) {
+    // 通信処理
+    int processed = comm->process();
+    if (processed < 0) {
+      printf("SPI process error\n");
+    }
+
+    // 5秒ごとにテストデータを送信
+    send_count++;
+    if (send_count >= 500) {  // 10ms * 500 = 5秒
+      printf("SPI: Sending test data...\n");
+      int sent = comm->send(test_data, sizeof(test_data));
+      if (sent > 0) {
+        printf("SPI: Sent %d bytes\n", sent);
+      } else {
+        printf("SPI: Send failed\n");
+      }
+      send_count = 0;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
 
 extern "C" void app_main(void)
 {
@@ -125,7 +169,7 @@ extern "C" void app_main(void)
   xTaskCreatePinnedToCore(
       gfx_task,        // タスク関数
       "gfx_task",      // タスク名
-      4096,              // スタックサイズ
+      8192,              // スタックサイズ
       NULL,              // パラメータ
       5,                 // 優先度
       NULL,              // タスクハンドル
@@ -133,18 +177,30 @@ extern "C" void app_main(void)
   );
 
   // Core0でタスク2を起動
-  printf("Creating Audio task on Core0...\n");
+  printf("Creating Audio task on Core1...\n");
   xTaskCreatePinnedToCore(
       audio_task,           // タスク関数
       "audio_task",         // タスク名
-      2048,              // スタックサイズ
+      8192,              // スタックサイズ
       NULL,              // パラメータ
       6,                 // 優先度
       NULL,              // タスクハンドル
-      0                  // Core0に固定
+      1                  // Core1に固定
   );
 
-  printf("Both tasks created successfully!\n");
+  // Core1でSPIタスクを起動
+  printf("Creating SPI task on Core1...\n");
+  xTaskCreatePinnedToCore(
+      spi_task,             // タスク関数
+      "spi_task",           // タスク名
+      4096,              // スタックサイズ
+      NULL,              // パラメータ
+      5,                 // 優先度
+      NULL,              // タスクハンドル
+      1                  // Core1に固定
+  );
+
+  printf("All tasks created successfully!\n");
 
   int count=0;
   while(1) {

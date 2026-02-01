@@ -9,7 +9,7 @@
 #include <stdbool.h>
 
 #include "esp_system.h"
-#include "esp_spiffs.h"
+#include "esp_littlefs.h"
 #include "driver/gpio.h"
 #include "soc/rtc.h"
 
@@ -22,7 +22,7 @@
 #define REPLAY_TEST
 #define AUDIO_DEBUG
 
-#define DEMO_BIN_FILE "/audio/dq.reglog"
+#define DEMO_BIN_FILE "/flash/data/sample.reglog"
 
 #define NTSC_SAMPLE 262
 
@@ -136,7 +136,8 @@ void update_audio()
 #ifdef AUDIO_DEBUG
   // オーディオデバッグ：60フレームごとにチェック
   static uint32_t audio_frame_count = 0;
-  if (audio_frame_count % 60 == 0) {
+  #if 0
+  if (audio_frame_count % 60 == 0 ) {
       // サンプル数と最初のいくつかのサンプル値を表示
       printf("AUDIO[%lu]: samples=%d\n", audio_frame_count, _sample_count);
       
@@ -148,6 +149,7 @@ void update_audio()
           printf("\n");
       }
   }
+  #endif
   audio_frame_count++;
 #endif
   apuif_audio_write(abuffer,_sample_count,1);
@@ -155,14 +157,14 @@ void update_audio()
 
 esp_err_t mount_filesystem()
 {
-  esp_vfs_spiffs_conf_t conf = {
-    .base_path = "/audio",
-    .partition_label = "audio",
-    .max_files = 5,
-    .format_if_mount_failed = true
+  esp_vfs_littlefs_conf_t conf = {
+    .base_path = "/flash",
+    .partition_label = "storage",
+    .format_if_mount_failed = true,
+    .dont_mount = false,
   };
-  esp_err_t e = esp_vfs_spiffs_register(&conf);
-  if (e != 0){
+  esp_err_t e = esp_vfs_littlefs_register(&conf);
+  if (e != ESP_OK){
     printf("Failed to mount or format filesystem: %d.\n",e);
   }
   vTaskDelay(1);

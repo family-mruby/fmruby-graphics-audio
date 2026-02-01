@@ -1,3 +1,6 @@
 [submodule "components/LovyanGFX"]
 	path = components/LovyanGFX
 	url = git@github.com:lovyan03/LovyanGFX.git
+[submodule "components/esp_littlefs"]
+	path = components/esp_littlefs
+	url = https://github.com/joltwallet/esp_littlefs.git
