@@ -130,8 +130,9 @@ idf_component_register(
     INCLUDE_DIRS ${INCLUDE_DIRS}
 )
 
-# Linux-specific: Link SDL2 library and define LGFX_SDL
+# Linux-specific: Link SDL2 library and define LGFX_USE_SDL
 if(CONFIG_IDF_TARGET_LINUX)
     target_link_libraries(${COMPONENT_LIB} INTERFACE SDL2)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE LGFX_SDL)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE LGFX_USE_SDL)
+    target_include_directories(${COMPONENT_LIB} PRIVATE /usr/include/SDL2)
 endif()

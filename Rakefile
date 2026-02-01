@@ -18,7 +18,7 @@ GID  = `id -g`.strip
 PWD_ = Dir.pwd
 
 ESP_IDF_VERSION = ENV.fetch("ESP_IDF_VERSION", "v5.5.1")
-IMAGE           = "esp32_build_container:#{ESP_IDF_VERSION}"
+IMAGE           = ENV.fetch("DOCKER_IMAGE", "ghcr.io/family-mruby/fmruby-esp32-build:latest")
 
 # Detect available serial devices
 DEVICE_ARGS = Dir.glob("/dev/ttyUSB*").concat(Dir.glob("/dev/ttyACM*"))
