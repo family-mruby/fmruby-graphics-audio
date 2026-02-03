@@ -19,6 +19,7 @@ if(CONFIG_IDF_TARGET_LINUX)
 else()
     # ESP32 platform implementation
     list(APPEND SRCS
+        "graphics/graphics_handler.cpp"
         "graphics/lgfx_test.cpp"
         "audio/audio_check.c"
         "communication/comm_spi_slave.c"

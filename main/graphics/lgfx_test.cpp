@@ -399,3 +399,74 @@ extern "C" {
     gfx.fillRect(rand() % gfx.width() - 8, rand() % gfx.height() - 8, 100, 100, rand());
   }
 }
+
+
+void lgfx_test(void)
+{
+  // 初期化
+  lgfx_init();
+
+  // 初期テストモードの設定
+  int current_mode = 2;
+  uint64_t last_mode_change = esp_timer_get_time();
+  const uint64_t mode_change_interval = 10000000; // 10秒間隔
+
+  printf("Starting test modes cycle...\n");
+
+  // メモリ情報を定期的に出力
+  lgfx_print_memory_info();
+
+  int cnt=0;
+  while(cnt < 1000){
+    lgfx_draw_test();
+    vTaskDelay(pdMS_TO_TICKS(1));
+    cnt++;
+  }
+
+  // メインループ：異なるテストモードをサイクル実行
+  while(1) {
+    uint64_t current_time = esp_timer_get_time();
+
+    // 10秒ごとにモード切り替え
+    if (current_time - last_mode_change >= mode_change_interval) {
+      current_mode = (current_mode + 1) % 3; // 0、1、2を切り替え
+      lgfx_set_test_mode(current_mode);
+      last_mode_change = current_time;
+
+      switch (current_mode) {
+        case 0:
+          printf("Switching to Color Bar Test Pattern\n");
+          break;
+        case 1:
+          printf("Switching to Moving Circles Animation\n");
+          break;
+        case 2:
+          printf("Switching to Physics Simulation\n");
+          break;
+      }
+    }
+
+    // 現在のモードに応じて描画
+    switch (current_mode) {
+      case 0:
+        lgfx_draw_test_pattern();
+        break;
+      case 1:
+        lgfx_draw_moving_circles();
+        break;
+      case 2:
+        lgfx_draw_physics_simulation();
+        break;
+      default:
+        lgfx_draw_test_pattern();
+        break;
+    }
+
+    // FPS更新
+    lgfx_update_fps();
+
+    // フレームレート制御
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+

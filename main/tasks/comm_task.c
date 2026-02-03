@@ -8,7 +8,7 @@ static const char *TAG = "comm_task";
 static volatile int task_running = 1;
 
 void comm_test(void) {
-  printf("SPI task started on core %ld\n", xPortGetCoreID());
+  printf("SPI task started on core %d\n", (int)xPortGetCoreID());
 
   const comm_interface_t* comm = comm_get_interface();
 
@@ -54,7 +54,7 @@ void comm_task_stop(void) {
 }
 
 void comm_task(void *pvParameters) {
-    ESP_LOGI(TAG, "Communication task started on core %ld", xPortGetCoreID());
+    ESP_LOGI(TAG, "Communication task started on core %d", (int)xPortGetCoreID());
 
 #ifndef CONFIG_IDF_TARGET_LINUX
     //testing SPI

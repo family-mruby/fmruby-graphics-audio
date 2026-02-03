@@ -1,0 +1,207 @@
+[33mcommit ff0e5d8d244b69dc9dff7c00a32e5938be79daa9[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mdevelop[m[33m, [m[1;31morigin/develop[m[33m)[m
+Author: kishima <kishima7@gmail.com>
+Date:   Tue Feb 3 23:13:31 2026 +0900
+
+    refactoring graphics task
+
+[33mcommit 6d14fa23ad8cf40061f3dabe3162ae3ecaeaca05[m
+Author: kishima <kishima7@gmail.com>
+Date:   Tue Feb 3 22:33:23 2026 +0900
+
+    Refactor directory structure and fix build errors
+    
+    - Refactored main directory structure
+    - Now support docker-compose test for Linux simulation
+
+[33mcommit 75205589795f79b9d38ee7641fee71a03e3c58f2[m
+Author: kishima <kishima7@gmail.com>
+Date:   Tue Feb 3 12:34:34 2026 +0900
+
+    debugging linux build
+
+[33mcommit 1d76e607d667c6cae39f066c8368f79973e33ec6[m
+Author: kishima <kishima7@gmail.com>
+Date:   Mon Feb 2 03:16:22 2026 +0900
+
+    fix build error in linux
+
+[33mcommit 1ec0423cd15a5c4b79fe556813094b2602d12625[m
+Author: kishima <kishima7@gmail.com>
+Date:   Mon Feb 2 00:56:00 2026 +0900
+
+    SPI test OK
+
+[33mcommit 3a64b2d0b46e7f41c7c973b78f4bc8c957bcab00[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sun Feb 1 23:38:07 2026 +0900
+
+    update demo settings
+
+[33mcommit e3992bdb7a34f7d557af1a24a2d876d75746f23a[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sun Feb 1 23:16:25 2026 +0900
+
+    add spi-test
+
+[33mcommit 27ef854976fd5f1621c7c8069bbae2ccac08fbae[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sun Feb 1 20:12:56 2026 +0900
+
+    fix build error
+
+[33mcommit ddd05851691cc1bffdefe9ac1bffb522aa8c23df[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sat Jan 31 10:25:05 2026 +0900
+
+    fix build error in[ esp32
+
+[33mcommit 1691ac378a42671744a775d9a864b3bb3ae0048b[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sat Jan 31 10:11:41 2026 +0900
+
+    rm files
+
+[33mcommit 904b72ebd5b7039b028f8b01c6b636dc1624cc0a[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sat Jan 31 02:15:18 2026 +0900
+
+    impl working LovyanGFX on Linux ESP-IDF sim
+
+[33mcommit 3744e64c8a5e51a67e66a08aebc5eaa98e85efda[m
+Author: kishima <kishima7@gmail.com>
+Date:   Thu Jan 29 11:39:54 2026 +0900
+
+    debugging host build
+
+[33mcommit 8acc042bcd1a347bb1833df0cf1c28d818b4a0ee[m
+Author: kishima <kishima7@gmail.com>
+Date:   Wed Jan 28 08:48:23 2026 +0900
+
+    rm host/
+
+[33mcommit 44d3fa55e48058608cb2e3daff5a32d65d69f608[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m
+Author: kishima <kishima7@gmail.com>
+Date:   Wed Jan 28 02:19:23 2026 +0900
+
+    add patch for LovyanGFX
+
+[33mcommit 7b33f7620b35e8748cc1666bddd5f7fea6c4ce36[m
+Merge: 4d10174 d620cd7
+Author: kishima <kishima7@gmail.com>
+Date:   Wed Jan 28 02:09:31 2026 +0900
+
+    MXerge branch 'develop'
+
+[33mcommit d620cd7d498c03d4616e1221c4e40613240f2b0a[m
+Author: kishima <kishima7@gmail.com>
+Date:   Wed Jan 28 02:07:37 2026 +0900
+
+    fix build error in linux and esp32
+
+[33mcommit e17a7cb7cbcb4aa09c8fcb7b62e07d89b7a5a47f[m
+Author: kishima <kishima7@gmail.com>
+Date:   Tue Jan 27 14:41:39 2026 +0900
+
+    debugging build
+
+[33mcommit d52fb14ea184abaef3660e13e0600e8fa1502c07[m
+Author: kishima <kishima7@gmail.com>
+Date:   Tue Jan 27 09:32:09 2026 +0900
+
+    linux build OK
+
+[33mcommit 0db8debec6ef1f10a6973ae91189e69a891bf9f0[m
+Author: kishima <kishima7@gmail.com>
+Date:   Mon Jan 26 00:13:55 2026 +0900
+
+    debugging build
+
+[33mcommit 71dedcfb6edba9fc03bee984def570400428d7b0[m
+Author: kishima <kishima7@gmail.com>
+Date:   Mon Jan 26 00:06:47 2026 +0900
+
+    import host code
+
+[33mcommit 7d6319fb1e5b6e1ed95f9588a9b7f435e45b586b[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sun Jan 25 23:25:33 2026 +0900
+
+    copy host
+
+[33mcommit 4d101748eb687d6167795815e94d1047554245c3[m
+Author: k-kageyama <k-kageyama@aptpod.co.jp>
+Date:   Mon Jan 5 17:18:01 2026 +0900
+
+    fix third party licenses info
+
+[33mcommit e5c033ca7a8ce3163811ae2f77fd6bec8da18129[m
+Author: k-kageyama <k-kageyama@aptpod.co.jp>
+Date:   Mon Jan 5 17:08:27 2026 +0900
+
+    update LICENSE. add THIRD_PARTY_LICENSES.md
+
+[33mcommit 4d41b861204032aed98a1714a72f1f017d206a67[m[33m ([m[1;31morigin/performance_check[m[33m)[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sun Sep 28 00:08:17 2025 +0900
+
+    Parallel 720×480 NTSC video + NES APU audio output
+
+[33mcommit 4ff13c842037cee742ab5bdb7ccea353419ae0cb[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sat Sep 27 22:27:54 2025 +0900
+
+    add tasks
+
+[33mcommit deba9f7d98e54e02a785482fe9581b27f28d4f6f[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sat Sep 27 22:04:34 2025 +0900
+
+    update gfx check
+
+[33mcommit 2933ba87275ffba227462328f8b4e88bec648c9b[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sat Sep 27 19:55:48 2025 +0900
+
+    use PSRAM for sprite
+
+[33mcommit 84ebbd67e91c71ea6e68c9f5f0c655108b2bc37b[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sat Sep 27 14:31:00 2025 +0900
+
+    LGFX works
+
+[33mcommit fafa1fa10ef5df82d87bb5c529ee223ebadcce32[m
+Author: kishima <kishima7@gmail.com>
+Date:   Sat Sep 27 14:30:42 2025 +0900
+
+    update sdkconfig for PSRAM
+
+[33mcommit 541131c8deb37f5647a9e70ecc09ce4a62b793fc[m
+Author: kishima <kishima7@gmail.com>
+Date:   Fri Sep 26 00:24:33 2025 +0900
+
+    update gfx test contents
+
+[33mcommit 39d325c2113a3fbad97ac9de1507170409aade3f[m
+Author: kishima <kishima7@gmail.com>
+Date:   Fri Sep 26 00:06:04 2025 +0900
+
+    impl gfx demo
+
+[33mcommit 11ec4cb72b22a1ae67130f2270bf0b5c9e2dbec5[m
+Author: kishima <kishima7@gmail.com>
+Date:   Thu Sep 25 23:25:49 2025 +0900
+
+    add apu_emu component
+
+[33mcommit e5255982c5f95e6c31e1f1adf0b3c2b15c4ab9f7[m
+Author: kishima <kishima7@gmail.com>
+Date:   Thu Sep 25 23:15:57 2025 +0900
+
+    add lovyanGFX submodule
+
+[33mcommit 1babae409004b8716f0f6bc7c827048c39f761ba[m
+Author: Katsuhiko Kageyama <kishima7@gmail.com>
+Date:   Thu Sep 11 02:58:32 2025 +0900
+
+    Initial commit

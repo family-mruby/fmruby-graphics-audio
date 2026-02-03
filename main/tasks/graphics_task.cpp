@@ -2,22 +2,60 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "display_interface.h"
-#include "graphics_handler.h"
-
-extern "C" {
-#include "graphics_handler.h"
-#include "input_handler.h"
-#include "input_socket.h"
-#include "fmrb_link_protocol.h"
-#include "fmrb_gfx.h"
-}
 
 #ifdef CONFIG_IDF_TARGET_LINUX
 #include "lgfx_linux.h"
 #include <SDL2/SDL.h>
 #else
+// ESP32: Include LovyanGFX with CVBS support
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#include <lgfx/v1/platforms/esp32/Panel_CVBS.hpp>
+
+// LGFX class for ESP32 with CVBS output
+class LGFX : public lgfx::LGFX_Device
+{
+public:
+  lgfx::Panel_CVBS _panel_instance;
+
+  LGFX(uint16_t width, uint16_t height)
+  {
+    {
+      auto cfg = _panel_instance.config();
+      cfg.memory_width  = width;
+      cfg.memory_height = height;
+      cfg.panel_width  = width - 32;
+      cfg.panel_height = height - 32;
+      cfg.offset_x = 16;
+      cfg.offset_y = 16;
+      _panel_instance.config(cfg);
+    }
+
+    {
+      auto cfg = _panel_instance.config_detail();
+      cfg.signal_type = cfg.signal_type_t::NTSC_J;
+      cfg.pin_dac = 25;
+      cfg.use_psram = 1;
+      cfg.output_level = 128;
+      _panel_instance.config_detail(cfg);
+    }
+
+    setPanel(&_panel_instance);
+  }
+};
+
+extern void gfx_test(void);
 #endif
+
+#include "display_interface.h"
+#include "graphics_handler.h"
+
+extern "C" {
+#include "input_handler.h"
+#include "input_socket.h"
+#include "fmrb_link_protocol.h"
+#include "fmrb_gfx.h"
+}
 
 static const char *TAG = "graphics_task";
 static volatile int task_running = 0;
@@ -25,8 +63,13 @@ static volatile int task_running = 0;
 static volatile int display_initialized = 0;
 static uint16_t display_width = 480;   // Default values
 static uint16_t display_height = 320;
-LGFX* g_lgfx = nullptr; // Global LGFX instance (not static, shared with graphics_handler.cpp)
 
+// Global LGFX instance (shared with graphics_handler.cpp)
+#ifdef CONFIG_IDF_TARGET_LINUX
+LGFX* g_lgfx = nullptr;
+#else
+lgfx::LGFX_Device* g_lgfx = nullptr;
+#endif
 
 // Callback function called by socket_server when display init message is received
 extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth) {
@@ -52,10 +95,14 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
     if (panel) {
         panel->setShortcutKeymod(static_cast<SDL_Keymod>(KMOD_CTRL));  // Require Ctrl key for L/R rotation
     }
+#else
+#if 0
+    lgfx_test();
+    return;
+#endif
 #endif
 
     ESP_LOGI(TAG, "Graphics initialized with LovyanGFX (%dx%d, %d-bit RGB)\n", width, height, color_depth);
-
     // Initialize graphics handler (creates back buffer)
     if (graphics_handler_init() < 0) {
         ESP_LOGE(TAG, "Graphics handler initialization failed\n");

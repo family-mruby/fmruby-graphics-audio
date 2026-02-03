@@ -74,7 +74,7 @@ extern "C" int app_main(void)
     );
 
 
-    printf("Creating LGFX user_func...\n");
+    printf("Creating LGFX user_func for SDL2...\n");
     return lgfx::Panel_sdl::main(user_func);
 }
 

@@ -51,11 +51,7 @@ typedef  unsigned short uint16;
 typedef  unsigned int   uint32;
 
 #ifndef __cplusplus
-typedef enum
-{
-   false = 0,
-   true = 1
-} bool;
+#include <stdbool.h>
 
 #include "stdlib.h"
 #ifndef  NULL
