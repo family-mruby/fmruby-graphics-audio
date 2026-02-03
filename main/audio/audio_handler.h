@@ -40,6 +40,8 @@ fmrb_audio_status_t audio_handler_get_status(void);
  */
 void audio_handler_set_volume(uint8_t volume);
 
+void audio_check_impl(void);
+
 #ifdef __cplusplus
 }
 #endif

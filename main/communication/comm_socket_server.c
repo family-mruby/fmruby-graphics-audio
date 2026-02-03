@@ -434,3 +434,36 @@ int socket_server_process(void) {
 int socket_server_is_running(void) {
     return server_running;
 }
+
+// comm_interface implementation for Linux/socket
+#include "comm_interface.h"
+
+static int comm_socket_init(void) {
+    return socket_server_start();
+}
+
+static int comm_socket_process(void) {
+    return socket_server_process();
+}
+
+static int comm_socket_send(const uint8_t *data, size_t len) {
+    // Socket server is receive-only in current implementation
+    (void)data;
+    (void)len;
+    return 0;
+}
+
+static void comm_socket_cleanup(void) {
+    socket_server_stop();
+}
+
+static const comm_interface_t socket_comm_impl = {
+    .init = comm_socket_init,
+    .process = comm_socket_process,
+    .send = comm_socket_send,
+    .cleanup = comm_socket_cleanup
+};
+
+const comm_interface_t* comm_get_interface(void) {
+    return &socket_comm_impl;
+}

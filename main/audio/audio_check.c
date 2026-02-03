@@ -14,8 +14,8 @@
 #include "soc/rtc.h"
 
 #include "string.h"
-#include "nofrendo/noftypes.h"
-#include "nofrendo/nes_apu.h"
+#include "noftypes.h"
+#include "nes_apu.h"
 #include "apu_if.h"
 
 // デバッグログ制御フラグ
@@ -171,7 +171,7 @@ esp_err_t mount_filesystem()
   return e;
 }
 
-extern "C" void audio_task_impl(void){
+void audio_check_impl(void){
   printf("emu_task on core %d\n", xPortGetCoreID());
   uint32_t cpu_freq_mhz = CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
 

@@ -588,10 +588,11 @@ namespace lgfx
       SDL_RendererInfo info;
       if (0 == SDL_GetRendererInfo(monitor.renderer, &info)) {
         // ステップ実行中はVSYNCを待機しない
-        if (((bool)(info.flags & SDL_RENDERER_PRESENTVSYNC)) == step_exec)
-        {
-          SDL_RenderSetVSync(monitor.renderer, !step_exec);
-        }
+        // SDL_RenderSetVSync is only available in SDL 2.0.18+
+        // if (((bool)(info.flags & SDL_RENDERER_PRESENTVSYNC)) == step_exec)
+        // {
+        //   SDL_RenderSetVSync(monitor.renderer, !step_exec);
+        // }
       }
       {
         int red   = 0;

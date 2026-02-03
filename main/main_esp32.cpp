@@ -19,8 +19,6 @@ void lgfx_test_resolution(int width, int height);
 void lgfx_print_memory_info(void);
 void lgfx_draw_test(void);
 void lgfx_print_detailed_memory_info(void);
-
-void audio_task_impl(void);
 }
 
 void gfx_test()
@@ -99,52 +97,7 @@ void gfx_task(void* arg) {
 // Core1で動作するタスク2: ユーザーインターフェース処理用
 void audio_task(void* arg) {
   printf("Audio task started on core %d\n", xPortGetCoreID());
-  audio_task_impl();
 }
-
-// Core1で動作するSPI通信タスク
-void spi_task(void* arg) {
-  printf("SPI task started on core %d\n", xPortGetCoreID());
-
-  const comm_interface_t* comm = comm_get_interface();
-
-  // SPI初期化
-  if (comm->init() != 0) {
-    printf("SPI initialization failed!\n");
-    vTaskDelete(NULL);
-    return;
-  }
-
-  printf("SPI initialized successfully, starting communication loop...\n");
-
-  // テスト用のダミーデータ
-  uint8_t test_data[] = {0xAA, 0x55, 0x01, 0x02, 0x03, 0x04};
-  int send_count = 0;
-
-  while (1) {
-    // 通信処理
-    int processed = comm->process();
-    if (processed < 0) {
-      printf("SPI process error\n");
-    }
-
-    // 5秒ごとにテストデータを送信
-    send_count++;
-    if (send_count >= 500) {  // 10ms * 500 = 5秒
-      printf("SPI: Sending test data...\n");
-      int sent = comm->send(test_data, sizeof(test_data));
-      if (sent > 0) {
-        printf("SPI: Sent %d bytes\n", sent);
-      } else {
-        printf("SPI: Send failed\n");
-      }
-      send_count = 0;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-}
-
 
 extern "C" void app_main(void)
 {
@@ -167,8 +120,8 @@ extern "C" void app_main(void)
   // Core0でタスク1を起動
   printf("Creating gfx task on Core0...\n");
   xTaskCreatePinnedToCore(
-      gfx_task,        // タスク関数
-      "gfx_task",      // タスク名
+      graphics_task,        // タスク関数
+      "graphics_task",      // タスク名
       8192,              // スタックサイズ
       NULL,              // パラメータ
       5,                 // 優先度
@@ -191,8 +144,8 @@ extern "C" void app_main(void)
   // Core0でSPIタスクを起動
   printf("Creating SPI task on Core1...\n");
   xTaskCreatePinnedToCore(
-      spi_task,             // タスク関数
-      "spi_task",           // タスク名
+      conn_task,             // タスク関数
+      "conn_task",           // タスク名
       4096,              // スタックサイズ
       NULL,              // パラメータ
       5,                 // 優先度
@@ -214,4 +167,10 @@ extern "C" void app_main(void)
 
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
+}
+
+
+// Callback function
+extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth) {
+  return 0;
 }

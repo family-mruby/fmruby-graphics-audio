@@ -55,18 +55,12 @@ const display_interface_t* display_get_interface(void);
 
 // Global LGFX instance (defined in display implementation)
 // Note: This is a C++ pointer, so only accessible from C++ code
-#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
-// For Linux/SDL: LGFX is a type alias for lgfx::v1::LovyanGFX
-namespace lgfx {
-    inline namespace v1 {
-        class LovyanGFX;
-    }
-}
-using LGFX = lgfx::v1::LovyanGFX;
-#else
-// For ESP32: LGFX is defined by LGFX_AUTODETECT.hpp
-// Don't declare anything here - LGFX must be defined by including LGFX_AUTODETECT.hpp first
-#endif
+// LGFX class must be defined before including this header:
+// - Linux/SDL: include "lgfx_linux.h" first
+// - ESP32: include LGFX_AUTODETECT.hpp or custom LGFX class first
+
+// Forward declaration only (no type alias to avoid conflicts)
+class LGFX;
 extern LGFX* g_lgfx;
 #endif
 

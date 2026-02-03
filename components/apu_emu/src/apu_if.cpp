@@ -1,5 +1,5 @@
 #include "apu_if.h"
-#include "nofrendo/noftypes.h"
+#include "noftypes.h"
 #include "nes_apu.h"
 #include "esp_heap_caps.h"
 

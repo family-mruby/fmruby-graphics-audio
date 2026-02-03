@@ -1,40 +1,39 @@
 set(SRCS
     "main.cpp"
+    "tasks/audio_task.c"
+    "tasks/comm_task.c"
+    "tasks/graphics_task.cpp"
+    "common/fmrb_link_cobs.c"
 )
 
 # Add platform-specific sources
 if(CONFIG_IDF_TARGET_LINUX)
     # Linux/SDL platform implementation
     list(APPEND SRCS
-        "../components/LovyanGFX/src/lgfx/v1/platforms/sdl/Panel_sdl.cpp"
-        "../components/LovyanGFX/src/lgfx/v1/platforms/sdl/common.cpp"
-        "handlers/graphics_handler.cpp"
-        "handlers/audio_handler_sdl2.c"
-        "handlers/input_handler.c"
-        "handlers/input_socket.c"
-        "communication/comm_socket.c"
-        "common/fmrb_link_cobs.c"
+        "graphics/graphics_handler.cpp"
+        "audio/audio_handler_sdl2.c"
+        "input_linux/input_handler.c"
+        "input_linux/input_socket.c"
+        "communication/comm_socket_server.c"
     )
 else()
     # ESP32 platform implementation
     list(APPEND SRCS
-        "lgfx_wrapper.cpp"
-        "audio.cpp"
-        "communication/comm_spi.c"
+        "graphics/lgfx_test.cpp"
+        "audio/audio_check.c"
+        "communication/comm_spi_slave.c"
     )
 endif()
 
 set(INCLUDE_DIRS
     "."
-    "communication"
-    "handlers"
+    "audio"
     "common"
+    "communication"
+    "graphics"
+    "input_linux"
+    "tasks"
 )
-
-# Add apu_emu include directory only for ESP32
-if(NOT CONFIG_IDF_TARGET_LINUX)
-    list(APPEND INCLUDE_DIRS "../components/apu_emu/src")
-endif()
 
 set(REQUIRES
     LovyanGFX
