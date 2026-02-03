@@ -1,8 +1,8 @@
-#include "sdkconfig.h"
-#include "comm_interface.h"
-
-#ifdef CONFIG_IDF_TARGET_LINUX
-
+#include "socket_server.h"
+#include "graphics_handler.h"
+#include "audio_handler.h"
+#include "fmrb_link_cobs.h"
+#include "fmrb_link_protocol.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,52 +13,31 @@
 #include <fcntl.h>
 #include <msgpack.h>
 
-// Forward declarations from host/common
-extern size_t fmrb_link_cobs_encode(const uint8_t *input, size_t input_len, uint8_t *output);
-extern ssize_t fmrb_link_cobs_decode(const uint8_t *input, size_t input_len, uint8_t *output);
-extern uint32_t fmrb_link_crc32_update(uint32_t crc, const uint8_t *data, size_t len);
+// Socket server log levels
+typedef enum {
+    SOCK_LOG_NONE = 0,     // No logging
+    SOCK_LOG_ERROR = 1,    // Error messages only
+    SOCK_LOG_INFO = 2,     // Info + Error
+    SOCK_LOG_DEBUG = 3,    // Debug + Info + Error (verbose)
+} sock_log_level_t;
 
-// Forward declarations for handlers
-extern int graphics_handler_process_command(uint8_t type, uint8_t sub_cmd, uint8_t seq,
-                                            const uint8_t *payload, size_t payload_len);
-extern int audio_handler_process_command(const uint8_t *cmd_buffer, size_t cmd_len);
+// Current log level (default: errors only)
+static sock_log_level_t g_sock_log_level = SOCK_LOG_ERROR;
+
+// Log macros
+#define SOCK_LOG_E(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_ERROR) { fprintf(stderr, "[SOCK_ERR] " fmt "\n", ##__VA_ARGS__); } } while(0)
+#define SOCK_LOG_I(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_INFO) { printf("[SOCK_INFO] " fmt "\n", ##__VA_ARGS__); } } while(0)
+#define SOCK_LOG_D(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_DEBUG) { printf("[SOCK_DBG] " fmt "\n", ##__VA_ARGS__); } } while(0)
+
+// Forward declaration - implemented in main.cpp
 extern int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth);
 
-// Protocol definitions (from fmrb_link_protocol.h)
-#define FMRB_LINK_PROTOCOL_VERSION 1
-#define FMRB_LINK_TYPE_CONTROL    0x01
-#define FMRB_LINK_TYPE_GRAPHICS   0x02
-#define FMRB_LINK_TYPE_AUDIO      0x03
-#define FMRB_LINK_CONTROL_VERSION       0x01
-#define FMRB_LINK_CONTROL_INIT_DISPLAY  0x02
-
-typedef struct {
-    uint16_t width;
-    uint16_t height;
-    uint8_t color_depth;
-} __attribute__((packed)) fmrb_control_init_display_t;
-
-// Socket server state
 static int server_fd = -1;
 static int client_fd = -1;
 static int server_running = 0;
 
 #define SOCKET_PATH "/tmp/fmrb_socket"
 #define BUFFER_SIZE 4096
-
-// Log levels
-typedef enum {
-    SOCK_LOG_NONE = 0,
-    SOCK_LOG_ERROR = 1,
-    SOCK_LOG_INFO = 2,
-    SOCK_LOG_DEBUG = 3,
-} sock_log_level_t;
-
-static sock_log_level_t g_sock_log_level = SOCK_LOG_ERROR;
-
-#define SOCK_LOG_E(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_ERROR) { fprintf(stderr, "[SOCK_ERR] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define SOCK_LOG_I(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_INFO) { printf("[SOCK_INFO] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define SOCK_LOG_D(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_DEBUG) { printf("[SOCK_DBG] " fmt "\n", ##__VA_ARGS__); } } while(0)
 
 static int create_socket_server(void) {
     struct sockaddr_un addr;
@@ -119,81 +98,23 @@ static int accept_connection(void) {
     return 0;
 }
 
-static int socket_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
-    if (client_fd == -1) {
-        fprintf(stderr, "Cannot send ACK: no client connected\n");
-        return -1;
-    }
-
-    // Build msgpack response: [type, seq, sub_cmd=0xF0 (ACK), payload]
-    msgpack_sbuffer sbuf;
-    msgpack_sbuffer_init(&sbuf);
-    msgpack_packer pk;
-    msgpack_packer_init(&pk, &sbuf, msgpack_sbuffer_write);
-
-    msgpack_pack_array(&pk, 4);
-    msgpack_pack_uint8(&pk, type);
-    msgpack_pack_uint8(&pk, seq);
-    msgpack_pack_uint8(&pk, 0xF0);  // ACK sub-command
-
-    if (response_data && response_len > 0) {
-        msgpack_pack_bin(&pk, response_len);
-        msgpack_pack_bin_body(&pk, response_data, response_len);
-    } else {
-        msgpack_pack_nil(&pk);
-    }
-
-    // Add CRC32
-    uint32_t crc = fmrb_link_crc32_update(0, (const uint8_t*)sbuf.data, sbuf.size);
-    size_t msg_with_crc_len = sbuf.size + sizeof(uint32_t);
-    uint8_t *msg_with_crc = (uint8_t*)malloc(msg_with_crc_len);
-    if (!msg_with_crc) {
-        msgpack_sbuffer_destroy(&sbuf);
-        return -1;
-    }
-
-    memcpy(msg_with_crc, sbuf.data, sbuf.size);
-    memcpy(msg_with_crc + sbuf.size, &crc, sizeof(uint32_t));
-    msgpack_sbuffer_destroy(&sbuf);
-
-    // COBS encode
-    uint8_t encoded_buffer[BUFFER_SIZE];
-    size_t encoded_len = fmrb_link_cobs_encode(msg_with_crc, msg_with_crc_len, encoded_buffer);
-    free(msg_with_crc);
-
-    if (encoded_len == 0) {
-        return -1;
-    }
-
-    // Add terminator
-    encoded_buffer[encoded_len] = 0x00;
-    encoded_len++;
-
-    // Send
-    ssize_t written = write(client_fd, encoded_buffer, encoded_len);
-    if (written != (ssize_t)encoded_len) {
-        fprintf(stderr, "Failed to write ACK response\n");
-        return -1;
-    }
-
-    SOCK_LOG_D("ACK sent: type=%u seq=%u response_len=%u", type, seq, response_len);
-    return 0;
-}
-
 static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
+    // Allocate buffer for decoded data (COBS + CRC32)
     uint8_t *decoded_buffer = (uint8_t*)malloc(encoded_len);
     if (!decoded_buffer) {
+        fprintf(stderr, "Failed to allocate decode buffer\n");
         return -1;
     }
 
     // COBS decode
     ssize_t decoded_len = fmrb_link_cobs_decode(encoded_data, encoded_len, decoded_buffer);
     if (decoded_len < (ssize_t)sizeof(uint32_t)) {
+        fprintf(stderr, "COBS decode failed or frame too small\n");
         free(decoded_buffer);
         return -1;
     }
 
-    // Separate msgpack and CRC32
+    // Separate msgpack data and CRC32
     size_t msgpack_len = decoded_len - sizeof(uint32_t);
     uint8_t *msgpack_data = decoded_buffer;
     uint32_t received_crc;
@@ -202,17 +123,18 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     // Verify CRC32
     uint32_t calculated_crc = fmrb_link_crc32_update(0, msgpack_data, msgpack_len);
     if (received_crc != calculated_crc) {
-        fprintf(stderr, "CRC32 mismatch\n");
+        fprintf(stderr, "CRC32 mismatch: expected=0x%08x, actual=0x%08x\n", calculated_crc, received_crc);
         free(decoded_buffer);
         return -1;
     }
 
-    // Unpack msgpack: [type, seq, sub_cmd, payload]
+    // Unpack msgpack array: [type, seq, sub_cmd, payload]
     msgpack_unpacked msg;
     msgpack_unpacked_init(&msg);
     msgpack_unpack_return ret = msgpack_unpack_next(&msg, (const char*)msgpack_data, msgpack_len, NULL);
 
     if (ret != MSGPACK_UNPACK_SUCCESS) {
+        fprintf(stderr, "msgpack unpack failed\n");
         msgpack_unpacked_destroy(&msg);
         free(decoded_buffer);
         return -1;
@@ -220,6 +142,7 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
 
     msgpack_object root = msg.data;
     if (root.type != MSGPACK_OBJECT_ARRAY || root.via.array.size != 4) {
+        fprintf(stderr, "Invalid msgpack format: not array or size != 4\n");
         msgpack_unpacked_destroy(&msg);
         free(decoded_buffer);
         return -1;
@@ -238,34 +161,79 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
         payload_len = root.via.array.ptr[3].via.bin.size;
     }
 
+    // Debug log for GRAPHICS commands (controlled by log level)
+    if (type == FMRB_LINK_TYPE_GRAPHICS) {
+        SOCK_LOG_D("RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu msgpack_len=%zu",
+               type, seq, sub_cmd, payload_len, msgpack_len);
+        if (g_sock_log_level >= SOCK_LOG_DEBUG) {
+            printf("RX msgpack bytes (%zu): ", msgpack_len);
+            for (size_t i = 0; i < msgpack_len && i < 64; i++) {
+                printf("%02X ", msgpack_data[i]);
+                if ((i + 1) % 16 == 0) printf("\n");
+            }
+            if (msgpack_len > 0) printf("\n");
+            fflush(stdout);
+        }
+    }
+
+    // sub_cmd contains the command type, payload contains only structure data
+    // Pass sub_cmd as cmd_type to handlers
+    const uint8_t *cmd_buffer = payload;
+    size_t cmd_len = payload_len;
+
     // Process based on type
     int result = 0;
     switch (type & 0x7F) {
         case FMRB_LINK_TYPE_CONTROL:
-            if (sub_cmd == FMRB_LINK_CONTROL_VERSION && payload_len >= 1) {
-                uint8_t remote_version = payload[0];
+            // For control commands, sub_cmd is the command type
+            if (sub_cmd == FMRB_LINK_CONTROL_VERSION && cmd_len >= 1) {
+                // Version check request
+                uint8_t remote_version = cmd_buffer[0];
                 uint8_t local_version = FMRB_LINK_PROTOCOL_VERSION;
-                printf("VERSION check: remote=%d, local=%d\n", remote_version, local_version);
-                result = socket_send_ack(type, seq, &local_version, sizeof(local_version));
-            } else if (sub_cmd == FMRB_LINK_CONTROL_INIT_DISPLAY && payload_len >= sizeof(fmrb_control_init_display_t)) {
-                const fmrb_control_init_display_t *init_cmd = (const fmrb_control_init_display_t*)payload;
-                printf("INIT_DISPLAY: %dx%d, %d-bit\n", init_cmd->width, init_cmd->height, init_cmd->color_depth);
-                result = init_display_callback(init_cmd->width, init_cmd->height, init_cmd->color_depth);
+
+                printf("Received VERSION check: remote=%d, local=%d, seq=%u, client_fd=%d\n",
+                       remote_version, local_version, seq, client_fd);
+
+                // Send version response via ACK with version in payload
+                result = socket_server_send_ack(type, seq, &local_version, sizeof(local_version));
+
                 if (result == 0) {
-                    socket_send_ack(type, seq, NULL, 0);
+                    printf("VERSION ACK sent successfully\n");
+                } else {
+                    fprintf(stderr, "VERSION ACK send failed: result=%d\n", result);
                 }
+
+                if (remote_version != local_version) {
+                    fprintf(stderr, "WARNING: Protocol version mismatch! remote=%d, local=%d\n",
+                            remote_version, local_version);
+                }
+            } else if (sub_cmd == FMRB_LINK_CONTROL_INIT_DISPLAY && cmd_len >= sizeof(fmrb_control_init_display_t)) {
+                const fmrb_control_init_display_t *init_cmd = (const fmrb_control_init_display_t*)cmd_buffer;
+                printf("Received INIT_DISPLAY: %dx%d, %d-bit\n",
+                       init_cmd->width, init_cmd->height, init_cmd->color_depth);
+                result = init_display_callback(init_cmd->width, init_cmd->height, init_cmd->color_depth);
+
+                // Send ACK to prevent retransmission
+                if (result == 0) {
+                    socket_server_send_ack(type, seq, NULL, 0);
+                }
+            } else {
+                fprintf(stderr, "Unknown control command: 0x%02x\n", sub_cmd);
+                result = -1;
             }
             break;
 
         case FMRB_LINK_TYPE_GRAPHICS:
-            result = graphics_handler_process_command(type, sub_cmd, seq, payload, payload_len);
+            // Pass msg_type and sub_cmd as graphics cmd_type
+            result = graphics_handler_process_command(type, sub_cmd, seq, cmd_buffer, cmd_len);
+            // Send ACK to prevent retransmission
             if (result == 0) {
-                socket_send_ack(type, seq, NULL, 0);
+                socket_server_send_ack(type, seq, NULL, 0);
             }
             break;
 
         case FMRB_LINK_TYPE_AUDIO:
-            result = audio_handler_process_command(payload, payload_len);
+            result = audio_handler_process_command(cmd_buffer, cmd_len);
             break;
 
         default:
@@ -274,15 +242,19 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
             break;
     }
 
+    // cmd_buffer now points to payload inside decoded_buffer, don't free separately
     msgpack_unpacked_destroy(&msg);
     free(decoded_buffer);
     return result;
 }
 
+// Legacy process_message() removed - now using msgpack + COBS protocol via process_cobs_frame()
+
 static int read_message(void) {
     static uint8_t buffer[BUFFER_SIZE];
     static size_t buffer_pos = 0;
 
+    // Read data into buffer
     ssize_t bytes_read = read(client_fd, buffer + buffer_pos, BUFFER_SIZE - buffer_pos);
     if (bytes_read <= 0) {
         if (bytes_read == 0) {
@@ -299,31 +271,37 @@ static int read_message(void) {
 
     buffer_pos += bytes_read;
 
-    // Process complete COBS frames
+    // Process complete COBS frames (terminated by 0x00)
     int messages_processed = 0;
     size_t scan_pos = 0;
 
     while (scan_pos < buffer_pos) {
+        // Look for frame terminator (0x00)
         size_t frame_end = scan_pos;
         while (frame_end < buffer_pos && buffer[frame_end] != 0x00) {
             frame_end++;
         }
 
         if (frame_end >= buffer_pos) {
+            // No complete frame yet
             break;
         }
 
+        // Found a complete frame: [scan_pos .. frame_end-1] + 0x00 at frame_end
         size_t frame_len = frame_end - scan_pos;
+
         if (frame_len > 0) {
+            // Process COBS frame (without the 0x00 terminator)
             if (process_cobs_frame(buffer + scan_pos, frame_len) == 0) {
                 messages_processed++;
             }
         }
 
+        // Move to next frame (skip the 0x00 terminator)
         scan_pos = frame_end + 1;
     }
 
-    // Remove processed data
+    // Remove processed data from buffer
     if (scan_pos > 0) {
         size_t remaining = buffer_pos - scan_pos;
         if (remaining > 0) {
@@ -332,6 +310,7 @@ static int read_message(void) {
         buffer_pos = remaining;
     }
 
+    // Check for buffer overflow
     if (buffer_pos >= BUFFER_SIZE - 1) {
         fprintf(stderr, "Buffer overflow, resetting\n");
         buffer_pos = 0;
@@ -340,9 +319,74 @@ static int read_message(void) {
     return messages_processed;
 }
 
-// Implementation of comm_interface_t methods
+// Send ACK response with optional payload
+int socket_server_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
+    if (client_fd == -1) {
+        fprintf(stderr, "Cannot send ACK: no client connected\n");
+        return -1;
+    }
 
-static int socket_init(void) {
+    // Build msgpack response: [type, seq, sub_cmd=0xF0 (ACK), payload]
+    msgpack_sbuffer sbuf;
+    msgpack_sbuffer_init(&sbuf);
+    msgpack_packer pk;
+    msgpack_packer_init(&pk, &sbuf, msgpack_sbuffer_write);
+
+    // Pack as array: [type, seq, 0xF0 (ACK), response_data]
+    msgpack_pack_array(&pk, 4);
+    msgpack_pack_uint8(&pk, type);
+    msgpack_pack_uint8(&pk, seq);
+    msgpack_pack_uint8(&pk, 0xF0);  // ACK sub-command
+
+    // Pack response data as binary
+    if (response_data && response_len > 0) {
+        msgpack_pack_bin(&pk, response_len);
+        msgpack_pack_bin_body(&pk, response_data, response_len);
+    } else {
+        msgpack_pack_nil(&pk);
+    }
+
+    // Add CRC32 to msgpack message
+    uint32_t crc = fmrb_link_crc32_update(0, (const uint8_t*)sbuf.data, sbuf.size);
+    size_t msg_with_crc_len = sbuf.size + sizeof(uint32_t);
+    uint8_t *msg_with_crc = (uint8_t*)malloc(msg_with_crc_len);
+    if (!msg_with_crc) {
+        msgpack_sbuffer_destroy(&sbuf);
+        fprintf(stderr, "Failed to allocate buffer for CRC\n");
+        return -1;
+    }
+
+    memcpy(msg_with_crc, sbuf.data, sbuf.size);
+    memcpy(msg_with_crc + sbuf.size, &crc, sizeof(uint32_t));
+    msgpack_sbuffer_destroy(&sbuf);
+
+    // COBS encode the msgpack + CRC32
+    uint8_t encoded_buffer[BUFFER_SIZE];
+    size_t encoded_len = fmrb_link_cobs_encode(msg_with_crc, msg_with_crc_len, encoded_buffer);
+    free(msg_with_crc);
+
+    if (encoded_len == 0) {
+        fprintf(stderr, "COBS encode failed for ACK\n");
+        return -1;
+    }
+
+    // Add 0x00 terminator
+    encoded_buffer[encoded_len] = 0x00;
+    encoded_len++;
+
+    // Send to client
+    ssize_t written = write(client_fd, encoded_buffer, encoded_len);
+    if (written != (ssize_t)encoded_len) {
+        fprintf(stderr, "Failed to write ACK response: %zd/%zu (client_fd=%d, errno=%d: %s)\n",
+                written, encoded_len, client_fd, errno, strerror(errno));
+        return -1;
+    }
+
+    SOCK_LOG_D("ACK sent: type=%u seq=%u response_len=%u", type, seq, response_len);
+    return 0;
+}
+
+int socket_server_start(void) {
     if (server_running) {
         return 0;
     }
@@ -355,39 +399,7 @@ static int socket_init(void) {
     return 0;
 }
 
-static int socket_send(const uint8_t *data, size_t len) {
-    if (client_fd == -1) {
-        return -1;
-    }
-    return write(client_fd, data, len);
-}
-
-static int socket_receive(uint8_t *buf, size_t buf_size) {
-    if (client_fd == -1) {
-        return 0;
-    }
-    return read(client_fd, buf, buf_size);
-}
-
-static int socket_process(void) {
-    if (!server_running) {
-        return 0;
-    }
-
-    accept_connection();
-
-    if (client_fd != -1) {
-        return read_message();
-    }
-
-    return 0;
-}
-
-static int socket_is_running(void) {
-    return server_running;
-}
-
-static void socket_cleanup(void) {
+void socket_server_stop(void) {
     if (client_fd != -1) {
         close(client_fd);
         client_fd = -1;
@@ -403,18 +415,22 @@ static void socket_cleanup(void) {
     printf("Socket server stopped\n");
 }
 
-static const comm_interface_t socket_comm = {
-    .init = socket_init,
-    .send = socket_send,
-    .receive = socket_receive,
-    .process = socket_process,
-    .send_ack = socket_send_ack,
-    .is_running = socket_is_running,
-    .cleanup = socket_cleanup,
-};
+int socket_server_process(void) {
+    if (!server_running) {
+        return 0;
+    }
 
-const comm_interface_t* comm_get_interface(void) {
-    return &socket_comm;
+    // Try to accept new connections
+    accept_connection();
+
+    // Process messages from connected client
+    if (client_fd != -1) {
+        return read_message();
+    }
+
+    return 0;
 }
 
-#endif // CONFIG_IDF_TARGET_LINUX
+int socket_server_is_running(void) {
+    return server_running;
+}

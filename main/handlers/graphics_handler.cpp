@@ -12,10 +12,18 @@ extern "C" {
 #include "graphics_handler.h"
 #include "fmrb_link_protocol.h"
 #include "fmrb_gfx.h"
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+#include "socket_server.h"  // For socket_server_send_ack
+#endif
 }
 
+#if !defined(CONFIG_IDF_TARGET_LINUX) && !defined(LGFX_USE_SDL)
 #include "../display/display_interface.h"
 #include "../communication/comm_interface.h"
+#else
+// Linux/SDL builds - include LGFX definition
+#include "lgfx_linux.h"
+#endif
 
 // Current log level (can be controlled via environment variable or compile-time)
 static gfx_log_level_t g_gfx_log_level = GFX_LOG_ERROR;  // Default: errors only
@@ -735,7 +743,11 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 GFX_LOG_I("Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, (int)cmd->width, (int)cmd->height, (int)cmd->z_order);
 
                 // Send ACK with canvas_id
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+                socket_server_send_ack(msg_type, seq, (const uint8_t*)&canvas_id, sizeof(canvas_id));
+#else
                 COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&canvas_id, sizeof(canvas_id));
+#endif
                 return 0;
             }
             break;
