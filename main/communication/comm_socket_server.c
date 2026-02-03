@@ -453,14 +453,24 @@ static int comm_socket_send(const uint8_t *data, size_t len) {
     return 0;
 }
 
+static int comm_socket_receive(uint8_t *buf, size_t buf_size) {
+    // Socket server handles receive internally via process()
+    (void)buf;
+    (void)buf_size;
+    return 0;  // Not exposed in current architecture
+}
+
 static void comm_socket_cleanup(void) {
     socket_server_stop();
 }
 
 static const comm_interface_t socket_comm_impl = {
     .init = comm_socket_init,
-    .process = comm_socket_process,
     .send = comm_socket_send,
+    .receive = comm_socket_receive,
+    .process = comm_socket_process,
+    .send_ack = socket_server_send_ack,
+    .is_running = socket_server_is_running,
     .cleanup = comm_socket_cleanup
 };
 

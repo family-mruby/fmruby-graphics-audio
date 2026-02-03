@@ -61,13 +61,7 @@ void comm_task(void *pvParameters) {
     comm_test();
     return;
 #else
-    ESP_LOGE(TAG, "Comm_task is not implemented.");
-    while (task_running) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    return;
-#endif
-
+    // Linux: Use comm_interface for socket communication
     const comm_interface_t *comm = COMM_INTERFACE;
     if (!comm) {
         ESP_LOGE(TAG, "Failed to get communication interface");
@@ -75,19 +69,32 @@ void comm_task(void *pvParameters) {
         return;
     }
 
+    // Initialize communication interface (socket server)
+    if (comm->init() < 0) {
+        ESP_LOGE(TAG, "Communication interface initialization failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Communication interface initialized successfully");
+
     // Main communication processing loop
     while (task_running) {
         // Process incoming messages
         int result = comm->process();
 
         if (result < 0) {
-            ESP_LOGW(TAG, "Communication process error");
+            //ESP_LOGW(TAG, "Communication process error");
         }
 
-        // Small delay to prevent busy waiting
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // Small delay to prevent busy waiting (~60 FPS)
+        vTaskDelay(pdMS_TO_TICKS(16));
     }
+
+    // Cleanup communication interface
+    comm->cleanup();
 
     ESP_LOGI(TAG, "Communication task stopped");
     vTaskDelete(NULL);
+#endif
 }
