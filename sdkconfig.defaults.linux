@@ -1,0 +1,9 @@
+# Linux-specific configuration for ESP-IDF simulation
+
+# Increase stack sizes for graphics operations
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=65536
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
