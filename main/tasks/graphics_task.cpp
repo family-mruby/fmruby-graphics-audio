@@ -96,7 +96,7 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
         panel->setShortcutKeymod(static_cast<SDL_Keymod>(KMOD_CTRL));  // Require Ctrl key for L/R rotation
     }
 #else
-#if 0
+#if ENABLE_GRAPHICS_TEST
     lgfx_test();
     return;
 #endif

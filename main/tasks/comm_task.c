@@ -32,18 +32,18 @@ void comm_test(void) {
       printf("SPI process error\n");
     }
 
-    // 5秒ごとにテストデータを送信
-    send_count++;
-    if (send_count >= 500) {  // 10ms * 500 = 5秒
-      printf("SPI: Sending test data...\n");
-      int sent = comm->send(test_data, sizeof(test_data));
-      if (sent > 0) {
-        printf("SPI: Sent %d bytes\n", sent);
-      } else {
-        printf("SPI: Send failed\n");
-      }
-      send_count = 0;
-    }
+    // // 5秒ごとにテストデータを送信
+    // send_count++;
+    // if (send_count >= 500) {  // 10ms * 500 = 5秒
+    //   printf("SPI: Sending test data...\n");
+    //   int sent = comm->send(test_data, sizeof(test_data));
+    //   if (sent > 0) {
+    //     printf("SPI: Sent %d bytes\n", sent);
+    //   } else {
+    //     printf("SPI: Send failed\n");
+    //   }
+    //   send_count = 0;
+    // }
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -56,12 +56,11 @@ void comm_task_stop(void) {
 void comm_task(void *pvParameters) {
     ESP_LOGI(TAG, "Communication task started on core %d", (int)xPortGetCoreID());
 
-#ifndef CONFIG_IDF_TARGET_LINUX
+#ifdef ENABLE_SPI_TEST
     //testing SPI
     comm_test();
     return;
-#else
-    // Linux: Use comm_interface for socket communication
+#endif
     const comm_interface_t *comm = COMM_INTERFACE;
     if (!comm) {
         ESP_LOGE(TAG, "Failed to get communication interface");
@@ -69,7 +68,7 @@ void comm_task(void *pvParameters) {
         return;
     }
 
-    // Initialize communication interface (socket server)
+    // Initialize communication interface 
     if (comm->init() < 0) {
         ESP_LOGE(TAG, "Communication interface initialization failed");
         vTaskDelete(NULL);
@@ -96,5 +95,4 @@ void comm_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "Communication task stopped");
     vTaskDelete(NULL);
-#endif
 }

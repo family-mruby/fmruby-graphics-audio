@@ -55,6 +55,20 @@ idf_component_register(
     INCLUDE_DIRS ${INCLUDE_DIRS}
 )
 
+# Test mode flags
+option(ENABLE_SPI_TEST "Enable SPI communication test" OFF)
+option(ENABLE_GRAPHICS_TEST "Enable graphics test" OFF)
+
+if(ENABLE_SPI_TEST)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ENABLE_SPI_TEST)
+    message(STATUS "SPI test enabled")
+endif()
+
+if(ENABLE_GRAPHICS_TEST)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ENABLE_GRAPHICS_TEST)
+    message(STATUS "Graphics test enabled")
+endif()
+
 # Linux-specific: Link SDL2 library and define LGFX_USE_SDL
 if(CONFIG_IDF_TARGET_LINUX)
     target_link_libraries(${COMPONENT_LIB} INTERFACE SDL2)
