@@ -1,5 +1,6 @@
 #include "socket_server.h"
-#include "fmrb_link_cobs.h"
+#include "fmrb_link_msgpack.h"
+#include "message_queue.h"
 #include "fmrb_link_protocol.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +10,6 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <msgpack.h>
 
 // Socket server log levels
 typedef enum {
@@ -27,22 +27,8 @@ static sock_log_level_t g_sock_log_level = SOCK_LOG_ERROR;
 #define SOCK_LOG_I(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_INFO) { printf("[SOCK_INFO] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define SOCK_LOG_D(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_DEBUG) { printf("[SOCK_DBG] " fmt "\n", ##__VA_ARGS__); } } while(0)
 
-// Message queue structure for decoded messages
-#define MAX_QUEUED_MESSAGES 128  // Increased from 8 to handle burst of drawing commands
-#define MAX_MESSAGE_PAYLOAD 4096
-
-typedef struct {
-    uint8_t type;
-    uint8_t seq;
-    uint8_t sub_cmd;
-    uint8_t payload[MAX_MESSAGE_PAYLOAD];
-    size_t payload_len;
-} queued_message_t;
-
-static queued_message_t message_queue[MAX_QUEUED_MESSAGES];
-static int queue_read_idx = 0;
-static int queue_write_idx = 0;
-static int queue_count = 0;
+// Message queue for decoded messages
+static message_queue_t g_message_queue;
 
 static int server_fd = -1;
 static int client_fd = -1;
@@ -110,110 +96,33 @@ static int accept_connection(void) {
     return 0;
 }
 
-// Enqueue a decoded message
-static int enqueue_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
-                           const uint8_t *payload, size_t payload_len) {
-    if (queue_count >= MAX_QUEUED_MESSAGES) {
-        SOCK_LOG_E("Message queue full, dropping message");
-        return -1;
-    }
-
-    if (payload_len > MAX_MESSAGE_PAYLOAD) {
-        SOCK_LOG_E("Message payload too large: %zu > %d", payload_len, MAX_MESSAGE_PAYLOAD);
-        return -1;
-    }
-
-    queued_message_t *msg = &message_queue[queue_write_idx];
-    msg->type = type;
-    msg->seq = seq;
-    msg->sub_cmd = sub_cmd;
-    msg->payload_len = payload_len;
-
-    if (payload && payload_len > 0) {
-        memcpy(msg->payload, payload, payload_len);
-    }
-
-    queue_write_idx = (queue_write_idx + 1) % MAX_QUEUED_MESSAGES;
-    queue_count++;
-
-    SOCK_LOG_D("Enqueued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
-               type, seq, sub_cmd, payload_len, queue_count, MAX_QUEUED_MESSAGES);
-    return 0;
-}
-
 static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
-    // Allocate buffer for decoded data (COBS + CRC32)
-    uint8_t *decoded_buffer = (uint8_t*)malloc(encoded_len);
-    if (!decoded_buffer) {
-        SOCK_LOG_E("Failed to allocate decode buffer");
+    uint8_t type, seq, sub_cmd;
+    uint8_t payload_buffer[MSG_QUEUE_MAX_PAYLOAD];
+    size_t payload_len;
+
+    // Decode frame using common msgpack module
+    int result = fmrb_link_decode_frame(encoded_data, encoded_len,
+                                       &type, &seq, &sub_cmd,
+                                       payload_buffer, sizeof(payload_buffer),
+                                       &payload_len);
+    if (result != 0) {
+        SOCK_LOG_E("Frame decode failed");
         return -1;
     }
 
-    // COBS decode
-    ssize_t decoded_len = fmrb_link_cobs_decode(encoded_data, encoded_len, decoded_buffer);
-    if (decoded_len < (ssize_t)sizeof(uint32_t)) {
-        SOCK_LOG_E("COBS decode failed or frame too small");
-        free(decoded_buffer);
-        return -1;
-    }
-
-    // Separate msgpack data and CRC32
-    size_t msgpack_len = decoded_len - sizeof(uint32_t);
-    uint8_t *msgpack_data = decoded_buffer;
-    uint32_t received_crc;
-    memcpy(&received_crc, decoded_buffer + msgpack_len, sizeof(uint32_t));
-
-    // Verify CRC32
-    uint32_t calculated_crc = fmrb_link_crc32_update(0, msgpack_data, msgpack_len);
-    if (received_crc != calculated_crc) {
-        SOCK_LOG_E("CRC32 mismatch: expected=0x%08x, actual=0x%08x", calculated_crc, received_crc);
-        free(decoded_buffer);
-        return -1;
-    }
-
-    // Unpack msgpack array: [type, seq, sub_cmd, payload]
-    msgpack_unpacked msg;
-    msgpack_unpacked_init(&msg);
-    msgpack_unpack_return ret = msgpack_unpack_next(&msg, (const char*)msgpack_data, msgpack_len, NULL);
-
-    if (ret != MSGPACK_UNPACK_SUCCESS) {
-        SOCK_LOG_E("msgpack unpack failed");
-        msgpack_unpacked_destroy(&msg);
-        free(decoded_buffer);
-        return -1;
-    }
-
-    msgpack_object root = msg.data;
-    if (root.type != MSGPACK_OBJECT_ARRAY || root.via.array.size != 4) {
-        SOCK_LOG_E("Invalid msgpack format: not array or size != 4");
-        msgpack_unpacked_destroy(&msg);
-        free(decoded_buffer);
-        return -1;
-    }
-
-    // Extract fields
-    uint8_t type = root.via.array.ptr[0].via.u64;
-    uint8_t seq = root.via.array.ptr[1].via.u64;
-    uint8_t sub_cmd = root.via.array.ptr[2].via.u64;
-
-    const uint8_t *payload = NULL;
-    size_t payload_len = 0;
-
-    if (root.via.array.ptr[3].type == MSGPACK_OBJECT_BIN) {
-        payload = (const uint8_t*)root.via.array.ptr[3].via.bin.ptr;
-        payload_len = root.via.array.ptr[3].via.bin.size;
-    }
-
-    // Debug log for message reception
     SOCK_LOG_D("RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
                type, seq, sub_cmd, payload_len);
 
-    // Enqueue the decoded message for upper layer processing
-    int result = enqueue_message(type, seq, sub_cmd, payload, payload_len);
+    // Enqueue the decoded message using common queue module
+    result = message_queue_enqueue(&g_message_queue, type, seq, sub_cmd,
+                                   payload_buffer, payload_len);
+    if (result != 0) {
+        SOCK_LOG_E("Failed to enqueue message");
+        return -1;
+    }
 
-    msgpack_unpacked_destroy(&msg);
-    free(decoded_buffer);
-    return result;
+    return 0;
 }
 
 // Legacy process_message() removed - now using msgpack + COBS protocol via process_cobs_frame()
@@ -290,63 +199,27 @@ static int read_message(void) {
 // Send ACK response with optional payload
 int socket_server_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
     if (client_fd == -1) {
-        fprintf(stderr, "Cannot send ACK: no client connected\n");
+        SOCK_LOG_E("Cannot send ACK: no client connected");
         return -1;
     }
 
-    // Build msgpack response: [type, seq, sub_cmd=0xF0 (ACK), payload]
-    msgpack_sbuffer sbuf;
-    msgpack_sbuffer_init(&sbuf);
-    msgpack_packer pk;
-    msgpack_packer_init(&pk, &sbuf, msgpack_sbuffer_write);
-
-    // Pack as array: [type, seq, 0xF0 (ACK), response_data]
-    msgpack_pack_array(&pk, 4);
-    msgpack_pack_uint8(&pk, type);
-    msgpack_pack_uint8(&pk, seq);
-    msgpack_pack_uint8(&pk, 0xF0);  // ACK sub-command
-
-    // Pack response data as binary
-    if (response_data && response_len > 0) {
-        msgpack_pack_bin(&pk, response_len);
-        msgpack_pack_bin_body(&pk, response_data, response_len);
-    } else {
-        msgpack_pack_nil(&pk);
-    }
-
-    // Add CRC32 to msgpack message
-    uint32_t crc = fmrb_link_crc32_update(0, (const uint8_t*)sbuf.data, sbuf.size);
-    size_t msg_with_crc_len = sbuf.size + sizeof(uint32_t);
-    uint8_t *msg_with_crc = (uint8_t*)malloc(msg_with_crc_len);
-    if (!msg_with_crc) {
-        msgpack_sbuffer_destroy(&sbuf);
-        fprintf(stderr, "Failed to allocate buffer for CRC\n");
-        return -1;
-    }
-
-    memcpy(msg_with_crc, sbuf.data, sbuf.size);
-    memcpy(msg_with_crc + sbuf.size, &crc, sizeof(uint32_t));
-    msgpack_sbuffer_destroy(&sbuf);
-
-    // COBS encode the msgpack + CRC32
     uint8_t encoded_buffer[BUFFER_SIZE];
-    size_t encoded_len = fmrb_link_cobs_encode(msg_with_crc, msg_with_crc_len, encoded_buffer);
-    free(msg_with_crc);
+    size_t encoded_len;
 
-    if (encoded_len == 0) {
-        fprintf(stderr, "COBS encode failed for ACK\n");
+    // Encode ACK using common msgpack module
+    int result = fmrb_link_encode_ack(type, seq, response_data, response_len,
+                                     encoded_buffer, sizeof(encoded_buffer),
+                                     &encoded_len);
+    if (result != 0) {
+        SOCK_LOG_E("Failed to encode ACK");
         return -1;
     }
-
-    // Add 0x00 terminator
-    encoded_buffer[encoded_len] = 0x00;
-    encoded_len++;
 
     // Send to client
     ssize_t written = write(client_fd, encoded_buffer, encoded_len);
     if (written != (ssize_t)encoded_len) {
-        fprintf(stderr, "Failed to write ACK response: %zd/%zu (client_fd=%d, errno=%d: %s)\n",
-                written, encoded_len, client_fd, errno, strerror(errno));
+        SOCK_LOG_E("Failed to write ACK response: %zd/%zu (client_fd=%d, errno=%d: %s)",
+                   written, encoded_len, client_fd, errno, strerror(errno));
         return -1;
     }
 
@@ -407,10 +280,8 @@ int socket_server_is_running(void) {
 #include "comm_interface.h"
 
 static int comm_socket_init(void) {
-    // Reset message queue
-    queue_read_idx = 0;
-    queue_write_idx = 0;
-    queue_count = 0;
+    // Initialize message queue
+    message_queue_init(&g_message_queue);
     return socket_server_start();
 }
 
@@ -434,34 +305,23 @@ static int comm_socket_receive(uint8_t *buf, size_t buf_size) {
 
 static int comm_socket_receive_message(uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
                                         const uint8_t **payload, size_t *payload_len) {
-    if (queue_count == 0) {
-        return 0;  // No messages available
+    // Dequeue message using common queue module
+    int result = message_queue_dequeue(&g_message_queue, type, seq, sub_cmd,
+                                       payload, payload_len);
+
+    if (result > 0) {
+        SOCK_LOG_D("Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
+                   *type, *seq, *sub_cmd, *payload_len,
+                   message_queue_count(&g_message_queue), MSG_QUEUE_MAX_MESSAGES);
     }
 
-    // Dequeue message
-    queued_message_t *msg = &message_queue[queue_read_idx];
-
-    *type = msg->type;
-    *seq = msg->seq;
-    *sub_cmd = msg->sub_cmd;
-    *payload = msg->payload;
-    *payload_len = msg->payload_len;
-
-    queue_read_idx = (queue_read_idx + 1) % MAX_QUEUED_MESSAGES;
-    queue_count--;
-
-    SOCK_LOG_D("Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
-               *type, *seq, *sub_cmd, *payload_len, queue_count, MAX_QUEUED_MESSAGES);
-
-    return 1;  // Message received
+    return result;
 }
 
 static void comm_socket_cleanup(void) {
     socket_server_stop();
     // Clear message queue
-    queue_read_idx = 0;
-    queue_write_idx = 0;
-    queue_count = 0;
+    message_queue_init(&g_message_queue);
 }
 
 static const comm_interface_t socket_comm_impl = {
