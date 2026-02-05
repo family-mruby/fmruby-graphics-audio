@@ -10,9 +10,12 @@
 #include "driver/spi_slave.h"
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "fmrb_link_msgpack.h"
 #include "message_queue.h"
 #include "fmrb_link_protocol.h"
+
+static const char *TAG = "spi_slave";
 
 // SPI Slave pin configuration - must match master's configuration
 #define SPI_HOST_ID      SPI2_HOST
@@ -26,22 +29,6 @@
 
 // Double buffering for continuous operation
 #define NUM_BUFFERS      2
-
-// SPI slave log levels
-typedef enum {
-    SPI_LOG_NONE = 0,     // No logging
-    SPI_LOG_ERROR = 1,    // Error messages only
-    SPI_LOG_INFO = 2,     // Info + Error
-    SPI_LOG_DEBUG = 3,    // Debug + Info + Error (verbose)
-} spi_log_level_t;
-
-// Current log level (default: errors only)
-static spi_log_level_t g_spi_log_level = SPI_LOG_ERROR;
-
-// Log macros
-#define SPI_LOG_E(fmt, ...) do { if (g_spi_log_level >= SPI_LOG_ERROR) { printf("[SPI_ERR] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define SPI_LOG_I(fmt, ...) do { if (g_spi_log_level >= SPI_LOG_INFO) { printf("[SPI_INFO] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define SPI_LOG_D(fmt, ...) do { if (g_spi_log_level >= SPI_LOG_DEBUG) { printf("[SPI_DBG] " fmt "\n", ##__VA_ARGS__); } } while(0)
 
 // Message queue for decoded messages
 static message_queue_t g_message_queue;
@@ -84,18 +71,18 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
                                        payload_buffer, sizeof(payload_buffer),
                                        &payload_len);
     if (result != 0) {
-        SPI_LOG_E("Frame decode failed");
+        ESP_LOGE(TAG, "Frame decode failed");
         return -1;
     }
 
-    SPI_LOG_D("RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
+    ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
                type, seq, sub_cmd, payload_len);
 
     // Enqueue the decoded message using common queue module
     result = message_queue_enqueue(&g_message_queue, type, seq, sub_cmd,
                                    payload_buffer, payload_len);
     if (result != 0) {
-        SPI_LOG_E("Failed to enqueue message");
+        ESP_LOGE(TAG, "Failed to enqueue message");
         return -1;
     }
 
@@ -127,26 +114,26 @@ static int spi_init(void) {
         rx_buffers[i] = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
         tx_buffers[i] = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
         if (!rx_buffers[i] || !tx_buffers[i]) {
-            printf("SPI: Failed to allocate DMA buffers\n");
+            ESP_LOGE(TAG, "Failed to allocate DMA buffers");
             goto cleanup_buffers;
         }
         memset(rx_buffers[i], 0, SPI_FRAME_SIZE);
         memset(tx_buffers[i], 0, SPI_FRAME_SIZE);
         memset(&transactions[i], 0, sizeof(spi_slave_transaction_t));
     }
-    printf("SPI: DMA buffers allocated (frame_size=%d, double_buffered)\n", SPI_FRAME_SIZE);
+    ESP_LOGI(TAG, "DMA buffers allocated (frame_size=%d, double_buffered)", SPI_FRAME_SIZE);
 
     // Create mutex for thread safety
     spi_mutex = xSemaphoreCreateMutex();
     if (!spi_mutex) {
-        printf("SPI: Failed to create mutex\n");
+        ESP_LOGE(TAG, "Failed to create mutex");
         goto cleanup_buffers;
     }
 
     // Create binary semaphore for transaction complete signaling
     trans_ready_sem = xSemaphoreCreateBinary();
     if (!trans_ready_sem) {
-        printf("SPI: Failed to create semaphore\n");
+        ESP_LOGE(TAG, "Failed to create semaphore");
         goto cleanup_mutex;
     }
 
@@ -179,7 +166,7 @@ static int spi_init(void) {
     // Initialize SPI slave interface
     esp_err_t ret = spi_slave_initialize(SPI_HOST_ID, &buscfg, &slvcfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
-        printf("SPI slave initialization failed: %d\n", ret);
+        ESP_LOGE(TAG, "SPI slave initialization failed: %d", ret);
         goto cleanup_sem;
     }
 
@@ -188,13 +175,13 @@ static int spi_init(void) {
         current_buf = i;
         ret = queue_next_transaction();
         if (ret != ESP_OK) {
-            printf("SPI: Failed to queue initial transaction %d: %d\n", i, ret);
+            ESP_LOGE(TAG, "Failed to queue initial transaction %d: %d", i, ret);
         }
     }
     current_buf = 0;
 
     spi_running = 1;
-    printf("SPI slave initialized - MOSI:%d MISO:%d CLK:%d CS:%d (frame=%d bytes)\n",
+    ESP_LOGI(TAG, "SPI slave initialized - MOSI:%d MISO:%d CLK:%d CS:%d (frame=%d bytes)",
            PIN_NUM_MOSI, PIN_NUM_MISO, PIN_NUM_CLK, PIN_NUM_CS, SPI_FRAME_SIZE);
     return 0;
 
@@ -277,7 +264,7 @@ static int spi_process(void) {
         int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
         uint8_t *rx_buf = (uint8_t*)completed_trans->rx_buffer;
 
-        SPI_LOG_D("SPI Slave[%d]: Received %d bytes", buf_idx, (int)rx_len);
+        ESP_LOGD(TAG, "SPI Slave[%d]: Received %d bytes", buf_idx, (int)rx_len);
 
         // Look for COBS frame terminator (0x00)
         size_t frame_end = 0;
@@ -306,12 +293,12 @@ static int spi_process(void) {
 
 static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
     if (!spi_running) {
-        SPI_LOG_E("Cannot send ACK: SPI not running");
+        ESP_LOGE(TAG, "Cannot send ACK: SPI not running");
         return -1;
     }
 
     if (xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        SPI_LOG_E("Cannot send ACK: mutex timeout");
+        ESP_LOGE(TAG, "Cannot send ACK: mutex timeout");
         return -1;
     }
 
@@ -326,11 +313,11 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
     xSemaphoreGive(spi_mutex);
 
     if (result != 0) {
-        SPI_LOG_E("Failed to encode ACK");
+        ESP_LOGE(TAG, "Failed to encode ACK");
         return -1;
     }
 
-    SPI_LOG_D("ACK prepared: type=%u seq=%u response_len=%u encoded_len=%zu",
+    ESP_LOGD(TAG, "ACK prepared: type=%u seq=%u response_len=%u encoded_len=%zu",
               type, seq, response_len, encoded_len);
     return 0;
 }
@@ -342,7 +329,7 @@ static int spi_receive_message(uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
                                        payload, payload_len);
 
     if (result > 0) {
-        SPI_LOG_D("Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
+        ESP_LOGD(TAG, "Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
                    *type, *seq, *sub_cmd, *payload_len,
                    message_queue_count(&g_message_queue), MSG_QUEUE_MAX_MESSAGES);
     }
@@ -385,7 +372,7 @@ static void spi_cleanup(void) {
     message_queue_init(&g_message_queue);
 
     spi_running = 0;
-    printf("SPI slave communication stopped\n");
+    ESP_LOGI(TAG, "SPI slave communication stopped");
 }
 
 static const comm_interface_t spi_comm = {

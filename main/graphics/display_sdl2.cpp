@@ -9,6 +9,9 @@
 #include <SDL2/SDL.h>
 
 #include <cstdio>
+#include "esp_log.h"
+
+static const char *TAG = "display_sdl2";
 
 extern "C" {
 #include "fmrb_gfx.h"
@@ -52,7 +55,7 @@ static int sdl2_init(uint16_t width, uint16_t height, uint8_t color_depth) {
     // Create LovyanGFX instance with specified resolution
     auto lgfx_sdl = new LGFX_SDL(width, height);
     if (!lgfx_sdl) {
-        fprintf(stderr, "Failed to create LovyanGFX instance\n");
+        ESP_LOGE(TAG, "Failed to create LovyanGFX instance");
         return -1;
     }
 
@@ -71,7 +74,7 @@ static int sdl2_init(uint16_t width, uint16_t height, uint8_t color_depth) {
 
     g_lgfx = lgfx_sdl;
 
-    printf("SDL2 display initialized: %dx%d, %d-bit\n", width, height, color_depth);
+    ESP_LOGI(TAG, "SDL2 display initialized: %dx%d, %d-bit", width, height, color_depth);
     return 0;
 }
 
@@ -106,7 +109,7 @@ static void sdl2_cleanup(void) {
         delete g_lgfx;
         g_lgfx = nullptr;
     }
-    printf("SDL2 display cleaned up\n");
+    ESP_LOGI(TAG, "SDL2 display cleaned up");
 }
 
 static const display_interface_t sdl2_display_impl = {

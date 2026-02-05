@@ -1,6 +1,9 @@
 #include "message_queue.h"
 #include <string.h>
 #include <stdio.h>
+#include "esp_log.h"
+
+static const char *TAG = "msg_queue";
 
 void message_queue_init(message_queue_t *queue) {
     if (!queue) return;
@@ -17,12 +20,12 @@ int message_queue_enqueue(message_queue_t *queue,
     if (!queue) return -1;
 
     if (queue->count >= MSG_QUEUE_MAX_MESSAGES) {
-        fprintf(stderr, "[MSG_QUEUE] Queue full, dropping message\n");
+        ESP_LOGE(TAG, "Queue full, dropping message");
         return -1;
     }
 
     if (payload_len > MSG_QUEUE_MAX_PAYLOAD) {
-        fprintf(stderr, "[MSG_QUEUE] Payload too large: %zu > %d\n",
+        ESP_LOGE(TAG, "Payload too large: %zu > %d",
                 payload_len, MSG_QUEUE_MAX_PAYLOAD);
         return -1;
     }

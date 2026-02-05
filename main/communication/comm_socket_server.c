@@ -10,22 +10,9 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <fcntl.h>
+#include "esp_log.h"
 
-// Socket server log levels
-typedef enum {
-    SOCK_LOG_NONE = 0,     // No logging
-    SOCK_LOG_ERROR = 1,    // Error messages only
-    SOCK_LOG_INFO = 2,     // Info + Error
-    SOCK_LOG_DEBUG = 3,    // Debug + Info + Error (verbose)
-} sock_log_level_t;
-
-// Current log level (default: errors only)
-static sock_log_level_t g_sock_log_level = SOCK_LOG_ERROR;
-
-// Log macros
-#define SOCK_LOG_E(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_ERROR) { fprintf(stderr, "[SOCK_ERR] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define SOCK_LOG_I(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_INFO) { printf("[SOCK_INFO] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define SOCK_LOG_D(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_DEBUG) { printf("[SOCK_DBG] " fmt "\n", ##__VA_ARGS__); } } while(0)
+static const char *TAG = "socket_server";
 
 // Message queue for decoded messages
 static message_queue_t g_message_queue;
@@ -42,7 +29,7 @@ static int create_socket_server(void) {
 
     server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (server_fd == -1) {
-        fprintf(stderr, "Failed to create socket: %s\n", strerror(errno));
+        ESP_LOGE(TAG, "Failed to create socket: %s", strerror(errno));
         return -1;
     }
 
@@ -54,14 +41,14 @@ static int create_socket_server(void) {
     strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
     if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-        fprintf(stderr, "Failed to bind socket: %s\n", strerror(errno));
+        ESP_LOGE(TAG, "Failed to bind socket: %s", strerror(errno));
         close(server_fd);
         server_fd = -1;
         return -1;
     }
 
     if (listen(server_fd, 1) == -1) {
-        fprintf(stderr, "Failed to listen on socket: %s\n", strerror(errno));
+        ESP_LOGE(TAG, "Failed to listen on socket: %s", strerror(errno));
         close(server_fd);
         server_fd = -1;
         return -1;
@@ -71,7 +58,7 @@ static int create_socket_server(void) {
     int flags = fcntl(server_fd, F_GETFL, 0);
     fcntl(server_fd, F_SETFL, flags | O_NONBLOCK);
 
-    printf("Socket server listening on %s\n", SOCKET_PATH);
+    ESP_LOGI(TAG, "Socket server listening on %s", SOCKET_PATH);
     return 0;
 }
 
@@ -83,7 +70,7 @@ static int accept_connection(void) {
     client_fd = accept(server_fd, NULL, NULL);
     if (client_fd == -1) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            fprintf(stderr, "Failed to accept connection: %s\n", strerror(errno));
+            ESP_LOGE(TAG, "Failed to accept connection: %s", strerror(errno));
         }
         return -1;
     }
@@ -92,7 +79,7 @@ static int accept_connection(void) {
     int flags = fcntl(client_fd, F_GETFL, 0);
     fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
 
-    printf("Client connected\n");
+    ESP_LOGI(TAG, "Client connected");
     return 0;
 }
 
@@ -107,18 +94,18 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
                                        payload_buffer, sizeof(payload_buffer),
                                        &payload_len);
     if (result != 0) {
-        SOCK_LOG_E("Frame decode failed");
+        ESP_LOGE(TAG, "Frame decode failed");
         return -1;
     }
 
-    SOCK_LOG_D("RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
+    ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
                type, seq, sub_cmd, payload_len);
 
     // Enqueue the decoded message using common queue module
     result = message_queue_enqueue(&g_message_queue, type, seq, sub_cmd,
                                    payload_buffer, payload_len);
     if (result != 0) {
-        SOCK_LOG_E("Failed to enqueue message");
+        ESP_LOGE(TAG, "Failed to enqueue message");
         return -1;
     }
 
@@ -135,11 +122,11 @@ static int read_message(void) {
     ssize_t bytes_read = read(client_fd, buffer + buffer_pos, BUFFER_SIZE - buffer_pos);
     if (bytes_read <= 0) {
         if (bytes_read == 0) {
-            printf("Client disconnected\n");
+            ESP_LOGI(TAG, "Client disconnected");
             close(client_fd);
             client_fd = -1;
         } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            fprintf(stderr, "Read error: %s\n", strerror(errno));
+            ESP_LOGE(TAG, "Read error: %s", strerror(errno));
             close(client_fd);
             client_fd = -1;
         }
@@ -189,7 +176,7 @@ static int read_message(void) {
 
     // Check for buffer overflow
     if (buffer_pos >= BUFFER_SIZE - 1) {
-        fprintf(stderr, "Buffer overflow, resetting\n");
+        ESP_LOGE(TAG, "Buffer overflow, resetting");
         buffer_pos = 0;
     }
 
@@ -199,7 +186,7 @@ static int read_message(void) {
 // Send ACK response with optional payload
 int socket_server_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
     if (client_fd == -1) {
-        SOCK_LOG_E("Cannot send ACK: no client connected");
+        ESP_LOGE(TAG, "Cannot send ACK: no client connected");
         return -1;
     }
 
@@ -211,19 +198,19 @@ int socket_server_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_da
                                      encoded_buffer, sizeof(encoded_buffer),
                                      &encoded_len);
     if (result != 0) {
-        SOCK_LOG_E("Failed to encode ACK");
+        ESP_LOGE(TAG, "Failed to encode ACK");
         return -1;
     }
 
     // Send to client
     ssize_t written = write(client_fd, encoded_buffer, encoded_len);
     if (written != (ssize_t)encoded_len) {
-        SOCK_LOG_E("Failed to write ACK response: %zd/%zu (client_fd=%d, errno=%d: %s)",
+        ESP_LOGE(TAG, "Failed to write ACK response: %zd/%zu (client_fd=%d, errno=%d: %s)",
                    written, encoded_len, client_fd, errno, strerror(errno));
         return -1;
     }
 
-    SOCK_LOG_D("ACK sent: type=%u seq=%u response_len=%u", type, seq, response_len);
+    ESP_LOGD(TAG, "ACK sent: type=%u seq=%u response_len=%u", type, seq, response_len);
     return 0;
 }
 
@@ -253,7 +240,7 @@ void socket_server_stop(void) {
     }
 
     server_running = 0;
-    printf("Socket server stopped\n");
+    ESP_LOGI(TAG, "Socket server stopped");
 }
 
 int socket_server_process(void) {
@@ -310,7 +297,7 @@ static int comm_socket_receive_message(uint8_t *type, uint8_t *seq, uint8_t *sub
                                        payload, payload_len);
 
     if (result > 0) {
-        SOCK_LOG_D("Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
+        ESP_LOGD(TAG, "Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
                    *type, *seq, *sub_cmd, *payload_len,
                    message_queue_count(&g_message_queue), MSG_QUEUE_MAX_MESSAGES);
     }

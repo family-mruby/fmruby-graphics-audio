@@ -73,7 +73,7 @@ lgfx::LGFX_Device* g_lgfx = nullptr;
 
 // Callback function called by socket_server when display init message is received
 extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth) {
-    printf("Initializing display: %dx%d, %d-bit color\n", width, height, color_depth);
+    ESP_LOGI(TAG, "Initializing display: %dx%d, %d-bit color", width, height, color_depth);
 
     display_width = width;
     display_height = height;
@@ -81,7 +81,7 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
     // Create LovyanGFX instance with specified resolution
     g_lgfx = new LGFX(width, height);
     if (!g_lgfx) {
-        fprintf(stderr, "Failed to create LovyanGFX instance\n");
+        ESP_LOGE(TAG, "Failed to create LovyanGFX instance");
         return -1;
     }
 
@@ -102,10 +102,10 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
 #endif
 #endif
 
-    ESP_LOGI(TAG, "Graphics initialized with LovyanGFX (%dx%d, %d-bit RGB)\n", width, height, color_depth);
+    ESP_LOGI(TAG, "Graphics initialized with LovyanGFX (%dx%d, %d-bit RGB)", width, height, color_depth);
     // Initialize graphics handler (creates back buffer)
     if (graphics_handler_init() < 0) {
-        ESP_LOGE(TAG, "Graphics handler initialization failed\n");
+        ESP_LOGE(TAG, "Graphics handler initialization failed");
         delete g_lgfx;
         g_lgfx = nullptr;
         return -1;
@@ -115,7 +115,7 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
     // Initialize input handler
 #ifdef CONFIG_IDF_TARGET_LINUX
     if (input_handler_init() < 0) {
-        ESP_LOGE(TAG, "Input handler initialization failed\n");
+        ESP_LOGE(TAG, "Input handler initialization failed");
         graphics_handler_cleanup();
         delete g_lgfx;
         g_lgfx = nullptr;
@@ -124,7 +124,7 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
 #endif
 
     display_initialized = 1;
-    ESP_LOGI(TAG, "Display initialization complete\n");
+    ESP_LOGI(TAG, "Display initialization complete");
     return 0;
 }
 
@@ -140,7 +140,7 @@ void graphics_task(void *pvParameters) {
 #ifdef CONFIG_IDF_TARGET_LINUX
     // Start input socket server (separate from GFX socket)
     if (input_socket_start() < 0) {
-        fprintf(stderr, "Input socket server start failed\n");
+        ESP_LOGE(TAG, "Input socket server start failed");
         return;
     }
 #endif
@@ -158,7 +158,7 @@ void graphics_task(void *pvParameters) {
             return;
         }
     }
-    printf("Host server running. Ready to receive commands.\n");
+    ESP_LOGI(TAG, "Host server running. Ready to receive commands.");
 
     // Main loop
     while (task_running) {
@@ -184,7 +184,7 @@ void graphics_task(void *pvParameters) {
         lgfx::delay(16); // ~60 FPS
     }
 
-    printf("Shutting down...\n");
+    ESP_LOGI(TAG, "Shutting down...");
 
     // Cleanup
 #ifdef CONFIG_IDF_TARGET_LINUX
@@ -194,7 +194,7 @@ void graphics_task(void *pvParameters) {
     delete g_lgfx;
     g_lgfx = nullptr;
 
-    printf("Family mruby Host (SDL2 + LovyanGFX) stopped.\n");
+    ESP_LOGI(TAG, "Family mruby Host (SDL2 + LovyanGFX) stopped.");
 
     vTaskDelete(NULL);
 }

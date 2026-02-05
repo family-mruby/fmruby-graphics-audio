@@ -2,6 +2,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "esp_log.h"
+
+static const char *TAG = "audio_handler";
 
 // ESP32 audio handler stub implementation
 // TODO: Implement audio playback using apu_emu or I2S
@@ -22,7 +25,7 @@ int audio_handler_init(void) {
     memset(music_tracks, 0, sizeof(music_tracks));
     track_count = 0;
 
-    printf("Audio handler initialized (ESP32 stub)\n");
+    ESP_LOGI(TAG, "Audio handler initialized (ESP32 stub)");
     return 0;
 }
 
@@ -36,12 +39,12 @@ void audio_handler_cleanup(void) {
     }
     track_count = 0;
 
-    printf("Audio handler cleaned up (ESP32 stub)\n");
+    ESP_LOGI(TAG, "Audio handler cleaned up (ESP32 stub)");
 }
 
 static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t *music_data) {
     if (track_count >= FMRB_MAX_MUSIC_TRACKS) {
-        fprintf(stderr, "Maximum music tracks reached\n");
+        ESP_LOGE(TAG, "Maximum music tracks reached");
         return -1;
     }
 
@@ -69,13 +72,13 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
     music_tracks[track_idx].data = malloc(cmd->data_size);
 
     if (!music_tracks[track_idx].data) {
-        fprintf(stderr, "Failed to allocate music data\n");
+        ESP_LOGE(TAG, "Failed to allocate music data");
         return -1;
     }
 
     memcpy(music_tracks[track_idx].data, music_data, cmd->data_size);
 
-    printf("Loaded music track %lu (%lu bytes) (ESP32 stub)\n", (unsigned long)cmd->music_id, (unsigned long)cmd->data_size);
+    ESP_LOGI(TAG, "Loaded music track %lu (%lu bytes) (ESP32 stub)", (unsigned long)cmd->music_id, (unsigned long)cmd->data_size);
     return 0;
 }
 
@@ -83,37 +86,37 @@ static int process_play_command(const fmrb_audio_play_cmd_t *cmd) {
     // Find music track
     for (int i = 0; i < track_count; i++) {
         if (music_tracks[i].music_id == cmd->music_id) {
-            printf("Playing music track %lu (ESP32 stub)\n", (unsigned long)cmd->music_id);
+            ESP_LOGI(TAG, "Playing music track %lu (ESP32 stub)", (unsigned long)cmd->music_id);
             current_status = FMRB_AUDIO_STATUS_PLAYING;
             return 0;
         }
     }
 
-    fprintf(stderr, "Music track %lu not found\n", (unsigned long)cmd->music_id);
+    ESP_LOGE(TAG, "Music track %lu not found", (unsigned long)cmd->music_id);
     return -1;
 }
 
 static int process_stop_command(void) {
-    printf("Stopping audio playback (ESP32 stub)\n");
+    ESP_LOGI(TAG, "Stopping audio playback (ESP32 stub)");
     current_status = FMRB_AUDIO_STATUS_STOPPED;
     return 0;
 }
 
 static int process_pause_command(void) {
-    printf("Pausing audio playback (ESP32 stub)\n");
+    ESP_LOGI(TAG, "Pausing audio playback (ESP32 stub)");
     current_status = FMRB_AUDIO_STATUS_PAUSED;
     return 0;
 }
 
 static int process_resume_command(void) {
-    printf("Resuming audio playback (ESP32 stub)\n");
+    ESP_LOGI(TAG, "Resuming audio playback (ESP32 stub)");
     current_status = FMRB_AUDIO_STATUS_PLAYING;
     return 0;
 }
 
 static int process_volume_command(const fmrb_audio_volume_cmd_t *cmd) {
     current_volume = cmd->volume;
-    printf("Set volume to %u (ESP32 stub)\n", cmd->volume);
+    ESP_LOGI(TAG, "Set volume to %u (ESP32 stub)", cmd->volume);
     return 0;
 }
 
@@ -157,11 +160,11 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
             break;
 
         default:
-            fprintf(stderr, "Unknown audio command: 0x%02x\n", cmd_type);
+            ESP_LOGE(TAG, "Unknown audio command: 0x%02x", cmd_type);
             return -1;
     }
 
-    fprintf(stderr, "Invalid command size for audio type 0x%02x\n", cmd_type);
+    ESP_LOGE(TAG, "Invalid command size for audio type 0x%02x", cmd_type);
     return -1;
 }
 

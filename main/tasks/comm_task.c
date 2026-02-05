@@ -9,18 +9,18 @@ static const char *TAG = "comm_task";
 static volatile int task_running = 1;
 
 void comm_test(void) {
-  printf("SPI task started on core %d\n", (int)xPortGetCoreID());
+  ESP_LOGI(TAG, "SPI task started on core %d", (int)xPortGetCoreID());
 
   const comm_interface_t* comm = comm_get_interface();
 
   // SPI初期化
   if (comm->init() != 0) {
-    printf("SPI initialization failed!\n");
+    ESP_LOGE(TAG, "SPI initialization failed!");
     vTaskDelete(NULL);
     return;
   }
 
-  printf("SPI initialized successfully, starting communication loop...\n");
+  ESP_LOGI(TAG, "SPI initialized successfully, starting communication loop...");
 
   // テスト用のダミーデータ
   uint8_t test_data[] = {0xAA, 0x55, 0x01, 0x02, 0x03, 0x04};
@@ -30,7 +30,7 @@ void comm_test(void) {
     // 通信処理
     int processed = comm->process();
     if (processed < 0) {
-      printf("SPI process error\n");
+      ESP_LOGE(TAG, "SPI process error");
     }
 
     // // 5秒ごとにテストデータを送信

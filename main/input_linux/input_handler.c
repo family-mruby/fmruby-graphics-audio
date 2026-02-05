@@ -4,25 +4,12 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include "esp_log.h"
 
 // Include HID event definitions (path relative to build)
 #include "../../main/include/fmrb_hid_event.h"
 
-
-// Current log level (default: info)
-static input_log_level_t g_input_log_level = INPUT_LOG_INFO;
-
-// Log macros
-#define INPUT_LOG_E(fmt, ...) do { if (g_input_log_level >= INPUT_LOG_ERROR) { fprintf(stderr, "[INPUT_ERR] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define INPUT_LOG_I(fmt, ...) do { if (g_input_log_level >= INPUT_LOG_INFO) { printf("[INPUT_INFO] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define INPUT_LOG_D(fmt, ...) do { if (g_input_log_level >= INPUT_LOG_DEBUG) { printf("[INPUT_DBG] " fmt "\n", ##__VA_ARGS__); } } while(0)
-
-void input_handler_set_log_level(int level) {
-    if (level >= INPUT_LOG_NONE && level <= INPUT_LOG_DEBUG) {
-        g_input_log_level = (input_log_level_t)level;
-        printf("[INPUT] Log level set to %d\n", level);
-    }
-}
+static const char *TAG = "input_handler";
 
 static bool g_initialized = false;
 static int g_last_mouse_x = 0;
@@ -108,7 +95,7 @@ static int event_watch_callback(void* userdata, SDL_Event* event) {
             break;
 
         case SDL_QUIT:
-            INPUT_LOG_I("SDL_QUIT event received");
+            ESP_LOGI(TAG, "SDL_QUIT event received");
             break;
 
         default:
@@ -121,7 +108,7 @@ static int event_watch_callback(void* userdata, SDL_Event* event) {
 
 int input_handler_init(void) {
     if (g_initialized) {
-        INPUT_LOG_E("Input handler already initialized");
+        ESP_LOGE(TAG, "Input handler already initialized");
         return 0;
     }
 
@@ -129,14 +116,14 @@ int input_handler_init(void) {
     // This callback is called BEFORE SDL_PollEvent consumes the event
     SDL_AddEventWatch(event_watch_callback, NULL);
 
-    INPUT_LOG_I("Input handler initialized with SDL_AddEventWatch");
+    ESP_LOGI(TAG, "Input handler initialized with SDL_AddEventWatch");
     g_initialized = true;
     return 0;
 }
 
 int input_handler_process_events(void) {
     if (!g_initialized) {
-        INPUT_LOG_E("Input handler not initialized");
+        ESP_LOGE(TAG, "Input handler not initialized");
         return -1;
     }
 
@@ -156,18 +143,18 @@ void input_handler_cleanup(void) {
     // Unregister event watch callback
     SDL_DelEventWatch(event_watch_callback, NULL);
 
-    INPUT_LOG_I("Input handler cleaned up");
+    ESP_LOGI(TAG, "Input handler cleaned up");
     g_initialized = false;
 }
 
 int input_handler_get_mouse_position(int* x, int* y) {
     if (!g_initialized) {
-        INPUT_LOG_E("Input handler not initialized");
+        ESP_LOGE(TAG, "Input handler not initialized");
         return -1;
     }
 
     if (x == NULL || y == NULL) {
-        INPUT_LOG_E("NULL pointer passed to input_handler_get_mouse_position");
+        ESP_LOGE(TAG, "NULL pointer passed to input_handler_get_mouse_position");
         return -1;
     }
 

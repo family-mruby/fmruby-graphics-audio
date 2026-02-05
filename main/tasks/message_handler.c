@@ -5,6 +5,9 @@
 #include "comm_interface.h"
 #include <stdio.h>
 #include <string.h>
+#include "esp_log.h"
+
+static const char *TAG = "msg_handler";
 
 // Forward declaration - implemented in main.cpp
 extern int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth);
@@ -16,7 +19,7 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                                   const uint8_t *payload, size_t payload_len) {
     const comm_interface_t *comm = comm_get_interface();
     if (!comm) {
-        fprintf(stderr, "[MSG_HANDLER] No comm interface available\n");
+        ESP_LOGE(TAG, "No comm interface available");
         return -1;
     }
 
@@ -26,20 +29,20 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                 uint8_t remote_version = payload[0];
                 uint8_t local_version = FMRB_LINK_PROTOCOL_VERSION;
 
-                printf("[MSG_HANDLER] VERSION check: remote=%d, local=%d, seq=%u\n",
+                ESP_LOGI(TAG, "VERSION check: remote=%d, local=%d, seq=%u",
                        remote_version, local_version, seq);
 
                 // Send version response via ACK
                 int result = comm->send_ack(type, seq, &local_version, sizeof(local_version));
 
                 if (result == 0) {
-                    printf("[MSG_HANDLER] VERSION ACK sent successfully\n");
+                    ESP_LOGI(TAG, "VERSION ACK sent successfully");
                 } else {
-                    fprintf(stderr, "[MSG_HANDLER] VERSION ACK send failed: %d\n", result);
+                    ESP_LOGE(TAG, "VERSION ACK send failed: %d", result);
                 }
 
                 if (remote_version != local_version) {
-                    fprintf(stderr, "[MSG_HANDLER] WARNING: Protocol version mismatch! remote=%d, local=%d\n",
+                    ESP_LOGE(TAG, "WARNING: Protocol version mismatch! remote=%d, local=%d",
                             remote_version, local_version);
                 }
                 return result;
@@ -49,7 +52,7 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
         case FMRB_LINK_CONTROL_INIT_DISPLAY:
             if (payload_len >= sizeof(fmrb_control_init_display_t)) {
                 const fmrb_control_init_display_t *init_cmd = (const fmrb_control_init_display_t*)payload;
-                printf("[MSG_HANDLER] INIT_DISPLAY: %dx%d, %d-bit\n",
+                ESP_LOGI(TAG, "INIT_DISPLAY: %dx%d, %d-bit",
                        init_cmd->width, init_cmd->height, init_cmd->color_depth);
 
                 int result = init_display_callback(init_cmd->width, init_cmd->height, init_cmd->color_depth);
@@ -63,7 +66,7 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
             break;
 
         default:
-            fprintf(stderr, "[MSG_HANDLER] Unknown control command: 0x%02x\n", sub_cmd);
+            ESP_LOGE(TAG, "Unknown control command: 0x%02x", sub_cmd);
             return -1;
     }
 
@@ -77,7 +80,7 @@ static int handle_graphics_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                                    const uint8_t *payload, size_t payload_len) {
     const comm_interface_t *comm = comm_get_interface();
     if (!comm) {
-        fprintf(stderr, "[MSG_HANDLER] No comm interface available\n");
+        ESP_LOGE(TAG, "No comm interface available");
         return -1;
     }
 
@@ -124,7 +127,7 @@ int message_handler_process(uint8_t type, uint8_t seq, uint8_t sub_cmd,
             return handle_audio_message(type, seq, sub_cmd, payload, payload_len);
 
         default:
-            fprintf(stderr, "[MSG_HANDLER] Unknown message type: %u\n", type);
+            ESP_LOGE(TAG, "Unknown message type: %u", type);
             return -1;
     }
 }

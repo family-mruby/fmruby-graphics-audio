@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <msgpack.h>
+#include "esp_log.h"
+
+static const char *TAG = "msgpack";
 
 int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
                            uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
@@ -17,14 +20,14 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
     // Allocate buffer for decoded data (COBS + CRC32)
     uint8_t *decoded_buffer = (uint8_t*)malloc(encoded_len);
     if (!decoded_buffer) {
-        fprintf(stderr, "[MSGPACK] Failed to allocate decode buffer\n");
+        ESP_LOGE(TAG, "Failed to allocate decode buffer");
         return -1;
     }
 
     // COBS decode
     ssize_t decoded_len = fmrb_link_cobs_decode(encoded_data, encoded_len, decoded_buffer);
     if (decoded_len < (ssize_t)sizeof(uint32_t)) {
-        fprintf(stderr, "[MSGPACK] COBS decode failed or frame too small\n");
+        ESP_LOGE(TAG, "COBS decode failed or frame too small");
         free(decoded_buffer);
         return -1;
     }
@@ -38,7 +41,7 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
     // Verify CRC32
     uint32_t calculated_crc = fmrb_link_crc32_update(0, msgpack_data, msgpack_len);
     if (received_crc != calculated_crc) {
-        fprintf(stderr, "[MSGPACK] CRC32 mismatch: expected=0x%08x, actual=0x%08x\n",
+        ESP_LOGE(TAG, "CRC32 mismatch: expected=0x%08x, actual=0x%08x",
                 calculated_crc, received_crc);
         free(decoded_buffer);
         return -1;
@@ -50,7 +53,7 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
     msgpack_unpack_return ret = msgpack_unpack_next(&msg, (const char*)msgpack_data, msgpack_len, NULL);
 
     if (ret != MSGPACK_UNPACK_SUCCESS) {
-        fprintf(stderr, "[MSGPACK] msgpack unpack failed\n");
+        ESP_LOGE(TAG, "msgpack unpack failed");
         msgpack_unpacked_destroy(&msg);
         free(decoded_buffer);
         return -1;
@@ -58,7 +61,7 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
 
     msgpack_object root = msg.data;
     if (root.type != MSGPACK_OBJECT_ARRAY || root.via.array.size != 4) {
-        fprintf(stderr, "[MSGPACK] Invalid msgpack format: not array or size != 4\n");
+        ESP_LOGE(TAG, "Invalid msgpack format: not array or size != 4");
         msgpack_unpacked_destroy(&msg);
         free(decoded_buffer);
         return -1;
@@ -77,7 +80,7 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
 
         if (payload_out && src_len > 0) {
             if (src_len > payload_out_size) {
-                fprintf(stderr, "[MSGPACK] Payload too large: %zu > %zu\n", src_len, payload_out_size);
+                ESP_LOGE(TAG, "Payload too large: %zu > %zu", src_len, payload_out_size);
                 msgpack_unpacked_destroy(&msg);
                 free(decoded_buffer);
                 return -1;
@@ -126,7 +129,7 @@ int fmrb_link_encode_ack(uint8_t type, uint8_t seq,
     uint8_t *msg_with_crc = (uint8_t*)malloc(msg_with_crc_len);
     if (!msg_with_crc) {
         msgpack_sbuffer_destroy(&sbuf);
-        fprintf(stderr, "[MSGPACK] Failed to allocate buffer for CRC\n");
+        ESP_LOGE(TAG, "Failed to allocate buffer for CRC");
         return -1;
     }
 
@@ -139,7 +142,7 @@ int fmrb_link_encode_ack(uint8_t type, uint8_t seq,
     free(msg_with_crc);
 
     if (cobs_len == 0 || cobs_len >= encoded_out_size) {
-        fprintf(stderr, "[MSGPACK] COBS encode failed or buffer too small\n");
+        ESP_LOGE(TAG, "COBS encode failed or buffer too small");
         return -1;
     }
 

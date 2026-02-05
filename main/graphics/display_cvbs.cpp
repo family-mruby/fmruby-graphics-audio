@@ -7,6 +7,9 @@
 #include <cstdio>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_log.h"
+
+static const char *TAG = "display_cvbs";
 
 // LGFX class for ESP32 with CVBS output
 class LGFX : public lgfx::LGFX_Device
@@ -81,7 +84,7 @@ static int esp32_init(uint16_t width, uint16_t height, uint8_t color_depth) {
     // Create LovyanGFX instance for ESP32 CVBS
     g_lgfx = new LGFX(width, height);
     if (!g_lgfx) {
-        fprintf(stderr, "Failed to create LovyanGFX instance\n");
+        ESP_LOGE(TAG, "Failed to create LovyanGFX instance");
         return -1;
     }
 
@@ -89,7 +92,7 @@ static int esp32_init(uint16_t width, uint16_t height, uint8_t color_depth) {
     g_lgfx->setColorDepth(color_depth);
     g_lgfx->fillScreen(0x0000);  // Black
 
-    printf("ESP32 CVBS display initialized: %dx%d, %d-bit\n", width, height, color_depth);
+    ESP_LOGI(TAG, "ESP32 CVBS display initialized: %dx%d, %d-bit", width, height, color_depth);
     return 0;
 }
 
@@ -113,7 +116,7 @@ static void esp32_cleanup(void) {
         delete g_lgfx;
         g_lgfx = nullptr;
     }
-    printf("ESP32 display cleaned up\n");
+    ESP_LOGI(TAG, "ESP32 display cleaned up");
 }
 
 static const display_interface_t esp32_display_impl = {

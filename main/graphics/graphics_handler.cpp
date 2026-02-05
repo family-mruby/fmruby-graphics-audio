@@ -11,10 +11,13 @@ extern "C" {
 #include "graphics_handler.h"
 #include "fmrb_link_protocol.h"
 #include "fmrb_gfx.h"
+#include "esp_log.h"
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
 #include "socket_server.h"  // For socket_server_send_ack
 #endif
 }
+
+static const char *TAG = "graphics_handler";
 
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
 // Linux/SDL builds - include LGFX definition (includes g_lgfx declaration)
@@ -26,21 +29,6 @@ extern "C" {
 #include "display_interface.h"  // Includes g_lgfx declaration for ESP32
 #endif
 
-// Current log level (can be controlled via environment variable or compile-time)
-static gfx_log_level_t g_gfx_log_level = GFX_LOG_ERROR;  // Default: errors only
-
-// Log macros
-#define GFX_LOG_E(fmt, ...) do { if (g_gfx_log_level >= GFX_LOG_ERROR) { fprintf(stderr, "[GFX_ERR] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define GFX_LOG_I(fmt, ...) do { if (g_gfx_log_level >= GFX_LOG_INFO) { printf("[GFX_INFO] " fmt "\n", ##__VA_ARGS__); } } while(0)
-#define GFX_LOG_D(fmt, ...) do { if (g_gfx_log_level >= GFX_LOG_DEBUG) { printf("[GFX_DBG] " fmt "\n", ##__VA_ARGS__); } } while(0)
-
-// Function to set log level at runtime
-extern "C" void graphics_handler_set_log_level(int level) {
-    if (level >= GFX_LOG_NONE && level <= GFX_LOG_DEBUG) {
-        g_gfx_log_level = (gfx_log_level_t)level;
-        printf("[GFX] Log level set to %d\n", level);
-    }
-}
 
 // External reference to LGFX instance (declared in display_interface.h)
 // For ESP32: defined in lgfx_wrapper.cpp
@@ -107,7 +95,7 @@ static canvas_state_t* canvas_state_find(uint16_t canvas_id) {
 
 static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width, uint16_t req_height) {
     if (g_canvas_count >= MAX_CANVAS_COUNT) {
-        GFX_LOG_E("Maximum canvas count reached (%d)", MAX_CANVAS_COUNT);
+        ESP_LOGE(TAG, "Maximum canvas count reached (%d)", MAX_CANVAS_COUNT);
         return nullptr;
     }
 
@@ -135,7 +123,7 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     // Allocate external memory for draw buffer
     canvas->draw_buffer_mem = malloc(buffer_size);
     if (!canvas->draw_buffer_mem) {
-        GFX_LOG_E("Failed to allocate draw buffer memory for canvas %u", canvas_id);
+        ESP_LOGE(TAG, "Failed to allocate draw buffer memory for canvas %u", canvas_id);
         g_canvas_count--;
         return nullptr;
     }
@@ -143,7 +131,7 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     // Allocate external memory for render buffer
     canvas->render_buffer_mem = malloc(buffer_size);
     if (!canvas->render_buffer_mem) {
-        GFX_LOG_E("Failed to allocate render buffer memory for canvas %u", canvas_id);
+        ESP_LOGE(TAG, "Failed to allocate render buffer memory for canvas %u", canvas_id);
         free(canvas->draw_buffer_mem);
         g_canvas_count--;
         return nullptr;
@@ -159,7 +147,7 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->render_buffer->setColorDepth(8);  // RGB332
     canvas->render_buffer->setBuffer(canvas->render_buffer_mem, req_width, req_height, 8);
 
-    GFX_LOG_I("Canvas allocated: ID=%u, allocated_size=%dx%d, active_size=%dx%d, z_order=%d",
+    ESP_LOGI(TAG, "Canvas allocated: ID=%u, allocated_size=%dx%d, active_size=%dx%d, z_order=%d",
               canvas_id, canvas->width, canvas->height,
               canvas->active_width, canvas->active_height, canvas->z_order);
     return canvas;
@@ -168,7 +156,7 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
 static void canvas_state_free(canvas_state_t* canvas) {
     if (!canvas) return;
 
-    GFX_LOG_I("Freeing canvas ID=%u", canvas->canvas_id);
+    ESP_LOGI(TAG, "Freeing canvas ID=%u", canvas->canvas_id);
 
     if (canvas->draw_buffer) {
         delete canvas->draw_buffer;
@@ -226,7 +214,7 @@ static void graphics_handler_render_frame_internal() {
     for (size_t i = 1; i < g_canvas_count; i++) {
         canvas_state_t* canvas = &g_canvases[i];
         if (canvas->is_visible && canvas->render_buffer) {
-            GFX_LOG_D("Composite canvas ID=%u to screen buffer at (%d,%d), active_size=%dx%d, z_order=%d",
+            ESP_LOGD(TAG, "Composite canvas ID=%u to screen buffer at (%d,%d), active_size=%dx%d, z_order=%d",
                     canvas->canvas_id, canvas->push_x, canvas->push_y,
                     canvas->active_width, canvas->active_height, canvas->z_order);
             canvas->dirty = false;
@@ -239,12 +227,12 @@ static void graphics_handler_render_frame_internal() {
 
     // Finally, push the complete screen buffer to g_lgfx (only once per frame)
     screen_buffer->pushSprite(g_lgfx, 0, 0);
-    GFX_LOG_D("Screen buffer pushed to display");
+    ESP_LOGD(TAG, "Screen buffer pushed to display");
 
     // Draw cursor on top of everything (if visible)
     if (g_cursor_visible && g_cursor_sprite) {
         g_cursor_sprite->pushSprite(g_lgfx, g_cursor_x, g_cursor_y, CURSOR_TRANSPARENT_COLOR);
-        GFX_LOG_D("Cursor drawn at (%d, %d)", g_cursor_x, g_cursor_y);
+        ESP_LOGD(TAG, "Cursor drawn at (%d, %d)", g_cursor_x, g_cursor_y);
     }
 }
 
@@ -258,19 +246,19 @@ static LovyanGFX* get_current_target() {
     if (canvas) {
         return canvas->draw_buffer;  // Draw to draw_buffer
     }
-    GFX_LOG_E("Canvas %u not found, using screen", g_current_target);
+    ESP_LOGE(TAG, "Canvas %u not found, using screen", g_current_target);
     return g_lgfx;  // Fallback to screen
 }
 
 extern "C" int graphics_handler_init(void) {
     // Prevent multiple initializations
     if (g_graphics_initialized) {
-        GFX_LOG_E("Graphics handler already initialized, ignoring request");
+        ESP_LOGE(TAG, "Graphics handler already initialized, ignoring request");
         return 0;  // Return success to avoid breaking caller
     }
 
     if (!g_lgfx) {
-        GFX_LOG_E("LGFX instance not created");
+        ESP_LOGE(TAG, "LGFX instance not created");
         return -1;
     }
 
@@ -296,9 +284,9 @@ extern "C" int graphics_handler_init(void) {
     }
 
     g_graphics_initialized = true;  // Mark as initialized
-    GFX_LOG_I("Graphics handler initialized with screen buffer (%dx%d)",
+    ESP_LOGI(TAG, "Graphics handler initialized with screen buffer (%dx%d)",
               (int)g_lgfx->width(), (int)g_lgfx->height());
-    GFX_LOG_I("Cursor sprite initialized (8x8) at position (%d, %d)", g_cursor_x, g_cursor_y);
+    ESP_LOGI(TAG, "Cursor sprite initialized (8x8) at position (%d, %d)", g_cursor_x, g_cursor_y);
     return 0;
 }
 
@@ -312,14 +300,14 @@ extern "C" void graphics_handler_cleanup(void) {
     if (g_cursor_sprite) {
         delete g_cursor_sprite;
         g_cursor_sprite = nullptr;
-        GFX_LOG_I("Cursor sprite deleted");
+        ESP_LOGI(TAG, "Cursor sprite deleted");
     }
 
     g_current_target = FMRB_CANVAS_SCREEN;
     g_graphics_initialized = false;  // Reset initialization flag
 
     // Note: g_lgfx is managed by main.cpp, don't delete here
-    GFX_LOG_I("Graphics handler cleaned up");
+    ESP_LOGI(TAG, "Graphics handler cleaned up");
 }
 
 // SDL_Renderer function removed - not needed in abstracted interface
@@ -351,25 +339,25 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_SCREEN:
             if (size >= sizeof(fmrb_link_graphics_clear_t)) {
                 const fmrb_link_graphics_clear_t *cmd = (const fmrb_link_graphics_clear_t*)data;
-                GFX_LOG_D("CLEAR/FILL_SCREEN: canvas_id=%u, color=0x%02x", cmd->canvas_id, cmd->color);
+                ESP_LOGD(TAG, "CLEAR/FILL_SCREEN: canvas_id=%u, color=0x%02x", cmd->canvas_id, cmd->color);
 
                 // Get target from command (thread-safe)
                 LovyanGFX* target;
                 if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
                     target = g_lgfx;
-                    GFX_LOG_D("CLEAR: Using screen");
+                    ESP_LOGD(TAG, "CLEAR: Using screen");
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
                     canvas->dirty = true;
-                    GFX_LOG_D("CLEAR: Using canvas %u", cmd->canvas_id);
+                    ESP_LOGD(TAG, "CLEAR: Using canvas %u", cmd->canvas_id);
                 }
                 target->fillScreen(cmd->color);
-                GFX_LOG_D("CLEAR: fillScreen executed");
+                ESP_LOGD(TAG, "CLEAR: fillScreen executed");
                 return 0;
             }
             break;
@@ -384,7 +372,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -405,7 +393,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -426,7 +414,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -440,25 +428,25 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_RECT:
             if (size >= sizeof(fmrb_link_graphics_rect_t)) {
                 const fmrb_link_graphics_rect_t *cmd = (const fmrb_link_graphics_rect_t*)data;
-                GFX_LOG_D("FILL_RECT: canvas_id=%u, x=%d, y=%d, w=%d, h=%d, color=0x%02x",
+                ESP_LOGD(TAG, "FILL_RECT: canvas_id=%u, x=%d, y=%d, w=%d, h=%d, color=0x%02x",
                        cmd->canvas_id, cmd->x, cmd->y, cmd->width, cmd->height, cmd->color);
                 // Get target from command (thread-safe)
                 LovyanGFX* target;
                 if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
                     target = g_lgfx;
-                    GFX_LOG_D("FILL_RECT: Using screen");
+                    ESP_LOGD(TAG, "FILL_RECT: Using screen");
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
                     canvas->dirty = true;
-                    GFX_LOG_D("FILL_RECT: Using canvas %u", cmd->canvas_id);
+                    ESP_LOGD(TAG, "FILL_RECT: Using canvas %u", cmd->canvas_id);
                 }
                 target->fillRect(cmd->x, cmd->y, cmd->width, cmd->height, cmd->color);
-                GFX_LOG_D("FILL_RECT: fillRect executed");
+                ESP_LOGD(TAG, "FILL_RECT: fillRect executed");
                 return 0;
             }
             break;
@@ -472,7 +460,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -492,7 +480,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -506,24 +494,24 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_CIRCLE:
             if (size >= sizeof(fmrb_link_graphics_circle_t)) {
                 const fmrb_link_graphics_circle_t *cmd = (const fmrb_link_graphics_circle_t*)data;
-                GFX_LOG_D("DRAW_CIRCLE: canvas_id=%u, x=%d, y=%d, r=%d, color=0x%02x",
+                ESP_LOGD(TAG, "DRAW_CIRCLE: canvas_id=%u, x=%d, y=%d, r=%d, color=0x%02x",
                        cmd->canvas_id, cmd->x, cmd->y, cmd->radius, cmd->color);
                 LovyanGFX* target;
                 if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
                     target = g_lgfx;
-                    GFX_LOG_D("DRAW_CIRCLE: Using screen");
+                    ESP_LOGD(TAG, "DRAW_CIRCLE: Using screen");
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
                     canvas->dirty = true;
-                    GFX_LOG_D("DRAW_CIRCLE: Using canvas %u", cmd->canvas_id);
+                    ESP_LOGD(TAG, "DRAW_CIRCLE: Using canvas %u", cmd->canvas_id);
                 }
                 target->drawCircle(cmd->x, cmd->y, cmd->radius, cmd->color);
-                GFX_LOG_D("DRAW_CIRCLE: drawCircle executed");
+                ESP_LOGD(TAG, "DRAW_CIRCLE: drawCircle executed");
                 return 0;
             }
             break;
@@ -531,24 +519,24 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_CIRCLE:
             if (size >= sizeof(fmrb_link_graphics_circle_t)) {
                 const fmrb_link_graphics_circle_t *cmd = (const fmrb_link_graphics_circle_t*)data;
-                GFX_LOG_D("FILL_CIRCLE: canvas_id=%u, x=%d, y=%d, r=%d, color=0x%02x",
+                ESP_LOGD(TAG, "FILL_CIRCLE: canvas_id=%u, x=%d, y=%d, r=%d, color=0x%02x",
                        cmd->canvas_id, cmd->x, cmd->y, cmd->radius, cmd->color);
                 LovyanGFX* target;
                 if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
                     target = g_lgfx;
-                    GFX_LOG_D("FILL_CIRCLE: Using screen");
+                    ESP_LOGD(TAG, "FILL_CIRCLE: Using screen");
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
                     canvas->dirty = true;
-                    GFX_LOG_D("FILL_CIRCLE: Using canvas %u", cmd->canvas_id);
+                    ESP_LOGD(TAG, "FILL_CIRCLE: Using canvas %u", cmd->canvas_id);
                 }
                 target->fillCircle(cmd->x, cmd->y, cmd->radius, cmd->color);
-                GFX_LOG_D("FILL_CIRCLE: fillCircle executed");
+                ESP_LOGD(TAG, "FILL_CIRCLE: fillCircle executed");
                 return 0;
             }
             break;
@@ -562,7 +550,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -582,7 +570,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -602,7 +590,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -622,7 +610,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
@@ -636,7 +624,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_STRING:
             // Use structure from fmrb_link_protocol.h (no cmd_type in data)
             if (size < sizeof(fmrb_link_graphics_text_t)) {
-                GFX_LOG_E("String command too small: size=%zu, expected>=%zu", size, sizeof(fmrb_link_graphics_text_t));
+                ESP_LOGE(TAG, "String command too small: size=%zu, expected>=%zu", size, sizeof(fmrb_link_graphics_text_t));
                 break;
             }
             {
@@ -644,7 +632,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 size_t expected_size = sizeof(fmrb_link_graphics_text_t) + text_cmd->text_len;
                 if (size < expected_size) {
-                    GFX_LOG_E("String command size mismatch: expected=%zu, actual=%zu, text_len=%u",
+                    ESP_LOGE(TAG, "String command size mismatch: expected=%zu, actual=%zu, text_len=%u",
                             expected_size, size, text_cmd->text_len);
                     break;
                 }
@@ -656,7 +644,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 memcpy(text_buf, text_data, len);
                 text_buf[len] = '\0';
 
-                GFX_LOG_D("DRAW_STRING: canvas_id=%u, x=%d, y=%d, color=0x%02x, bg_color=0x%02x, bg_transparent=%d, text='%s'",
+                ESP_LOGD(TAG, "DRAW_STRING: canvas_id=%u, x=%d, y=%d, color=0x%02x, bg_color=0x%02x, bg_transparent=%d, text='%s'",
                        text_cmd->canvas_id, (int)text_cmd->x, (int)text_cmd->y, text_cmd->color,
                        text_cmd->bg_color, text_cmd->bg_transparent, text_buf);
 
@@ -664,16 +652,16 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 LovyanGFX* target;
                 if (text_cmd->canvas_id == FMRB_CANVAS_SCREEN) {
                     target = g_lgfx;
-                    GFX_LOG_D("DRAW_STRING: Using screen");
+                    ESP_LOGD(TAG, "DRAW_STRING: Using screen");
                 } else {
                     canvas_state_t* canvas = canvas_state_find(text_cmd->canvas_id);
                     if (!canvas) {
-                        GFX_LOG_E("Canvas %u not found", text_cmd->canvas_id);
+                        ESP_LOGE(TAG, "Canvas %u not found", text_cmd->canvas_id);
                         return -1;
                     }
                     target = canvas->draw_buffer;
                     canvas->dirty = true;
-                    GFX_LOG_D("DRAW_STRING: Using canvas %u", text_cmd->canvas_id);
+                    ESP_LOGD(TAG, "DRAW_STRING: Using canvas %u", text_cmd->canvas_id);
                 }
 
                 // Set text color with optional background
@@ -687,34 +675,34 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 target->setCursor(text_cmd->x, text_cmd->y);
                 target->print(text_buf);
-                GFX_LOG_D("DRAW_STRING: Text drawn");
+                ESP_LOGD(TAG, "DRAW_STRING: Text drawn");
                 return 0;
             }
 
         // case FMRB_LINK_GFX_PRESENT:
         //     if (size >= sizeof(fmrb_link_graphics_present_t)) {
         //         const fmrb_link_graphics_present_t *cmd = (const fmrb_link_graphics_present_t*)data;
-        //         GFX_LOG_D("PRESENT: canvas_id=%u", cmd->canvas_id);
+        //         ESP_LOGD(TAG, "PRESENT: canvas_id=%u", cmd->canvas_id);
 
         //         if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
         //             // Direct screen update - nothing to do, main loop handles rendering
-        //             GFX_LOG_D("PRESENT: Screen - will be rendered in main loop");
+        //             ESP_LOGD(TAG, "PRESENT: Screen - will be rendered in main loop");
         //         } else {
         //             // Push draw_buffer to render_buffer for the specified canvas
         //             canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
         //             if (!canvas) {
-        //                 GFX_LOG_E("Canvas %u not found for present", cmd->canvas_id);
+        //                 ESP_LOGE(TAG, "Canvas %u not found for present", cmd->canvas_id);
         //                 return -1;
         //             }
 
         //             // Copy draw_buffer to render_buffer (double buffering)
-        //             GFX_LOG_D("PRESENT: Copying draw_buffer to render_buffer for canvas %u", cmd->canvas_id);
+        //             ESP_LOGD(TAG, "PRESENT: Copying draw_buffer to render_buffer for canvas %u", cmd->canvas_id);
         //             canvas->draw_buffer->pushSprite(canvas->render_buffer, 0, 0);
         //             canvas->dirty = true;
         //         }
 
         //         // Note: Rendering and display() are handled by main loop at ~60fps
-        //         GFX_LOG_D("PRESENT: Canvas updated, will be rendered in main loop");
+        //         ESP_LOGD(TAG, "PRESENT: Canvas updated, will be rendered in main loop");
         //         return 0;
         //     }
         //     break;
@@ -733,7 +721,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // Allocate canvas state
                 canvas_state_t* canvas = canvas_state_alloc(canvas_id, cmd->width, cmd->height);
                 if (!canvas) {
-                    GFX_LOG_E("Failed to allocate canvas %u (%dx%d)",
+                    ESP_LOGE(TAG, "Failed to allocate canvas %u (%dx%d)",
                             canvas_id, (int)cmd->width, (int)cmd->height);
                     return -1;
                 }
@@ -741,7 +729,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // Override z_order with value from Core
                 canvas->z_order = cmd->z_order;
 
-                GFX_LOG_I("Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, (int)cmd->width, (int)cmd->height, (int)cmd->z_order);
+                ESP_LOGI(TAG, "Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, (int)cmd->width, (int)cmd->height, (int)cmd->z_order);
 
                 // Send ACK with canvas_id
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
@@ -759,7 +747,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                 if (!canvas) {
-                    GFX_LOG_E("Canvas %u not found", cmd->canvas_id);
+                    ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
                     return -1;
                 }
 
@@ -769,7 +757,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 }
 
                 canvas_state_free(canvas);
-                GFX_LOG_I("Canvas deleted: ID=%u", cmd->canvas_id);
+                ESP_LOGI(TAG, "Canvas deleted: ID=%u", cmd->canvas_id);
                 return 0;
             }
             break;
@@ -780,13 +768,13 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                 if (!canvas) {
-                    GFX_LOG_E("Canvas %u not found for SET_WINDOW_ORDER", cmd->canvas_id);
+                    ESP_LOGE(TAG, "Canvas %u not found for SET_WINDOW_ORDER", cmd->canvas_id);
                     return -1;
                 }
 
                 // Update z_order
                 canvas->z_order = cmd->z_order;
-                GFX_LOG_I("Canvas %u z_order updated to %d", cmd->canvas_id, cmd->z_order);
+                ESP_LOGI(TAG, "Canvas %u z_order updated to %d", cmd->canvas_id, cmd->z_order);
                 return 0;
             }
             break;
@@ -797,11 +785,11 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                 if (!canvas) {
-                    GFX_LOG_E("Canvas %u not found for UPDATE_WINDOW", cmd->canvas_id);
+                    ESP_LOGE(TAG, "Canvas %u not found for UPDATE_WINDOW", cmd->canvas_id);
                     return -1;
                 }
 
-                GFX_LOG_I("UPDATE_WINDOW: canvas_id=%u, pos=(%d,%d), active_size=%dx%d",
+                ESP_LOGI(TAG, "UPDATE_WINDOW: canvas_id=%u, pos=(%d,%d), active_size=%dx%d",
                           cmd->canvas_id, (int)cmd->x, (int)cmd->y, (int)cmd->width, (int)cmd->height);
 
                 // Update position
@@ -819,7 +807,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 canvas->render_buffer->setBuffer(canvas->render_buffer_mem,
                                                 canvas->active_width, canvas->active_height, 8);
 
-                GFX_LOG_I("Canvas %u resized to %dx%d using setBuffer (allocated: %dx%d)",
+                ESP_LOGI(TAG, "Canvas %u resized to %dx%d using setBuffer (allocated: %dx%d)",
                           cmd->canvas_id, canvas->active_width, canvas->active_height,
                           canvas->width, canvas->height);
 
@@ -835,13 +823,13 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // Validate target
                 if (cmd->target_id != FMRB_CANVAS_SCREEN) {
                     if (!canvas_state_find(cmd->target_id)) {
-                        GFX_LOG_E("Canvas %u not found for set_target", cmd->target_id);
+                        ESP_LOGE(TAG, "Canvas %u not found for set_target", cmd->target_id);
                         return -1;
                     }
                 }
 
                 g_current_target = cmd->target_id;
-                GFX_LOG_D("Drawing target set: ID=%u %s", cmd->target_id,
+                ESP_LOGD(TAG, "Drawing target set: ID=%u %s", cmd->target_id,
                        cmd->target_id == FMRB_CANVAS_SCREEN ? "(screen)" : "(canvas)");
                 return 0;
             }
@@ -854,7 +842,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // Find source canvas
                 canvas_state_t* src_canvas = canvas_state_find(cmd->canvas_id);
                 if (!src_canvas) {
-                    GFX_LOG_E("Canvas %u not found for push", cmd->canvas_id);
+                    ESP_LOGE(TAG, "Canvas %u not found for push", cmd->canvas_id);
                     return -1;
                 }
 
@@ -879,7 +867,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                     push_x = cmd->x;
                     push_y = cmd->y;
                 } else {
-                    GFX_LOG_E("Destination canvas %u is not supported yet...", cmd->dest_canvas_id);
+                    ESP_LOGE(TAG, "Destination canvas %u is not supported yet...", cmd->dest_canvas_id);
                     // Store push position in canvas state (for render_frame)
                     // TODO: how to handle child canvas??
                     // src_canvas->push_x = cmd->x;
@@ -890,18 +878,18 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 // Push draw_buffer to destination
                 LGFX_Sprite* src_sprite = src_canvas->draw_buffer;
-                GFX_LOG_D("PUSH_CANVAS: src=%p (active=%dx%d), dst=%p (%s), push_at=(%d,%d), save_pos=(%d,%d)",
+                ESP_LOGD(TAG, "PUSH_CANVAS: src=%p (active=%dx%d), dst=%p (%s), push_at=(%d,%d), save_pos=(%d,%d)",
                        src_sprite, src_canvas->active_width, src_canvas->active_height, dst, dst_name,
                        push_x, push_y, (int)cmd->x, (int)cmd->y);
 
                 // Since setBuffer configures sprite to active size, pushSprite transfers only active region
                 if (cmd->use_transparency) {
                     src_sprite->pushSprite(dst, push_x, push_y, cmd->transparent_color);
-                    GFX_LOG_D("Canvas pushed with transparency: ID=%u to %s at (%d,%d), transp=0x%02x",
+                    ESP_LOGD(TAG, "Canvas pushed with transparency: ID=%u to %s at (%d,%d), transp=0x%02x",
                            cmd->canvas_id, dst_name, push_x, push_y, cmd->transparent_color);
                 } else {
                     src_sprite->pushSprite(dst, push_x, push_y);
-                    GFX_LOG_D("Canvas pushed: ID=%u to %s at (%d,%d)", cmd->canvas_id, dst_name, push_x, push_y);
+                    ESP_LOGD(TAG, "Canvas pushed: ID=%u to %s at (%d,%d)", cmd->canvas_id, dst_name, push_x, push_y);
                 }
 
                 return 0;
@@ -913,7 +901,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 const fmrb_link_graphics_cursor_position_t *cmd = (const fmrb_link_graphics_cursor_position_t*)data;
                 g_cursor_x = cmd->x;
                 g_cursor_y = cmd->y;
-                GFX_LOG_D("Cursor position updated: (%d, %d)", g_cursor_x, g_cursor_y);
+                ESP_LOGD(TAG, "Cursor position updated: (%d, %d)", g_cursor_x, g_cursor_y);
                 return 0;
             }
             break;
@@ -922,16 +910,16 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             if (size >= sizeof(fmrb_link_graphics_cursor_visible_t)) {
                 const fmrb_link_graphics_cursor_visible_t *cmd = (const fmrb_link_graphics_cursor_visible_t*)data;
                 g_cursor_visible = cmd->visible;
-                GFX_LOG_D("Cursor visibility updated: %s", g_cursor_visible ? "visible" : "hidden");
+                ESP_LOGD(TAG, "Cursor visibility updated: %s", g_cursor_visible ? "visible" : "hidden");
                 return 0;
             }
             break;
 
         default:
-            GFX_LOG_E("Unknown graphics command: 0x%02x", cmd_type);
+            ESP_LOGE(TAG, "Unknown graphics command: 0x%02x", cmd_type);
             return -1;
     }
 
-    GFX_LOG_E("Invalid command size for type 0x%02x (size=%zu)", cmd_type, size);
+    ESP_LOGE(TAG, "Invalid command size for type 0x%02x (size=%zu)", cmd_type, size);
     return -1;
 }

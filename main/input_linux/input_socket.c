@@ -13,6 +13,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include "esp_log.h"
+
+static const char *TAG = "input_socket";
 
 #define INPUT_SOCKET_PATH "/tmp/fmrb_input_socket"
 #define MAX_PACKET_SIZE 512
@@ -22,7 +25,7 @@ static int g_client_fd = -1;
 
 int input_socket_start(void) {
     if (g_server_fd >= 0) {
-        fprintf(stderr, "[INPUT_SOCKET] Server already running\n");
+        ESP_LOGE(TAG, "Server already running");
         return 0;
     }
 
@@ -32,7 +35,7 @@ int input_socket_start(void) {
     // Create socket
     g_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_server_fd < 0) {
-        perror("[INPUT_SOCKET] Failed to create socket");
+        ESP_LOGE(TAG, "Failed to create socket: %s", strerror(errno));
         return -1;
     }
 
@@ -43,7 +46,7 @@ int input_socket_start(void) {
     strncpy(addr.sun_path, INPUT_SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
     if (bind(g_server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("[INPUT_SOCKET] Failed to bind socket");
+        ESP_LOGE(TAG, "Failed to bind socket: %s", strerror(errno));
         close(g_server_fd);
         g_server_fd = -1;
         return -1;
@@ -51,7 +54,7 @@ int input_socket_start(void) {
 
     // Listen
     if (listen(g_server_fd, 1) < 0) {
-        perror("[INPUT_SOCKET] Failed to listen");
+        ESP_LOGE(TAG, "Failed to listen: %s", strerror(errno));
         close(g_server_fd);
         g_server_fd = -1;
         unlink(INPUT_SOCKET_PATH);
@@ -62,14 +65,14 @@ int input_socket_start(void) {
     int flags = fcntl(g_server_fd, F_GETFL, 0);
     fcntl(g_server_fd, F_SETFL, flags | O_NONBLOCK);
 
-    printf("[INPUT_SOCKET] Server started on %s\n", INPUT_SOCKET_PATH);
+    ESP_LOGI(TAG, "Server started on %s", INPUT_SOCKET_PATH);
 
     // Try to accept client (non-blocking)
     struct sockaddr_un client_addr;
     socklen_t client_len = sizeof(client_addr);
     g_client_fd = accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len);
     if (g_client_fd >= 0) {
-        printf("[INPUT_SOCKET] Client connected\n");
+        ESP_LOGI(TAG, "Client connected");
     }
 
     return 0;
@@ -85,7 +88,7 @@ void input_socket_stop(void) {
         close(g_server_fd);
         g_server_fd = -1;
         unlink(INPUT_SOCKET_PATH);
-        printf("[INPUT_SOCKET] Server stopped\n");
+        ESP_LOGI(TAG, "Server stopped");
     }
 }
 
@@ -96,7 +99,7 @@ int input_socket_send_event(uint8_t type, const void* data, uint16_t len) {
         socklen_t client_len = sizeof(client_addr);
         g_client_fd = accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len);
         if (g_client_fd >= 0) {
-            printf("[INPUT_SOCKET] Client connected\n");
+            ESP_LOGI(TAG, "Client connected");
         }
     }
 
@@ -108,7 +111,7 @@ int input_socket_send_event(uint8_t type, const void* data, uint16_t len) {
     // Build packet: [type(1)][len(2)][data(len)]
     uint8_t packet[MAX_PACKET_SIZE];
     if (3 + len > sizeof(packet)) {
-        fprintf(stderr, "[INPUT_SOCKET] Packet too large: %u bytes\n", len);
+        ESP_LOGE(TAG, "Packet too large: %u bytes", len);
         return -1;
     }
 
@@ -122,11 +125,11 @@ int input_socket_send_event(uint8_t type, const void* data, uint16_t len) {
     ssize_t sent = send(g_client_fd, packet, 3 + len, MSG_NOSIGNAL);
     if (sent < 0) {
         if (errno == EPIPE || errno == ECONNRESET) {
-            printf("[INPUT_SOCKET] Client disconnected\n");
+            ESP_LOGI(TAG, "Client disconnected");
             close(g_client_fd);
             g_client_fd = -1;
         } else {
-            perror("[INPUT_SOCKET] Send failed");
+            ESP_LOGE(TAG, "Send failed: %s", strerror(errno));
         }
         return -1;
     }

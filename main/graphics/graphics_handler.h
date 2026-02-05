@@ -9,14 +9,6 @@
 extern "C" {
 #endif
 
-// Graphics handler log levels
-typedef enum {
-    GFX_LOG_NONE = 0,     // No logging
-    GFX_LOG_ERROR = 1,    // Error messages only
-    GFX_LOG_INFO = 2,     // Info + Error
-    GFX_LOG_DEBUG = 3,    // Debug + Info + Error (verbose)
-} gfx_log_level_t;
-
 /**
  * @brief Initialize graphics handler
  * @return 0 on success, -1 on error
@@ -40,12 +32,6 @@ void graphics_handler_cleanup(void);
 int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_type, uint8_t seq, const uint8_t *data, size_t size);
 
 // SDL renderer functions removed - not needed in abstracted interface
-
-/**
- * @brief Set graphics handler log level
- * @param level Log level (0=NONE, 1=ERROR, 2=INFO, 3=DEBUG)
- */
-void graphics_handler_set_log_level(int level);
 
 /**
  * @brief Render all canvases to screen in Z-order

@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <SDL2/SDL.h>
+#include "esp_log.h"
+
+static const char *TAG = "audio_handler";
 
 typedef struct {
     uint32_t music_id;
@@ -28,7 +31,7 @@ int audio_handler_init(void) {
     // Initialize SDL audio subsystem if not already initialized
     if (!SDL_WasInit(SDL_INIT_AUDIO)) {
         if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
-            fprintf(stderr, "Failed to initialize SDL audio subsystem: %s\n", SDL_GetError());
+            ESP_LOGE(TAG, "Failed to initialize SDL audio subsystem: %s", SDL_GetError());
             return -1;
         }
     }
@@ -47,11 +50,11 @@ int audio_handler_init(void) {
 
     audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (audio_device == 0) {
-        fprintf(stderr, "Failed to open audio device: %s\n", SDL_GetError());
+        ESP_LOGE(TAG, "Failed to open audio device: %s", SDL_GetError());
         return -1;
     }
 
-    printf("Audio handler initialized: %d Hz, %d channels\n",
+    ESP_LOGI(TAG, "Audio handler initialized: %d Hz, %d channels",
            have.freq, have.channels);
     return 0;
 }
@@ -71,12 +74,12 @@ void audio_handler_cleanup(void) {
     }
     track_count = 0;
 
-    printf("Audio handler cleaned up\n");
+    ESP_LOGI(TAG, "Audio handler cleaned up");
 }
 
 static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t *music_data) {
     if (track_count >= FMRB_MAX_MUSIC_TRACKS) {
-        fprintf(stderr, "Maximum music tracks reached\n");
+        ESP_LOGE(TAG, "Maximum music tracks reached");
         return -1;
     }
 
@@ -104,13 +107,13 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
     music_tracks[track_idx].data = malloc(cmd->data_size);
 
     if (!music_tracks[track_idx].data) {
-        fprintf(stderr, "Failed to allocate music data\n");
+        ESP_LOGE(TAG, "Failed to allocate music data");
         return -1;
     }
 
     memcpy(music_tracks[track_idx].data, music_data, cmd->data_size);
 
-    printf("Loaded music track %u (%u bytes)\n", cmd->music_id, cmd->data_size);
+    ESP_LOGI(TAG, "Loaded music track %u (%u bytes)", cmd->music_id, cmd->data_size);
     return 0;
 }
 
@@ -118,33 +121,33 @@ static int process_play_command(const fmrb_audio_play_cmd_t *cmd) {
     // Find music track
     for (int i = 0; i < track_count; i++) {
         if (music_tracks[i].music_id == cmd->music_id) {
-            printf("Playing music track %u\n", cmd->music_id);
+            ESP_LOGI(TAG, "Playing music track %u", cmd->music_id);
             current_status = FMRB_AUDIO_STATUS_PLAYING;
             SDL_PauseAudioDevice(audio_device, 0);
             return 0;
         }
     }
 
-    fprintf(stderr, "Music track %u not found\n", cmd->music_id);
+    ESP_LOGE(TAG, "Music track %u not found", cmd->music_id);
     return -1;
 }
 
 static int process_stop_command(void) {
-    printf("Stopping audio playback\n");
+    ESP_LOGI(TAG, "Stopping audio playback");
     current_status = FMRB_AUDIO_STATUS_STOPPED;
     SDL_PauseAudioDevice(audio_device, 1);
     return 0;
 }
 
 static int process_pause_command(void) {
-    printf("Pausing audio playback\n");
+    ESP_LOGI(TAG, "Pausing audio playback");
     current_status = FMRB_AUDIO_STATUS_PAUSED;
     SDL_PauseAudioDevice(audio_device, 1);
     return 0;
 }
 
 static int process_resume_command(void) {
-    printf("Resuming audio playback\n");
+    ESP_LOGI(TAG, "Resuming audio playback");
     current_status = FMRB_AUDIO_STATUS_PLAYING;
     SDL_PauseAudioDevice(audio_device, 0);
     return 0;
@@ -152,7 +155,7 @@ static int process_resume_command(void) {
 
 static int process_volume_command(const fmrb_audio_volume_cmd_t *cmd) {
     current_volume = cmd->volume;
-    printf("Set volume to %u\n", cmd->volume);
+    ESP_LOGI(TAG, "Set volume to %u", cmd->volume);
     // Note: SDL2 doesn't have built-in volume control, would need mixing
     return 0;
 }
@@ -197,11 +200,11 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
             break;
 
         default:
-            fprintf(stderr, "Unknown audio command: 0x%02x\n", cmd_type);
+            ESP_LOGE(TAG, "Unknown audio command: 0x%02x", cmd_type);
             return -1;
     }
 
-    fprintf(stderr, "Invalid command size for audio type 0x%02x\n", cmd_type);
+    ESP_LOGE(TAG, "Invalid command size for audio type 0x%02x", cmd_type);
     return -1;
 }
 
