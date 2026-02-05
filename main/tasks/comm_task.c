@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "comm_interface.h"
+#include "message_handler.h"
 
 static const char *TAG = "comm_task";
 static volatile int task_running = 1;
@@ -79,15 +80,30 @@ void comm_task(void *pvParameters) {
 
     // Main communication processing loop
     while (task_running) {
-        // Process incoming messages
-        int result = comm->process();
+        // Process low-level communication (accept, read, decode frames)
+        int frames_received = comm->process();
 
-        if (result < 0) {
+        if (frames_received < 0) {
             //ESP_LOGW(TAG, "Communication process error");
         }
 
-        // Small delay to prevent busy waiting (~60 FPS)
-        vTaskDelay(pdMS_TO_TICKS(16));
+        // Process decoded messages
+        uint8_t type, seq, sub_cmd;
+        const uint8_t *payload;
+        size_t payload_len;
+
+        while (comm->receive_message(&type, &seq, &sub_cmd, &payload, &payload_len) > 0) {
+            // Handle message in application layer
+            int result = message_handler_process(type, seq, sub_cmd, payload, payload_len);
+            if (result < 0) {
+                ESP_LOGW(TAG, "Message handler failed: type=%u seq=%u sub_cmd=0x%02x",
+                         type, seq, sub_cmd);
+            }
+        }
+
+        // Small delay to prevent busy waiting
+        // Use 1ms to handle high-frequency graphics commands
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     // Cleanup communication interface

@@ -1,6 +1,4 @@
 #include "socket_server.h"
-#include "graphics_handler.h"
-#include "audio_handler.h"
 #include "fmrb_link_cobs.h"
 #include "fmrb_link_protocol.h"
 #include <stdio.h>
@@ -29,8 +27,22 @@ static sock_log_level_t g_sock_log_level = SOCK_LOG_ERROR;
 #define SOCK_LOG_I(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_INFO) { printf("[SOCK_INFO] " fmt "\n", ##__VA_ARGS__); } } while(0)
 #define SOCK_LOG_D(fmt, ...) do { if (g_sock_log_level >= SOCK_LOG_DEBUG) { printf("[SOCK_DBG] " fmt "\n", ##__VA_ARGS__); } } while(0)
 
-// Forward declaration - implemented in main.cpp
-extern int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth);
+// Message queue structure for decoded messages
+#define MAX_QUEUED_MESSAGES 128  // Increased from 8 to handle burst of drawing commands
+#define MAX_MESSAGE_PAYLOAD 4096
+
+typedef struct {
+    uint8_t type;
+    uint8_t seq;
+    uint8_t sub_cmd;
+    uint8_t payload[MAX_MESSAGE_PAYLOAD];
+    size_t payload_len;
+} queued_message_t;
+
+static queued_message_t message_queue[MAX_QUEUED_MESSAGES];
+static int queue_read_idx = 0;
+static int queue_write_idx = 0;
+static int queue_count = 0;
 
 static int server_fd = -1;
 static int client_fd = -1;
@@ -98,18 +110,49 @@ static int accept_connection(void) {
     return 0;
 }
 
+// Enqueue a decoded message
+static int enqueue_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
+                           const uint8_t *payload, size_t payload_len) {
+    if (queue_count >= MAX_QUEUED_MESSAGES) {
+        SOCK_LOG_E("Message queue full, dropping message");
+        return -1;
+    }
+
+    if (payload_len > MAX_MESSAGE_PAYLOAD) {
+        SOCK_LOG_E("Message payload too large: %zu > %d", payload_len, MAX_MESSAGE_PAYLOAD);
+        return -1;
+    }
+
+    queued_message_t *msg = &message_queue[queue_write_idx];
+    msg->type = type;
+    msg->seq = seq;
+    msg->sub_cmd = sub_cmd;
+    msg->payload_len = payload_len;
+
+    if (payload && payload_len > 0) {
+        memcpy(msg->payload, payload, payload_len);
+    }
+
+    queue_write_idx = (queue_write_idx + 1) % MAX_QUEUED_MESSAGES;
+    queue_count++;
+
+    SOCK_LOG_D("Enqueued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
+               type, seq, sub_cmd, payload_len, queue_count, MAX_QUEUED_MESSAGES);
+    return 0;
+}
+
 static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     // Allocate buffer for decoded data (COBS + CRC32)
     uint8_t *decoded_buffer = (uint8_t*)malloc(encoded_len);
     if (!decoded_buffer) {
-        fprintf(stderr, "Failed to allocate decode buffer\n");
+        SOCK_LOG_E("Failed to allocate decode buffer");
         return -1;
     }
 
     // COBS decode
     ssize_t decoded_len = fmrb_link_cobs_decode(encoded_data, encoded_len, decoded_buffer);
     if (decoded_len < (ssize_t)sizeof(uint32_t)) {
-        fprintf(stderr, "COBS decode failed or frame too small\n");
+        SOCK_LOG_E("COBS decode failed or frame too small");
         free(decoded_buffer);
         return -1;
     }
@@ -123,7 +166,7 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     // Verify CRC32
     uint32_t calculated_crc = fmrb_link_crc32_update(0, msgpack_data, msgpack_len);
     if (received_crc != calculated_crc) {
-        fprintf(stderr, "CRC32 mismatch: expected=0x%08x, actual=0x%08x\n", calculated_crc, received_crc);
+        SOCK_LOG_E("CRC32 mismatch: expected=0x%08x, actual=0x%08x", calculated_crc, received_crc);
         free(decoded_buffer);
         return -1;
     }
@@ -134,7 +177,7 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     msgpack_unpack_return ret = msgpack_unpack_next(&msg, (const char*)msgpack_data, msgpack_len, NULL);
 
     if (ret != MSGPACK_UNPACK_SUCCESS) {
-        fprintf(stderr, "msgpack unpack failed\n");
+        SOCK_LOG_E("msgpack unpack failed");
         msgpack_unpacked_destroy(&msg);
         free(decoded_buffer);
         return -1;
@@ -142,7 +185,7 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
 
     msgpack_object root = msg.data;
     if (root.type != MSGPACK_OBJECT_ARRAY || root.via.array.size != 4) {
-        fprintf(stderr, "Invalid msgpack format: not array or size != 4\n");
+        SOCK_LOG_E("Invalid msgpack format: not array or size != 4");
         msgpack_unpacked_destroy(&msg);
         free(decoded_buffer);
         return -1;
@@ -161,88 +204,13 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
         payload_len = root.via.array.ptr[3].via.bin.size;
     }
 
-    // Debug log for GRAPHICS commands (controlled by log level)
-    if (type == FMRB_LINK_TYPE_GRAPHICS) {
-        SOCK_LOG_D("RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu msgpack_len=%zu",
-               type, seq, sub_cmd, payload_len, msgpack_len);
-        if (g_sock_log_level >= SOCK_LOG_DEBUG) {
-            printf("RX msgpack bytes (%zu): ", msgpack_len);
-            for (size_t i = 0; i < msgpack_len && i < 64; i++) {
-                printf("%02X ", msgpack_data[i]);
-                if ((i + 1) % 16 == 0) printf("\n");
-            }
-            if (msgpack_len > 0) printf("\n");
-            fflush(stdout);
-        }
-    }
+    // Debug log for message reception
+    SOCK_LOG_D("RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
+               type, seq, sub_cmd, payload_len);
 
-    // sub_cmd contains the command type, payload contains only structure data
-    // Pass sub_cmd as cmd_type to handlers
-    const uint8_t *cmd_buffer = payload;
-    size_t cmd_len = payload_len;
+    // Enqueue the decoded message for upper layer processing
+    int result = enqueue_message(type, seq, sub_cmd, payload, payload_len);
 
-    // Process based on type
-    int result = 0;
-    switch (type & 0x7F) {
-        case FMRB_LINK_TYPE_CONTROL:
-            // For control commands, sub_cmd is the command type
-            if (sub_cmd == FMRB_LINK_CONTROL_VERSION && cmd_len >= 1) {
-                // Version check request
-                uint8_t remote_version = cmd_buffer[0];
-                uint8_t local_version = FMRB_LINK_PROTOCOL_VERSION;
-
-                printf("Received VERSION check: remote=%d, local=%d, seq=%u, client_fd=%d\n",
-                       remote_version, local_version, seq, client_fd);
-
-                // Send version response via ACK with version in payload
-                result = socket_server_send_ack(type, seq, &local_version, sizeof(local_version));
-
-                if (result == 0) {
-                    printf("VERSION ACK sent successfully\n");
-                } else {
-                    fprintf(stderr, "VERSION ACK send failed: result=%d\n", result);
-                }
-
-                if (remote_version != local_version) {
-                    fprintf(stderr, "WARNING: Protocol version mismatch! remote=%d, local=%d\n",
-                            remote_version, local_version);
-                }
-            } else if (sub_cmd == FMRB_LINK_CONTROL_INIT_DISPLAY && cmd_len >= sizeof(fmrb_control_init_display_t)) {
-                const fmrb_control_init_display_t *init_cmd = (const fmrb_control_init_display_t*)cmd_buffer;
-                printf("Received INIT_DISPLAY: %dx%d, %d-bit\n",
-                       init_cmd->width, init_cmd->height, init_cmd->color_depth);
-                result = init_display_callback(init_cmd->width, init_cmd->height, init_cmd->color_depth);
-
-                // Send ACK to prevent retransmission
-                if (result == 0) {
-                    socket_server_send_ack(type, seq, NULL, 0);
-                }
-            } else {
-                fprintf(stderr, "Unknown control command: 0x%02x\n", sub_cmd);
-                result = -1;
-            }
-            break;
-
-        case FMRB_LINK_TYPE_GRAPHICS:
-            // Pass msg_type and sub_cmd as graphics cmd_type
-            result = graphics_handler_process_command(type, sub_cmd, seq, cmd_buffer, cmd_len);
-            // Send ACK to prevent retransmission
-            if (result == 0) {
-                socket_server_send_ack(type, seq, NULL, 0);
-            }
-            break;
-
-        case FMRB_LINK_TYPE_AUDIO:
-            result = audio_handler_process_command(cmd_buffer, cmd_len);
-            break;
-
-        default:
-            fprintf(stderr, "Unknown frame type: %u\n", type);
-            result = -1;
-            break;
-    }
-
-    // cmd_buffer now points to payload inside decoded_buffer, don't free separately
     msgpack_unpacked_destroy(&msg);
     free(decoded_buffer);
     return result;
@@ -439,6 +407,10 @@ int socket_server_is_running(void) {
 #include "comm_interface.h"
 
 static int comm_socket_init(void) {
+    // Reset message queue
+    queue_read_idx = 0;
+    queue_write_idx = 0;
+    queue_count = 0;
     return socket_server_start();
 }
 
@@ -454,14 +426,42 @@ static int comm_socket_send(const uint8_t *data, size_t len) {
 }
 
 static int comm_socket_receive(uint8_t *buf, size_t buf_size) {
-    // Socket server handles receive internally via process()
+    // Legacy method - not used in new architecture
     (void)buf;
     (void)buf_size;
-    return 0;  // Not exposed in current architecture
+    return 0;
+}
+
+static int comm_socket_receive_message(uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
+                                        const uint8_t **payload, size_t *payload_len) {
+    if (queue_count == 0) {
+        return 0;  // No messages available
+    }
+
+    // Dequeue message
+    queued_message_t *msg = &message_queue[queue_read_idx];
+
+    *type = msg->type;
+    *seq = msg->seq;
+    *sub_cmd = msg->sub_cmd;
+    *payload = msg->payload;
+    *payload_len = msg->payload_len;
+
+    queue_read_idx = (queue_read_idx + 1) % MAX_QUEUED_MESSAGES;
+    queue_count--;
+
+    SOCK_LOG_D("Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
+               *type, *seq, *sub_cmd, *payload_len, queue_count, MAX_QUEUED_MESSAGES);
+
+    return 1;  // Message received
 }
 
 static void comm_socket_cleanup(void) {
     socket_server_stop();
+    // Clear message queue
+    queue_read_idx = 0;
+    queue_write_idx = 0;
+    queue_count = 0;
 }
 
 static const comm_interface_t socket_comm_impl = {
@@ -469,6 +469,7 @@ static const comm_interface_t socket_comm_impl = {
     .send = comm_socket_send,
     .receive = comm_socket_receive,
     .process = comm_socket_process,
+    .receive_message = comm_socket_receive_message,
     .send_ack = socket_server_send_ack,
     .is_running = socket_server_is_running,
     .cleanup = comm_socket_cleanup

@@ -2,6 +2,7 @@ set(SRCS
     "main.cpp"
     "tasks/audio_task.c"
     "tasks/comm_task.c"
+    "tasks/message_handler.c"
     "tasks/graphics_task.cpp"
     "common/fmrb_link_cobs.c"
 )
