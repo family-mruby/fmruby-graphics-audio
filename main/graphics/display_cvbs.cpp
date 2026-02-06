@@ -1,5 +1,3 @@
-#ifndef CONFIG_IDF_TARGET_LINUX
-
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <lgfx/v1/platforms/esp32/Panel_CVBS.hpp>
@@ -108,5 +106,3 @@ static const display_interface_t esp32_display_interface = {
 extern "C" const display_interface_t* display_get_interface(void) {
     return &esp32_display_interface;
 }
-
-#endif // !CONFIG_IDF_TARGET_LINUX

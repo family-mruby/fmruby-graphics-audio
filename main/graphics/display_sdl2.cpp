@@ -1,5 +1,3 @@
-#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
-
 #include <SDL2/SDL.h>
 
 #define LGFX_USE_V1
@@ -144,5 +142,3 @@ static const display_interface_t linux_display_interface = {
 extern "C" const display_interface_t* display_get_interface(void) {
     return &linux_display_interface;
 }
-
-#endif // CONFIG_IDF_TARGET_LINUX || LGFX_USE_SDL
