@@ -1,5 +1,4 @@
-#ifndef AUDIO_TASK_H
-#define AUDIO_TASK_H
+#pragma once
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,5 +18,3 @@ void audio_task_stop(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // AUDIO_TASK_H

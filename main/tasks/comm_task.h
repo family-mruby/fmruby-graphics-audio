@@ -1,5 +1,4 @@
-#ifndef COMM_TASK_H
-#define COMM_TASK_H
+#pragma once
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,5 +18,3 @@ void comm_task_stop(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // COMM_TASK_H

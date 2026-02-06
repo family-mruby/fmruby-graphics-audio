@@ -1,5 +1,4 @@
-#ifndef SOCKET_SERVER_H
-#define SOCKET_SERVER_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -44,5 +43,3 @@ int socket_server_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_da
 #ifdef __cplusplus
 }
 #endif
-
-#endif // SOCKET_SERVER_H

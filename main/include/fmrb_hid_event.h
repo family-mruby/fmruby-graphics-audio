@@ -3,8 +3,7 @@
  * @brief HID (Human Interface Device) event definitions for keyboard and mouse
  */
 
-#ifndef FMRB_HID_EVENT_H
-#define FMRB_HID_EVENT_H
+#pragma once
 
 #include <stdint.h>
 
@@ -56,5 +55,3 @@ typedef struct {
 #ifdef __cplusplus
 }
 #endif
-
-#endif // FMRB_HID_EVENT_H

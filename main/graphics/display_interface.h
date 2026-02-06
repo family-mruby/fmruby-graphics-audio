@@ -1,5 +1,4 @@
-#ifndef DISPLAY_INTERFACE_H
-#define DISPLAY_INTERFACE_H
+#pragma once
 
 #include <stdint.h>
 
@@ -62,5 +61,3 @@ const display_interface_t* display_get_interface(void);
 // directly accessed by application code. Use display_interface_t
 // functions instead (e.g., DISPLAY_INTERFACE->get_lgfx())
 #endif
-
-#endif // DISPLAY_INTERFACE_H

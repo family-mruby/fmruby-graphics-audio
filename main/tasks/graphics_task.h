@@ -1,5 +1,4 @@
-#ifndef GRAPHICS_TASK_H
-#define GRAPHICS_TASK_H
+#pragma once
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,5 +18,3 @@ void graphics_task_stop(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // GRAPHICS_TASK_H

@@ -1,5 +1,4 @@
-#ifndef FMRB_HOST_AUDIO_COMMANDS_H
-#define FMRB_HOST_AUDIO_COMMANDS_H
+#pragma once
 
 #include <stdint.h>
 
@@ -69,5 +68,3 @@ typedef struct {
 #ifdef __cplusplus
 }
 #endif
-
-#endif // FMRB_HOST_AUDIO_COMMANDS_H

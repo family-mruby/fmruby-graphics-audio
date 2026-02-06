@@ -1,5 +1,4 @@
-#ifndef GRAPHICS_HANDLER_H
-#define GRAPHICS_HANDLER_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -43,5 +42,3 @@ void graphics_handler_render_frame(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // GRAPHICS_HANDLER_H

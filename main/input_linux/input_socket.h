@@ -3,8 +3,7 @@
  * @brief Unix socket server for HID input events (separate from GFX socket)
  */
 
-#ifndef INPUT_SOCKET_H
-#define INPUT_SOCKET_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -42,5 +41,3 @@ int input_socket_is_connected(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // INPUT_SOCKET_H

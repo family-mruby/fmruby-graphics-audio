@@ -1,5 +1,4 @@
-#ifndef LGFX_LINUX_H
-#define LGFX_LINUX_H
+#pragma once
 
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
 
@@ -49,5 +48,3 @@ public:
 extern LGFX* g_lgfx;
 
 #endif // CONFIG_IDF_TARGET_LINUX || LGFX_USE_SDL
-
-#endif // LGFX_LINUX_H

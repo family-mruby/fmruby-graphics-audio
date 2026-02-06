@@ -1,5 +1,4 @@
-#ifndef AUDIO_HANDLER_H
-#define AUDIO_HANDLER_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -45,5 +44,3 @@ void audio_check_impl(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // AUDIO_HANDLER_H

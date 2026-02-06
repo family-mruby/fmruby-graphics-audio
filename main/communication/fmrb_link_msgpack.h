@@ -1,5 +1,4 @@
-#ifndef FMRB_LINK_MSGPACK_H
-#define FMRB_LINK_MSGPACK_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -45,5 +44,3 @@ int fmrb_link_encode_ack(uint8_t type, uint8_t seq,
 #ifdef __cplusplus
 }
 #endif
-
-#endif // FMRB_LINK_MSGPACK_H

@@ -1,5 +1,4 @@
-#ifndef COMM_INTERFACE_H
-#define COMM_INTERFACE_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -90,5 +89,3 @@ extern const comm_interface_t* comm_get_interface(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // COMM_INTERFACE_H

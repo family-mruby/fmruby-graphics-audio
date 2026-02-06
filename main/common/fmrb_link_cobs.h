@@ -1,5 +1,4 @@
-#ifndef FMRB_LINK_COBS_H
-#define FMRB_LINK_COBS_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -53,5 +52,3 @@ uint32_t fmrb_link_crc32_update(uint32_t crc, const uint8_t *data, size_t len);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // FMRB_LINK_COBS_H

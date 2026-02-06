@@ -1,5 +1,4 @@
-#ifndef INPUT_HANDLER_H
-#define INPUT_HANDLER_H
+#pragma once
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,5 +32,3 @@ int input_handler_get_mouse_position(int* x, int* y);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // INPUT_HANDLER_H

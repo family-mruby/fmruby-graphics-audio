@@ -1,5 +1,4 @@
-#ifndef MESSAGE_QUEUE_H
-#define MESSAGE_QUEUE_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -84,5 +83,3 @@ int message_queue_is_full(const message_queue_t *queue);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // MESSAGE_QUEUE_H

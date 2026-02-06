@@ -1,5 +1,4 @@
-#ifndef MESSAGE_HANDLER_H
-#define MESSAGE_HANDLER_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -23,5 +22,3 @@ int message_handler_process(uint8_t type, uint8_t seq, uint8_t sub_cmd,
 #ifdef __cplusplus
 }
 #endif
-
-#endif // MESSAGE_HANDLER_H
