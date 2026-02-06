@@ -3,7 +3,6 @@
 #include <cinttypes>
 #include <map>
 
-// Include LGFX before display_interface.h to ensure LGFX class is defined
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 
@@ -12,27 +11,19 @@ extern "C" {
 #include "fmrb_link_protocol.h"
 #include "fmrb_gfx.h"
 #include "esp_log.h"
+#include "display_interface.h"
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
 #include "socket_server.h"  // For socket_server_send_ack
+#else
+#include "comm_interface.h"
 #endif
 }
 
 static const char *TAG = "graphics_handler";
 
-#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
-// Linux/SDL builds - include LGFX definition (includes g_lgfx declaration)
-#include "lgfx_linux.h"
-#else
-// ESP32 builds - LGFX is defined in graphics_task.cpp
-// Use LovyanGFX base class instead of forward-declared LGFX
-#include "comm_interface.h"
-#include "display_interface.h"  // Includes g_lgfx declaration for ESP32
-#endif
+// Get g_lgfx from display interface (defined in display_sdl2.cpp or display_cvbs.cpp)
+static LovyanGFX* g_lgfx = nullptr;
 
-
-// External reference to LGFX instance (declared in display_interface.h)
-// For ESP32: defined in lgfx_wrapper.cpp
-// For Linux: defined in display_sdl2.cpp
 
 // Canvas state structure
 typedef struct {
@@ -257,6 +248,8 @@ extern "C" int graphics_handler_init(void) {
         return 0;  // Return success to avoid breaking caller
     }
 
+    // Get LGFX instance from display interface
+    g_lgfx = (LovyanGFX*)DISPLAY_INTERFACE->get_lgfx();
     if (!g_lgfx) {
         ESP_LOGE(TAG, "LGFX instance not created");
         return -1;

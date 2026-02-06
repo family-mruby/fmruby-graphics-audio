@@ -53,21 +53,14 @@ const display_interface_t* display_get_interface(void);
 #ifdef __cplusplus
 }
 
-// Global LGFX instance (defined in display implementation)
+// Global LGFX instance (defined in display implementation files)
 // Note: This is a C++ pointer, so only accessible from C++ code
-// LGFX class must be defined before including this header:
-// - Linux/SDL: include "lgfx_linux.h" first
-// - ESP32: LGFX_Device is used instead
-
-#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
-// Forward declaration for Linux/SDL builds
-class LGFX;
-extern LGFX* g_lgfx;
-#else
-// ESP32: Use LovyanGFX base class (declared in graphics_task.cpp)
-#include <LovyanGFX.hpp>
-extern lgfx::LGFX_Device* g_lgfx;
-#endif
+// - Linux/SDL: defined in display_sdl2.cpp
+// - ESP32: defined in display_cvbs.cpp
+//
+// These are managed by the display interface and should not be
+// directly accessed by application code. Use display_interface_t
+// functions instead (e.g., DISPLAY_INTERFACE->get_lgfx())
 #endif
 
 #endif // DISPLAY_INTERFACE_H

@@ -12,6 +12,7 @@ if(CONFIG_IDF_TARGET_LINUX)
     # Linux/SDL platform implementation
     list(APPEND SRCS
         "graphics/graphics_handler.cpp"
+        "graphics/display_sdl2.cpp"
         "audio/audio_handler_sdl2.c"
         "input_linux/input_handler.c"
         "input_linux/input_socket.c"
@@ -23,6 +24,7 @@ else()
     # ESP32 platform implementation
     list(APPEND SRCS
         "graphics/graphics_handler.cpp"
+        "graphics/display_cvbs.cpp"
         "graphics/lgfx_test.cpp"
         "audio/audio_check.c"
         "communication/comm_spi_slave.c"
