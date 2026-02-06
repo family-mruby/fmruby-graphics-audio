@@ -96,10 +96,11 @@ public:
   }
 };
 
-static LGFX gfx;
+// PSRAM上のヒープに動的確保するためポインタに変更（DRAMオーバーフロー対策）
+static LGFX* gfx = nullptr;
 
 // スプライト用構造体（ダブルバッファ）
-static LGFX_Sprite sprites[2];
+static LGFX_Sprite* sprites[2] = {nullptr, nullptr};
 static int current_sprite = 0;
 static uint32_t frame_count = 0;
 static uint32_t fps = 0;
@@ -129,7 +130,7 @@ struct MovingObject {
 };
 
 static const int MAX_OBJECTS = 20;
-static MovingObject objects[MAX_OBJECTS];
+static MovingObject* objects = nullptr;
 static int test_mode = 0; // 0:カラーバー, 1:動く円, 2:物理シミュレーション
 
 extern "C" {
@@ -140,9 +141,21 @@ extern "C" {
     printf("Before init - Free heap: %" PRIu32 " bytes\n", esp_get_free_heap_size());
     printf("Before init - Free PSRAM: %zu bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
+    // LGFX本体をPSRAM上に確保（DRAMオーバーフロー対策）
+    if (!gfx) {
+      printf("Allocating LGFX object in PSRAM (%zu bytes)...\n", sizeof(LGFX));
+      void* gfx_mem = heap_caps_malloc(sizeof(LGFX), MALLOC_CAP_SPIRAM);
+      if (!gfx_mem) {
+        printf("ERROR: Failed to allocate LGFX in PSRAM!\n");
+        return;
+      }
+      gfx = new (gfx_mem) LGFX();  // placement new
+      printf("LGFX object created in PSRAM\n");
+    }
+
     // 色数の指定 (省略時は rgb332_1Byte)
-    gfx.setColorDepth(lgfx::color_depth_t::rgb332_1Byte);   // RGB332 256色
-    bool init_result = gfx.init();
+    gfx->setColorDepth(lgfx::color_depth_t::rgb332_1Byte);   // RGB332 256色
+    bool init_result = gfx->init();
     printf("LGFX init result: %s\n", init_result ? "SUCCESS" : "FAILED");
 
     if (!init_result) {
@@ -150,35 +163,45 @@ extern "C" {
       return;
     }
 
-    gfx.startWrite();
+    gfx->startWrite();
 
     // 初期化後の表示情報
-    printf("Display size: %" PRId32 " x %" PRId32 "\n", gfx.width(), gfx.height());
-    printf("Color depth: %d bits\n", gfx.getColorDepth());
-    printf("Buffer size needed: %" PRId32 " bytes per buffer\n", gfx.width() * gfx.height());
-    printf("Total buffer size: %" PRId32 " bytes (x2 for double buffer)\n", gfx.width() * gfx.height() * 2);
+    printf("Display size: %" PRId32 " x %" PRId32 "\n", gfx->width(), gfx->height());
+    printf("Color depth: %d bits\n", gfx->getColorDepth());
+    printf("Buffer size needed: %" PRId32 " bytes per buffer\n", gfx->width() * gfx->height());
+    printf("Total buffer size: %" PRId32 " bytes (x2 for double buffer)\n", gfx->width() * gfx->height() * 2);
 
     // メモリ状況の再確認
     printf("After init - Free heap: %" PRIu32 " bytes\n", esp_get_free_heap_size());
     printf("After init - Free PSRAM: %zu bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    // スプライトの初期化（ダブルバッファ用）
+    // スプライトの初期化（ダブルバッファ用、PSRAM上に確保）
     printf("Creating sprites with PSRAM...\n");
     for (int i = 0; i < 2; i++) {
-      sprites[i].setPsram(true);  // PSRAMの明示的使用を設定
-      sprites[i].setColorDepth(gfx.getColorDepth());
+      if (!sprites[i]) {
+        printf("Allocating LGFX_Sprite[%d] in PSRAM (%zu bytes)...\n", i, sizeof(LGFX_Sprite));
+        void* sprite_mem = heap_caps_malloc(sizeof(LGFX_Sprite), MALLOC_CAP_SPIRAM);
+        if (!sprite_mem) {
+          printf("ERROR: Failed to allocate sprite[%d] in PSRAM!\n", i);
+          continue;
+        }
+        sprites[i] = new (sprite_mem) LGFX_Sprite(gfx);  // placement new
+      }
+
+      sprites[i]->setPsram(true);  // PSRAMの明示的使用を設定
+      sprites[i]->setColorDepth(gfx->getColorDepth());
 
       printf("Before Sprite[%d] creation - PSRAM largest block: %u bytes\n", i,
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
-      bool sprite_result = sprites[i].createSprite(gfx.width(), gfx.height());
+      bool sprite_result = sprites[i]->createSprite(gfx->width(), gfx->height());
 
       printf("Sprite[%d] creation: %s (size: %" PRId32 "x%" PRId32 ")\n", i,
-             sprite_result ? "SUCCESS" : "FAILED", gfx.width(), gfx.height());
+             sprite_result ? "SUCCESS" : "FAILED", gfx->width(), gfx->height());
 
       if (sprite_result) {
-        sprites[i].setFont(&lgfx::fonts::Font4);  // Larger font
-        sprites[i].setTextSize(1);  // Text scaling factor
+        sprites[i]->setFont(&lgfx::fonts::Font4);  // Larger font
+        sprites[i]->setTextSize(1);  // Text scaling factor
         printf("Sprite[%d] buffer allocated successfully\n", i);
       } else {
         printf("Sprite[%d] FAILED - After failure PSRAM largest block: %u bytes\n", i,
@@ -190,10 +213,21 @@ extern "C" {
     printf("After sprites - Free heap: %" PRIu32 " bytes\n", esp_get_free_heap_size());
     printf("After sprites - Free PSRAM: %zu bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
+    // MovingObject配列をPSRAM上に確保
+    if (!objects) {
+      printf("Allocating MovingObject array in PSRAM (%zu bytes)...\n", sizeof(MovingObject) * MAX_OBJECTS);
+      objects = (MovingObject*)heap_caps_malloc(sizeof(MovingObject) * MAX_OBJECTS, MALLOC_CAP_SPIRAM);
+      if (!objects) {
+        printf("ERROR: Failed to allocate objects array in PSRAM!\n");
+        return;
+      }
+      printf("MovingObject array created in PSRAM\n");
+    }
+
     // オブジェクトの初期化
     for (int i = 0; i < MAX_OBJECTS; i++) {
-      objects[i].x = rand() % (gfx.width() - 40) + 20;
-      objects[i].y = rand() % (gfx.height() - 40) + 20;
+      objects[i].x = rand() % (gfx->width() - 40) + 20;
+      objects[i].y = rand() % (gfx->height() - 40) + 20;
       objects[i].dx = (rand() % 800 - 400) / 100.0f; // -4.0 to 4.0 (faster)
       objects[i].dy = (rand() % 800 - 400) / 100.0f;
       objects[i].radius = 10 + (rand() % 15);  // 10-24 (larger)
@@ -205,20 +239,22 @@ extern "C" {
   }
 
   void lgfx_draw_test_pattern(void) {
+    if (!gfx || !sprites[current_sprite]) return;
+
     // グラデーションテストパターンを描画
-    LGFX_Sprite* sprite = &sprites[current_sprite];
+    LGFX_Sprite* sprite = sprites[current_sprite];
     sprite->clear();
 
-    for (int x = 0; x < gfx.width(); ++x) {
-      int v = x * 256 / gfx.width();
-      sprite->fillRect(x, 0 * gfx.height() >> 3, 1, gfx.height() >> 3, gfx.color888(v, v, v));  // グレースケール
-      sprite->fillRect(x, 1 * gfx.height() >> 3, 1, gfx.height() >> 3, gfx.color888(v, 0, 0));  // 赤
-      sprite->fillRect(x, 2 * gfx.height() >> 3, 1, gfx.height() >> 3, gfx.color888(0, v, 0));  // 緑
-      sprite->fillRect(x, 3 * gfx.height() >> 3, 1, gfx.height() >> 3, gfx.color888(0, 0, v));  // 青
-      sprite->fillRect(x, 4 * gfx.height() >> 3, 1, gfx.height() >> 3, gfx.color888(v, v, 0));  // 黄
-      sprite->fillRect(x, 5 * gfx.height() >> 3, 1, gfx.height() >> 3, gfx.color888(v, 0, v));  // マゼンタ
-      sprite->fillRect(x, 6 * gfx.height() >> 3, 1, gfx.height() >> 3, gfx.color888(0, v, v));  // シアン
-      sprite->fillRect(x, 7 * gfx.height() >> 3, 1, gfx.height() >> 3, gfx.color888(v, v, v));  // 白
+    for (int x = 0; x < gfx->width(); ++x) {
+      int v = x * 256 / gfx->width();
+      sprite->fillRect(x, 0 * gfx->height() >> 3, 1, gfx->height() >> 3, gfx->color888(v, v, v));  // グレースケール
+      sprite->fillRect(x, 1 * gfx->height() >> 3, 1, gfx->height() >> 3, gfx->color888(v, 0, 0));  // 赤
+      sprite->fillRect(x, 2 * gfx->height() >> 3, 1, gfx->height() >> 3, gfx->color888(0, v, 0));  // 緑
+      sprite->fillRect(x, 3 * gfx->height() >> 3, 1, gfx->height() >> 3, gfx->color888(0, 0, v));  // 青
+      sprite->fillRect(x, 4 * gfx->height() >> 3, 1, gfx->height() >> 3, gfx->color888(v, v, 0));  // 黄
+      sprite->fillRect(x, 5 * gfx->height() >> 3, 1, gfx->height() >> 3, gfx->color888(v, 0, v));  // マゼンタ
+      sprite->fillRect(x, 6 * gfx->height() >> 3, 1, gfx->height() >> 3, gfx->color888(0, v, v));  // シアン
+      sprite->fillRect(x, 7 * gfx->height() >> 3, 1, gfx->height() >> 3, gfx->color888(v, v, v));  // 白
     }
 
     // FPS表示
@@ -229,17 +265,19 @@ extern "C" {
     sprite->setTextColor(0xFFFFFF); // 白
     sprite->printf("MODE:%d FPS:%" PRIu32, test_mode, fps);
 
-    sprite->pushSprite(&gfx, 0, 0);
+    sprite->pushSprite(gfx, 0, 0);
     current_sprite = (current_sprite + 1) & 1; // 0と1を交互に
   }
 
   void lgfx_draw_moving_circles(void) {
-    LGFX_Sprite* sprite = &sprites[current_sprite];
+    if (!gfx || !sprites[current_sprite] || !objects) return;
+
+    LGFX_Sprite* sprite = sprites[current_sprite];
     sprite->clear(0x001122); // 暗い青背景
 
     // オブジェクトの移動と描画
     for (int i = 0; i < MAX_OBJECTS; i++) {
-      objects[i].move(gfx.width(), gfx.height());
+      objects[i].move(gfx->width(), gfx->height());
       sprite->fillCircle((int)objects[i].x, (int)objects[i].y, objects[i].radius, objects[i].color);
     }
 
@@ -251,7 +289,7 @@ extern "C" {
     sprite->setTextColor(0xFFFFFF); // 白
     sprite->printf("MOVING CIRCLES FPS:%" PRIu32, fps);
 
-    sprite->pushSprite(&gfx, 0, 0);
+    sprite->pushSprite(gfx, 0, 0);
     current_sprite = (current_sprite + 1) & 1;
   }
 
@@ -267,7 +305,9 @@ extern "C" {
   }
 
   void lgfx_draw_physics_simulation(void) {
-    LGFX_Sprite* sprite = &sprites[current_sprite];
+    if (!gfx || !sprites[current_sprite] || !objects) return;
+
+    LGFX_Sprite* sprite = sprites[current_sprite];
     sprite->clear(0x000011); // 暗い背景
 
     // より複雑な物理演算（衝突検出付き）
@@ -282,7 +322,7 @@ extern "C" {
       obj1->dy *= 0.999f;
 
       // 位置更新
-      obj1->move(gfx.width(), gfx.height());
+      obj1->move(gfx->width(), gfx->height());
 
       // 他のオブジェクトとの衝突検出
       for (int j = i + 1; j < MAX_OBJECTS; j++) {
@@ -339,18 +379,20 @@ extern "C" {
     sprite->setTextColor(0xFFFFFF); // 白
     sprite->printf("PHYSICS SIM FPS:%" PRIu32, fps);
 
-    sprite->pushSprite(&gfx, 0, 0);
+    sprite->pushSprite(gfx, 0, 0);
     current_sprite = (current_sprite + 1) & 1;
   }
 
   void lgfx_set_test_mode(int mode) {
+    if (!gfx || !objects) return;
+
     test_mode = mode;
 
     // モード変更時にオブジェクトをリセット
     if (mode == 2) { // 物理シミュレーションモード
       for (int i = 0; i < MAX_OBJECTS; i++) {
-        objects[i].x = rand() % (gfx.width() - 40) + 20;
-        objects[i].y = rand() % (gfx.height() / 2) + 20; // 上半分に配置
+        objects[i].x = rand() % (gfx->width() - 40) + 20;
+        objects[i].y = rand() % (gfx->height() / 2) + 20; // 上半分に配置
         objects[i].dx = (rand() % 400 - 200) / 100.0f; // -2.0 to 2.0 (faster)
         objects[i].dy = (rand() % 200) / 100.0f; // 0 to 2.0（下向き、faster）
         objects[i].radius = 8 + (rand() % 12);  // 8-19 (larger)
@@ -364,14 +406,16 @@ extern "C" {
   }
 
   void lgfx_draw_random_rect(void) {
+    if (!gfx) return;
+
     // ランダムな位置とサイズで矩形を描画
-    int x = rand() % (gfx.width() - 16);
-    int y = rand() % (gfx.height() - 16);
+    int x = rand() % (gfx->width() - 16);
+    int y = rand() % (gfx->height() - 16);
     int w = 8 + (rand() % 16);
     int h = 8 + (rand() % 16);
     uint32_t color = rand();
 
-    gfx.fillRect(x, y, w, h, color);
+    gfx->fillRect(x, y, w, h, color);
   }
 
   void lgfx_test_resolution(int width, int height) {
@@ -383,7 +427,9 @@ extern "C" {
     printf("Total memory needed: %d bytes (x2 for double buffer)\n", width * height * 2);
 
     // 現在の設定情報を表示
-    printf("Current display size: %" PRId32 " x %" PRId32 "\n", gfx.width(), gfx.height());
+    if (gfx) {
+      printf("Current display size: %" PRId32 " x %" PRId32 "\n", gfx->width(), gfx->height());
+    }
   }
 
   void lgfx_print_memory_info(void) {
@@ -396,7 +442,40 @@ extern "C" {
   }
   
   void lgfx_draw_test(){
-    gfx.fillRect(rand() % gfx.width() - 8, rand() % gfx.height() - 8, 100, 100, rand());
+    if (!gfx) return;
+    gfx->fillRect(rand() % gfx->width() - 8, rand() % gfx->height() - 8, 100, 100, rand());
+  }
+
+  void lgfx_cleanup(void) {
+    printf("=== LGFX Cleanup ===\n");
+
+    // スプライトの削除
+    for (int i = 0; i < 2; i++) {
+      if (sprites[i]) {
+        sprites[i]->deleteSprite();  // スプライトバッファを解放
+        sprites[i]->~LGFX_Sprite();  // デストラクタ呼び出し
+        heap_caps_free(sprites[i]);  // PSRAM解放
+        sprites[i] = nullptr;
+        printf("Sprite[%d] freed\n", i);
+      }
+    }
+
+    // LGFXオブジェクトの削除
+    if (gfx) {
+      gfx->~LGFX();  // デストラクタ呼び出し
+      heap_caps_free(gfx);  // PSRAM解放
+      gfx = nullptr;
+      printf("LGFX object freed\n");
+    }
+
+    // MovingObject配列の削除
+    if (objects) {
+      heap_caps_free(objects);  // PSRAM解放
+      objects = nullptr;
+      printf("MovingObject array freed\n");
+    }
+
+    printf("=== LGFX Cleanup Complete ===\n");
   }
 }
 

@@ -27,6 +27,7 @@ else()
         "graphics/graphics_handler.cpp"
         "graphics/display_cvbs.cpp"
         "graphics/lgfx_test.cpp"
+        "audio/audio_handler_esp32.c"
         "audio/audio_check.c"
         "communication/comm_spi_slave.c"
         "communication/fmrb_link_msgpack.c"

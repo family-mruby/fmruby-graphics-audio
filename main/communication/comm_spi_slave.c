@@ -30,8 +30,8 @@ static const char *TAG = "spi_slave";
 // Double buffering for continuous operation
 #define NUM_BUFFERS      2
 
-// Message queue for decoded messages
-static message_queue_t g_message_queue;
+// Message queue for decoded messages (dynamically allocated in PSRAM to save 525KB DRAM)
+static message_queue_t* g_message_queue = NULL;
 
 // DMA-capable buffers (dynamically allocated)
 static uint8_t *rx_buffers[NUM_BUFFERS] = {NULL, NULL};
@@ -79,7 +79,7 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
                type, seq, sub_cmd, payload_len);
 
     // Enqueue the decoded message using common queue module
-    result = message_queue_enqueue(&g_message_queue, type, seq, sub_cmd,
+    result = message_queue_enqueue(g_message_queue, type, seq, sub_cmd,
                                    payload_buffer, payload_len);
     if (result != 0) {
         ESP_LOGE(TAG, "Failed to enqueue message");
@@ -106,8 +106,18 @@ static int spi_init(void) {
         return 0;
     }
 
+    // Allocate message queue in PSRAM (525KB)
+    if (!g_message_queue) {
+        g_message_queue = (message_queue_t*)heap_caps_malloc(sizeof(message_queue_t), MALLOC_CAP_SPIRAM);
+        if (!g_message_queue) {
+            ESP_LOGE(TAG, "Failed to allocate message queue in PSRAM (%zu bytes)", sizeof(message_queue_t));
+            return -1;
+        }
+        ESP_LOGI(TAG, "Message queue allocated in PSRAM (%zu bytes)", sizeof(message_queue_t));
+    }
+
     // Initialize message queue
-    message_queue_init(&g_message_queue);
+    message_queue_init(g_message_queue);
 
     // Allocate DMA-capable buffers (double buffered)
     for (int i = 0; i < NUM_BUFFERS; i++) {
@@ -325,13 +335,13 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
 static int spi_receive_message(uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
                                 const uint8_t **payload, size_t *payload_len) {
     // Dequeue message using common queue module
-    int result = message_queue_dequeue(&g_message_queue, type, seq, sub_cmd,
+    int result = message_queue_dequeue(g_message_queue, type, seq, sub_cmd,
                                        payload, payload_len);
 
     if (result > 0) {
         ESP_LOGD(TAG, "Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
                    *type, *seq, *sub_cmd, *payload_len,
-                   message_queue_count(&g_message_queue), MSG_QUEUE_MAX_MESSAGES);
+                   message_queue_count(g_message_queue), MSG_QUEUE_MAX_MESSAGES);
     }
 
     return result;
@@ -368,8 +378,11 @@ static void spi_cleanup(void) {
         }
     }
 
-    // Clear message queue
-    message_queue_init(&g_message_queue);
+    // Free message queue from PSRAM
+    if (g_message_queue) {
+        heap_caps_free(g_message_queue);
+        g_message_queue = NULL;
+    }
 
     spi_running = 0;
     ESP_LOGI(TAG, "SPI slave communication stopped");

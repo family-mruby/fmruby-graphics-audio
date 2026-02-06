@@ -8,8 +8,8 @@
 extern "C" {
 #endif
 
-#define MSG_QUEUE_MAX_MESSAGES 128
-#define MSG_QUEUE_MAX_PAYLOAD 4096
+#define MSG_QUEUE_MAX_MESSAGES 64
+#define MSG_QUEUE_MAX_PAYLOAD 1024
 
 typedef struct {
     uint8_t type;

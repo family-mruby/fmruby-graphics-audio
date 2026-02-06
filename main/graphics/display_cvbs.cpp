@@ -5,6 +5,7 @@
 extern "C" {
 #include "display_interface.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 }
 
 static const char *TAG = "display_esp32";
@@ -48,10 +49,16 @@ lgfx::LGFX_Device* g_lgfx = nullptr;
 static int esp32_display_init(uint16_t width, uint16_t height, uint8_t color_depth) {
     ESP_LOGI(TAG, "Initializing ESP32/CVBS display: %dx%d, %d-bit color", width, height, color_depth);
 
-    // Create LovyanGFX instance with CVBS output
-    LGFX* lgfx_instance = new LGFX(width, height);
+    // Create LovyanGFX instance with CVBS output in PSRAM (DRAM overflow fix)
+    void* lgfx_mem = heap_caps_malloc(sizeof(LGFX), MALLOC_CAP_SPIRAM);
+    if (!lgfx_mem) {
+        ESP_LOGE(TAG, "Failed to allocate LGFX in PSRAM (%zu bytes)", sizeof(LGFX));
+        return -1;
+    }
+    LGFX* lgfx_instance = new (lgfx_mem) LGFX(width, height);
     if (!lgfx_instance) {
-        ESP_LOGE(TAG, "Failed to create LovyanGFX instance");
+        ESP_LOGE(TAG, "Failed to construct LovyanGFX instance");
+        heap_caps_free(lgfx_mem);
         return -1;
     }
 
@@ -87,7 +94,10 @@ static void esp32_display_display(void) {
 static void esp32_display_cleanup(void) {
     ESP_LOGI(TAG, "Cleaning up ESP32/CVBS display");
     if (g_lgfx) {
-        delete g_lgfx;
+        // Manually call destructor for placement new
+        g_lgfx->~LGFX_Device();
+        // Free PSRAM
+        heap_caps_free(g_lgfx);
         g_lgfx = nullptr;
     }
     ESP_LOGI(TAG, "ESP32/CVBS display cleanup complete");
