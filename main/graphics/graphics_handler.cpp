@@ -58,16 +58,25 @@ static int g_cursor_x = 240;  // Default: screen center
 static int g_cursor_y = 135;
 static const uint32_t CURSOR_TRANSPARENT_COLOR = 0xFF00FF;  // Magenta
 
-// 8x8 arrow cursor pattern (0=transparent, 1=white outline, 2=black body)
-static const uint8_t cursor_pattern[8][8] = {
-    {1, 0, 0, 0, 0, 0, 0, 0},
-    {1, 1, 0, 0, 0, 0, 0, 0},
-    {1, 2, 1, 0, 0, 0, 0, 0},
-    {1, 2, 2, 1, 0, 0, 0, 0},
-    {1, 2, 2, 2, 1, 0, 0, 0},
-    {1, 2, 2, 2, 2, 1, 0, 0},
-    {1, 2, 2, 2, 2, 2, 1, 0},
-    {1, 1, 1, 1, 1, 1, 1, 1},
+// 16x16 arrow cursor pattern (0=transparent, 1=white outline, 2=black body)
+// Classic Windows-style pointer arrow with clean lines
+static const uint8_t cursor_pattern[16][16] = {
+    {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0},
+    {1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0},
+    {1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0},
+    {1, 2, 2, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 2, 1, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {1, 1, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
 };
 
 // Screen double buffer for compositing all canvases
@@ -257,15 +266,15 @@ extern "C" int graphics_handler_init(void) {
 
     g_lgfx->setAutoDisplay(false);
 
-    // Initialize cursor sprite (8x8 arrow)
+    // Initialize cursor sprite (16x16 arrow)
     g_cursor_sprite = new LGFX_Sprite(g_lgfx);
     g_cursor_sprite->setColorDepth(8);  // 8-bit color
-    g_cursor_sprite->createSprite(8, 8);
+    g_cursor_sprite->createSprite(16, 16);
     g_cursor_sprite->clear(CURSOR_TRANSPARENT_COLOR);
 
     // Draw cursor pattern
-    for (int y = 0; y < 8; y++) {
-        for (int x = 0; x < 8; x++) {
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
             uint32_t color;
             switch (cursor_pattern[y][x]) {
                 case 1: color = 0xFFFFFF; break;  // White outline
@@ -279,7 +288,7 @@ extern "C" int graphics_handler_init(void) {
     g_graphics_initialized = true;  // Mark as initialized
     ESP_LOGI(TAG, "Graphics handler initialized with screen buffer (%dx%d)",
               (int)g_lgfx->width(), (int)g_lgfx->height());
-    ESP_LOGI(TAG, "Cursor sprite initialized (8x8) at position (%d, %d)", g_cursor_x, g_cursor_y);
+    ESP_LOGI(TAG, "Cursor sprite initialized (16x16) at position (%d, %d)", g_cursor_x, g_cursor_y);
     return 0;
 }
 
