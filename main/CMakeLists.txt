@@ -5,6 +5,7 @@ set(SRCS
     "tasks/message_handler.c"
     "tasks/graphics_task.cpp"
     "common/fmrb_link_cobs.c"
+    "common/fmrb_link_fragment.c"
 )
 
 # Add platform-specific sources

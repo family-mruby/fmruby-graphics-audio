@@ -24,8 +24,8 @@ static const char *TAG = "spi_slave";
 #define PIN_NUM_CLK      19
 #define PIN_NUM_CS       22
 
-// Fixed frame size - MUST match Master
-#define SPI_FRAME_SIZE   64
+// Fixed frame size - MUST match Master (increased for better throughput)
+#define SPI_FRAME_SIZE   256
 
 // Double buffering for continuous operation
 #define NUM_BUFFERS      2

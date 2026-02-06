@@ -1,13 +1,20 @@
 #include "fmrb_link_msgpack.h"
 #include "fmrb_link_cobs.h"
 #include "fmrb_link_protocol.h"
+#include "fmrb_link_fragment.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <msgpack.h>
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "msgpack";
+
+// Global fragment manager for reassembly
+static fmrb_fragment_manager_t g_fragment_manager;
+static bool g_fragment_manager_initialized = false;
 
 int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
                            uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
@@ -60,11 +67,17 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
     }
 
     msgpack_object root = msg.data;
-    if (root.type != MSGPACK_OBJECT_ARRAY || root.via.array.size != 4) {
-        ESP_LOGE(TAG, "Invalid msgpack format: not array or size != 4");
+    if (root.type != MSGPACK_OBJECT_ARRAY) {
+        ESP_LOGE(TAG, "Invalid msgpack format: not array");
         msgpack_unpacked_destroy(&msg);
         free(decoded_buffer);
         return -1;
+    }
+
+    // Initialize fragment manager if needed
+    if (!g_fragment_manager_initialized) {
+        fmrb_fragment_manager_init(&g_fragment_manager);
+        g_fragment_manager_initialized = true;
     }
 
     // Extract fields
@@ -72,27 +85,134 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
     *seq = root.via.array.ptr[1].via.u64;
     *sub_cmd = root.via.array.ptr[2].via.u64;
 
-    // Extract payload
-    *payload_len = 0;
-    if (root.via.array.ptr[3].type == MSGPACK_OBJECT_BIN) {
-        const uint8_t *payload_src = (const uint8_t*)root.via.array.ptr[3].via.bin.ptr;
-        size_t src_len = root.via.array.ptr[3].via.bin.size;
+    // Check if this is a chunked message
+    bool is_chunked = (*type & FMRB_LINK_FLAG_CHUNKED) != 0;
 
-        if (payload_out && src_len > 0) {
-            if (src_len > payload_out_size) {
-                ESP_LOGE(TAG, "Payload too large: %zu > %zu", src_len, payload_out_size);
+    if (!is_chunked) {
+        // Normal message: [type, seq, sub_cmd, payload]
+        if (root.via.array.size != 4) {
+            ESP_LOGE(TAG, "Invalid non-chunked message: size != 4");
+            msgpack_unpacked_destroy(&msg);
+            free(decoded_buffer);
+            return -1;
+        }
+
+        // Extract payload
+        *payload_len = 0;
+        if (root.via.array.ptr[3].type == MSGPACK_OBJECT_BIN) {
+            const uint8_t *payload_src = (const uint8_t*)root.via.array.ptr[3].via.bin.ptr;
+            size_t src_len = root.via.array.ptr[3].via.bin.size;
+
+            if (payload_out && src_len > 0) {
+                if (src_len > payload_out_size) {
+                    ESP_LOGE(TAG, "Payload too large: %zu > %zu", src_len, payload_out_size);
+                    msgpack_unpacked_destroy(&msg);
+                    free(decoded_buffer);
+                    return -1;
+                }
+                memcpy(payload_out, payload_src, src_len);
+                *payload_len = src_len;
+            }
+        }
+
+        msgpack_unpacked_destroy(&msg);
+        free(decoded_buffer);
+        return 0;
+    } else {
+        // Chunked message: [type|CHUNKED, seq, sub_cmd, chunk_info, chunk_data]
+        if (root.via.array.size != 5) {
+            ESP_LOGE(TAG, "Invalid chunked message: size != 5");
+            msgpack_unpacked_destroy(&msg);
+            free(decoded_buffer);
+            return -1;
+        }
+
+        // Remove CHUNKED flag from type
+        *type &= ~FMRB_LINK_FLAG_CHUNKED;
+
+        // Extract chunk_info
+        if (root.via.array.ptr[3].type != MSGPACK_OBJECT_BIN ||
+            root.via.array.ptr[3].via.bin.size != sizeof(fmrb_link_chunk_info_t)) {
+            ESP_LOGE(TAG, "Invalid chunk_info");
+            msgpack_unpacked_destroy(&msg);
+            free(decoded_buffer);
+            return -1;
+        }
+
+        fmrb_link_chunk_info_t chunk_info;
+        memcpy(&chunk_info, root.via.array.ptr[3].via.bin.ptr, sizeof(fmrb_link_chunk_info_t));
+
+        // Extract chunk data
+        if (root.via.array.ptr[4].type != MSGPACK_OBJECT_BIN) {
+            ESP_LOGE(TAG, "Invalid chunk data");
+            msgpack_unpacked_destroy(&msg);
+            free(decoded_buffer);
+            return -1;
+        }
+
+        const uint8_t *chunk_data = (const uint8_t*)root.via.array.ptr[4].via.bin.ptr;
+        uint32_t chunk_len = root.via.array.ptr[4].via.bin.size;
+
+        ESP_LOGD(TAG, "Received chunk: id=%u, offset=%u, len=%u, total=%u, flags=0x%02X",
+                 chunk_info.chunk_id, chunk_info.offset, chunk_len,
+                 chunk_info.total_len, chunk_info.flags);
+
+        // Find or create reassembly context
+        fmrb_fragment_reassembly_ctx_t *ctx = fmrb_fragment_find_context(
+            &g_fragment_manager, chunk_info.chunk_id, true);
+
+        if (!ctx) {
+            ESP_LOGE(TAG, "Failed to allocate reassembly context");
+            msgpack_unpacked_destroy(&msg);
+            free(decoded_buffer);
+            return -1;
+        }
+
+        // Get current time
+        uint32_t current_time_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        // Process chunk
+        fmrb_err_t process_ret = fmrb_fragment_process_chunk(ctx, &chunk_info,
+                                                               chunk_data, chunk_len,
+                                                               current_time_ms);
+
+        if (process_ret == FMRB_ERR_COMPLETE) {
+            // Message reassembly complete
+            ESP_LOGI(TAG, "Chunk reassembly complete: %u bytes", ctx->total_len);
+
+            if (ctx->total_len > payload_out_size) {
+                ESP_LOGE(TAG, "Reassembled message too large: %u > %zu",
+                         ctx->total_len, payload_out_size);
+                fmrb_fragment_free_context(ctx);
                 msgpack_unpacked_destroy(&msg);
                 free(decoded_buffer);
                 return -1;
             }
-            memcpy(payload_out, payload_src, src_len);
-            *payload_len = src_len;
+
+            // Copy reassembled data to output
+            memcpy(payload_out, ctx->buffer, ctx->total_len);
+            *payload_len = ctx->total_len;
+
+            // Free context
+            fmrb_fragment_free_context(ctx);
+
+            msgpack_unpacked_destroy(&msg);
+            free(decoded_buffer);
+            return 0;
+        } else if (process_ret == FMRB_OK) {
+            // Chunk processed, waiting for more chunks
+            msgpack_unpacked_destroy(&msg);
+            free(decoded_buffer);
+            return 1;  // Return 1 to indicate incomplete (need more chunks)
+        } else {
+            // Error
+            ESP_LOGE(TAG, "Chunk processing failed: %d", process_ret);
+            fmrb_fragment_free_context(ctx);
+            msgpack_unpacked_destroy(&msg);
+            free(decoded_buffer);
+            return -1;
         }
     }
-
-    msgpack_unpacked_destroy(&msg);
-    free(decoded_buffer);
-    return 0;
 }
 
 int fmrb_link_encode_ack(uint8_t type, uint8_t seq,
