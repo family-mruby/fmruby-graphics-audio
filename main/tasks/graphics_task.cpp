@@ -14,6 +14,7 @@ extern "C" {
 #include "input_socket.h"
 #include "fmrb_link_protocol.h"
 #include "fmrb_gfx.h"
+#include "../mempool/fmrb_mempool.h"
 }
 
 static const char *TAG = "graphics_task";
@@ -30,9 +31,16 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
     display_width = width;
     display_height = height;
 
+    // Initialize canvas memory pool with display dimensions
+    if (fmrb_mempool_canvas_init(width, height, color_depth) != 0) {
+        ESP_LOGE(TAG, "Failed to initialize canvas memory pool");
+        return -1;
+    }
+
     // Initialize display via display interface
     if (DISPLAY_INTERFACE->init(width, height, color_depth) < 0) {
         ESP_LOGE(TAG, "Display initialization failed");
+        fmrb_mempool_canvas_deinit();
         return -1;
     }
 
@@ -42,6 +50,7 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
     if (graphics_handler_init() < 0) {
         ESP_LOGE(TAG, "Graphics handler initialization failed");
         DISPLAY_INTERFACE->cleanup();
+        fmrb_mempool_canvas_deinit();
         return -1;
     }
 

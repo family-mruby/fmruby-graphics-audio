@@ -12,6 +12,7 @@ extern "C" {
 #include "fmrb_gfx.h"
 #include "esp_log.h"
 #include "display_interface.h"
+#include "../mempool/fmrb_mempool.h"
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
 #include "socket_server.h"  // For socket_server_send_ack
 #else
@@ -42,10 +43,6 @@ typedef struct {
 
 // Maximum number of canvases
 #define MAX_CANVAS_COUNT 16
-
-// Screen dimensions for canvas allocation
-#define MAX_SCREEN_WIDTH 480
-#define MAX_SCREEN_HEIGHT 320
 
 // Canvas management
 static canvas_state_t g_canvases[MAX_CANVAS_COUNT];
@@ -103,9 +100,9 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     g_canvas_count++;
     canvas->canvas_id = canvas_id;
 
-    // Always allocate at max screen size to avoid reallocation on resize
-    canvas->width = MAX_SCREEN_WIDTH;
-    canvas->height = MAX_SCREEN_HEIGHT;
+    // Always allocate at display screen size to avoid reallocation on resize
+    canvas->width = g_lgfx->width();
+    canvas->height = g_lgfx->height();
 
     // Set initial active size to requested size
     canvas->active_width = req_width;
@@ -117,22 +114,19 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->is_visible = false;  // Initially invisible until first present()
     canvas->dirty = false;
 
-    // Calculate buffer size for max screen size (RGB332 = 8bit = 1 byte per pixel)
-    size_t buffer_size = MAX_SCREEN_WIDTH * MAX_SCREEN_HEIGHT * 1;  // 1 byte per pixel for RGB332
-
-    // Allocate external memory for draw buffer
-    canvas->draw_buffer_mem = malloc(buffer_size);
+    // Allocate external memory for draw buffer from mempool
+    canvas->draw_buffer_mem = fmrb_mempool_canvas_alloc_buffer();
     if (!canvas->draw_buffer_mem) {
         ESP_LOGE(TAG, "Failed to allocate draw buffer memory for canvas %u", canvas_id);
         g_canvas_count--;
         return nullptr;
     }
 
-    // Allocate external memory for render buffer
-    canvas->render_buffer_mem = malloc(buffer_size);
+    // Allocate external memory for render buffer from mempool
+    canvas->render_buffer_mem = fmrb_mempool_canvas_alloc_buffer();
     if (!canvas->render_buffer_mem) {
         ESP_LOGE(TAG, "Failed to allocate render buffer memory for canvas %u", canvas_id);
-        free(canvas->draw_buffer_mem);
+        fmrb_mempool_canvas_free_buffer(canvas->draw_buffer_mem);
         g_canvas_count--;
         return nullptr;
     }
@@ -167,13 +161,13 @@ static void canvas_state_free(canvas_state_t* canvas) {
         canvas->render_buffer = nullptr;
     }
 
-    // Free external memory buffers
+    // Free external memory buffers back to mempool
     if (canvas->draw_buffer_mem) {
-        free(canvas->draw_buffer_mem);
+        fmrb_mempool_canvas_free_buffer(canvas->draw_buffer_mem);
         canvas->draw_buffer_mem = nullptr;
     }
     if (canvas->render_buffer_mem) {
-        free(canvas->render_buffer_mem);
+        fmrb_mempool_canvas_free_buffer(canvas->render_buffer_mem);
         canvas->render_buffer_mem = nullptr;
     }
 
@@ -256,6 +250,8 @@ extern "C" int graphics_handler_init(void) {
         ESP_LOGE(TAG, "Graphics handler already initialized, ignoring request");
         return 0;  // Return success to avoid breaking caller
     }
+
+    // Note: Canvas memory pool is initialized in init_display_callback() with actual display dimensions
 
     // Get LGFX instance from display interface
     g_lgfx = (LovyanGFX*)DISPLAY_INTERFACE->get_lgfx();

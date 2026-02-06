@@ -6,6 +6,7 @@ set(SRCS
     "tasks/graphics_task.cpp"
     "common/fmrb_link_cobs.c"
     "common/fmrb_link_fragment.c"
+    "mempool/fmrb_mempool.c"
 )
 
 # Add platform-specific sources
@@ -42,6 +43,7 @@ set(INCLUDE_DIRS
     "communication"
     "graphics"
     "input_linux"
+    "mempool"
     "tasks"
 )
 
