@@ -22,15 +22,25 @@ extern "C" void signal_handler(int sig) {
     printf("\n\n\n+++++++++++++++++++++++++++++++++++++++");
     printf("\n+++++++++++++++++++++++++++++++++++++++\n");
     printf("Received signal %d, shutting down...\n", sig);
+
+    // Set global running flag
     running = 0;
+
+    // Stop all tasks (sets task_running flags)
     comm_task_stop();
     audio_task_stop();
     graphics_task_stop();
 
-    // Post SDL_QUIT event to stop LovyanGFX event loop
+    // Post SDL_QUIT event to stop LovyanGFX event loop immediately
     SDL_Event quit_event;
     quit_event.type = SDL_QUIT;
     SDL_PushEvent(&quit_event);
+
+    // Give tasks a short time to detect shutdown flags
+    // This helps ensure clean shutdown before docker SIGKILL
+    usleep(50000);  // 50ms wait for tasks to start cleanup
+
+    printf("Signal handler completed, tasks stopping...\n");
 }
 
 // User function that runs in a separate thread
