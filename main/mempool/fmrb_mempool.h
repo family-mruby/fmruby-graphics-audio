@@ -10,7 +10,7 @@ extern "C" {
 
 // Canvas buffer configuration
 #define FMRB_CANVAS_BUFFER_BPP    1  // RGB332 format
-#define FMRB_CANVAS_MAX_CANVASES  16
+#define FMRB_CANVAS_MAX_CANVASES  8
 #define FMRB_CANVAS_MAX_BUFFERS   (FMRB_CANVAS_MAX_CANVASES * 2)  // 2 buffers per canvas (draw + render)
 
 // Generic memory pool structures
