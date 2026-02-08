@@ -46,8 +46,17 @@ public:
 // Global LGFX instance (as base class pointer for compatibility)
 lgfx::LGFX_Device* g_lgfx = nullptr;
 
+// Forward declaration for cleanup
+static void esp32_display_cleanup(void);
+
 // ESP32/CVBS implementation functions
 static int esp32_display_init(uint16_t width, uint16_t height, uint8_t color_depth) {
+    // Guard against double initialization
+    if (g_lgfx != nullptr) {
+        ESP_LOGW(TAG, "Display already initialized, cleaning up first");
+        esp32_display_cleanup();
+    }
+
     ESP_LOGI(TAG, "Initializing ESP32/CVBS display: %dx%d, %d-bit color", width, height, color_depth);
 
     // Create LovyanGFX instance with CVBS output in PSRAM (DRAM overflow fix)
@@ -57,13 +66,15 @@ static int esp32_display_init(uint16_t width, uint16_t height, uint8_t color_dep
         return -1;
     }
     LGFX* lgfx_instance = new (lgfx_mem) LGFX(width, height);
-    if (!lgfx_instance) {
-        ESP_LOGE(TAG, "Failed to construct LovyanGFX instance");
+
+    // Check init() return value
+    if (!lgfx_instance->init()) {
+        ESP_LOGE(TAG, "Failed to initialize Panel_CVBS");
+        lgfx_instance->~LGFX();
         heap_caps_free(lgfx_mem);
         return -1;
     }
 
-    lgfx_instance->init();
     lgfx_instance->setColorDepth(color_depth);
     lgfx_instance->fillScreen(0x00);  // Black
 

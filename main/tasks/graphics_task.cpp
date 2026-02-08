@@ -31,16 +31,17 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
     display_width = width;
     display_height = height;
 
-    // Initialize canvas memory pool with display dimensions
-    if (fmrb_mempool_canvas_init(width, height, color_depth) != 0) {
-        ESP_LOGE(TAG, "Failed to initialize canvas memory pool");
+    // Initialize display first (Panel_CVBS allocates smaller fragmented blocks)
+    // This reduces PSRAM fragmentation when canvas pool allocates large contiguous block
+    if (DISPLAY_INTERFACE->init(width, height, color_depth) < 0) {
+        ESP_LOGE(TAG, "Display initialization failed");
         return -1;
     }
 
-    // Initialize display via display interface
-    if (DISPLAY_INTERFACE->init(width, height, color_depth) < 0) {
-        ESP_LOGE(TAG, "Display initialization failed");
-        fmrb_mempool_canvas_deinit();
+    // Initialize canvas memory pool with display dimensions (large contiguous block)
+    if (fmrb_mempool_canvas_init(width, height, color_depth) != 0) {
+        ESP_LOGE(TAG, "Failed to initialize canvas memory pool");
+        DISPLAY_INTERFACE->cleanup();
         return -1;
     }
 
@@ -49,8 +50,8 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
     // Initialize graphics handler (creates back buffer)
     if (graphics_handler_init() < 0) {
         ESP_LOGE(TAG, "Graphics handler initialization failed");
-        DISPLAY_INTERFACE->cleanup();
         fmrb_mempool_canvas_deinit();
+        DISPLAY_INTERFACE->cleanup();
         return -1;
     }
 
@@ -135,11 +136,12 @@ void graphics_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "Shutting down...");
 
-    // Cleanup
+    // Cleanup (reverse order of initialization)
 #ifdef CONFIG_IDF_TARGET_LINUX
     input_handler_cleanup();
 #endif
     graphics_handler_cleanup();
+    fmrb_mempool_canvas_deinit();
     DISPLAY_INTERFACE->cleanup();
 
     ESP_LOGI(TAG, "Family mruby graphics system stopped.");
