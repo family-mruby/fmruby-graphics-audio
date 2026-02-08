@@ -6,6 +6,7 @@ extern "C" {
 #include "display_interface.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "fmrb_pin_assign.h"
 }
 
 static const char *TAG = "display_esp32";
@@ -32,7 +33,7 @@ public:
     {
       auto cfg = _panel_instance.config_detail();
       cfg.signal_type = cfg.signal_type_t::NTSC_J;
-      cfg.pin_dac = 25;
+      cfg.pin_dac = FMRB_PIN_CVBS_DAC;
       cfg.use_psram = 1;
       cfg.output_level = 128;
       _panel_instance.config_detail(cfg);

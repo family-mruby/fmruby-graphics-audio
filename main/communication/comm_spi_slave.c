@@ -14,15 +14,12 @@
 #include "fmrb_link_msgpack.h"
 #include "message_queue.h"
 #include "fmrb_link_protocol.h"
+#include "fmrb_pin_assign.h"
 
 static const char *TAG = "spi_slave";
 
 // SPI Slave pin configuration - must match master's configuration
 #define SPI_HOST_ID      SPI2_HOST
-#define PIN_NUM_MISO     18   // Slave Output (to Master Input)
-#define PIN_NUM_MOSI     21   // Slave Input (from Master Output)
-#define PIN_NUM_CLK      19
-#define PIN_NUM_CS       22
 
 // Fixed frame size - MUST match Master (increased for better throughput)
 #define SPI_FRAME_SIZE   256
@@ -149,9 +146,9 @@ static int spi_init(void) {
 
     // Configure SPI bus for slave mode
     spi_bus_config_t buscfg = {
-        .mosi_io_num = PIN_NUM_MOSI,
-        .miso_io_num = PIN_NUM_MISO,
-        .sclk_io_num = PIN_NUM_CLK,
+        .mosi_io_num = FMRB_PIN_SPI_MOSI,
+        .miso_io_num = FMRB_PIN_SPI_MISO,
+        .sclk_io_num = FMRB_PIN_SPI_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = SPI_FRAME_SIZE,
@@ -160,7 +157,7 @@ static int spi_init(void) {
     // Configure SPI slave interface
     spi_slave_interface_config_t slvcfg = {
         .mode = 0,  // SPI mode 0 (CPOL=0, CPHA=0)
-        .spics_io_num = PIN_NUM_CS,
+        .spics_io_num = FMRB_PIN_SPI_CS,
         .queue_size = NUM_BUFFERS,  // Match buffer count
         .flags = 0,
         .post_setup_cb = spi_post_setup_cb,
@@ -168,10 +165,10 @@ static int spi_init(void) {
     };
 
     // Enable pull-ups on SPI lines for stability
-    gpio_set_pull_mode(PIN_NUM_MOSI, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(PIN_NUM_MISO, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(PIN_NUM_CLK, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(PIN_NUM_CS, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(FMRB_PIN_SPI_MOSI, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(FMRB_PIN_SPI_MISO, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(FMRB_PIN_SPI_CLK, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(FMRB_PIN_SPI_CS, GPIO_PULLUP_ONLY);
 
     // Initialize SPI slave interface
     esp_err_t ret = spi_slave_initialize(SPI_HOST_ID, &buscfg, &slvcfg, SPI_DMA_CH_AUTO);
@@ -192,7 +189,7 @@ static int spi_init(void) {
 
     spi_running = 1;
     ESP_LOGI(TAG, "SPI slave initialized - MOSI:%d MISO:%d CLK:%d CS:%d (frame=%d bytes)",
-           PIN_NUM_MOSI, PIN_NUM_MISO, PIN_NUM_CLK, PIN_NUM_CS, SPI_FRAME_SIZE);
+           FMRB_PIN_SPI_MOSI, FMRB_PIN_SPI_MISO, FMRB_PIN_SPI_CLK, FMRB_PIN_SPI_CS, SPI_FRAME_SIZE);
     return 0;
 
 cleanup_sem:

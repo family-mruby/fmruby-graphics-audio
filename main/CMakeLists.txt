@@ -49,6 +49,7 @@ set(INCLUDE_DIRS
 
 set(REQUIRES
     LovyanGFX
+    fmrb_pin_assign
 )
 
 # Add ESP32-specific requirements

@@ -5,15 +5,16 @@
 extern "C" {
 #endif
 #include <stdint.h>
+#include "fmrb_pin_assign.h"
 
 #define USE_I2S
 
 #ifdef USE_I2S
-#define PIN_BCK   GPIO_NUM_32
-#define PIN_WS    GPIO_NUM_33
-#define PIN_DOUT  GPIO_NUM_27
+#define PIN_BCK   FMRB_PIN_I2S_BCK
+#define PIN_WS    FMRB_PIN_I2S_WS
+#define PIN_DOUT  FMRB_PIN_I2S_DOUT
 #else
-#define AUDIO_PIN   26
+#define AUDIO_PIN   FMRB_PIN_AUDIO_PWM
 #endif
 
 /* APU event types */

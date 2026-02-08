@@ -26,7 +26,7 @@ else()
         PRIV_INCLUDE_DIRS
             "src"
             "src/nofrendo"
-        REQUIRES ${APU_REQUIRES}
+        REQUIRES ${APU_REQUIRES} fmrb_pin_assign
     )
 
     target_compile_options(__idf_apu_emu PRIVATE

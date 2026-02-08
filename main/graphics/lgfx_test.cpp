@@ -10,6 +10,10 @@
 #include <inttypes.h>
 #include "esp_heap_caps.h"
 
+extern "C" {
+#include "fmrb_pin_assign.h"
+}
+
 // PSRAMメモリ詳細診断関数
 extern "C" void lgfx_print_detailed_memory_info(void) {
     printf("=== PSRAM Memory Diagnosis ===\n");
@@ -72,7 +76,7 @@ public:
       cfg.signal_type = cfg.signal_type_t::NTSC_J;
 
       // 出力先のGPIO番号を設定（DACを使用するため、 25 または 26 のみが選択可能）
-      cfg.pin_dac = 25;
+      cfg.pin_dac = FMRB_PIN_CVBS_DAC;
 
       // PSRAMメモリ割当の設定（ESP32-WROVER-Eの場合）
       cfg.use_psram = 1;      // 0=PSRAM不使用 / 1=PSRAMとSRAMを半々使用 / 2=全部PSRAM使用
