@@ -55,8 +55,7 @@ void comm_task_stop(void) {
 }
 
 void comm_task(void *pvParameters) {
-    printf("[comm_task] started on core %d\n", (int)xPortGetCoreID());
-    ESP_LOGI(TAG, "Communication task started on core %d", (int)xPortGetCoreID());
+    ESP_LOGI(TAG, "started on core %d", (int)xPortGetCoreID());
 
 #ifdef ENABLE_SPI_TEST
     //testing SPI
@@ -65,22 +64,22 @@ void comm_task(void *pvParameters) {
 #endif
     const comm_interface_t *comm = COMM_INTERFACE;
     if (!comm) {
-        printf("[comm_task] ERROR: comm interface is NULL\n");
+        ESP_LOGE(TAG, "comm interface is NULL");
         vTaskDelete(NULL);
         return;
     }
 
-    printf("[comm_task] Calling comm->init()...\n");
+    ESP_LOGI(TAG, "Calling comm->init()...");
     // Initialize communication interface
     int init_ret = comm->init();
-    printf("[comm_task] comm->init() returned %d\n", init_ret);
+    ESP_LOGI(TAG, "comm->init() returned %d", init_ret);
     if (init_ret < 0) {
-        printf("[comm_task] ERROR: SPI init failed (%d)\n", init_ret);
+        ESP_LOGE(TAG, "SPI init failed (%d)", init_ret);
         vTaskDelete(NULL);
         return;
     }
 
-    printf("[comm_task] SPI initialized OK. Entering main loop.\n");
+    ESP_LOGI(TAG, "SPI initialized OK. Entering main loop.");
 
     extern void spi_slave_print_stats(void);
     int loop_count = 0;
@@ -100,12 +99,12 @@ void comm_task(void *pvParameters) {
         size_t payload_len;
 
         while (comm->receive_message(&type, &seq, &sub_cmd, &payload, &payload_len) > 0) {
-            printf("[comm_task] MSG: type=%u seq=%u sub_cmd=0x%02x len=%u\n",
+            ESP_LOGI(TAG, "MSG: type=%u seq=%u sub_cmd=0x%02x len=%u",
                    type, seq, sub_cmd, (unsigned)payload_len);
             // Handle message in application layer
             int result = message_handler_process(type, seq, sub_cmd, payload, payload_len);
             if (result < 0) {
-                printf("[comm_task] handler FAILED: type=%u seq=%u sub_cmd=0x%02x\n",
+                ESP_LOGE(TAG, "handler FAILED: type=%u seq=%u sub_cmd=0x%02x",
                        type, seq, sub_cmd);
             }
         }

@@ -305,7 +305,7 @@ static int spi_process(void) {
     if (ack_buf_idx == buf_idx) {
         gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // HIGH = idle (ACK was sent)
         ack_buf_idx = -1;
-        printf("[spi_slave] ACK transmitted from buf[%d], GPIO HIGH\n", buf_idx);
+        ESP_LOGI(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
     }
 
     if (rx_len > 0) {
@@ -314,12 +314,10 @@ static int spi_process(void) {
 
         // Debug: log first few transactions with hex dump
         if (s_data_trans_count <= 10) {
-            printf("[spi_slave] trans#%lu buf[%d] rx_len=%d first16: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+            ESP_LOGI(TAG, "trans#%lu buf[%d] rx_len=%d first8: %02x %02x %02x %02x %02x %02x %02x %02x",
                    s_data_trans_count, buf_idx, (int)rx_len,
                    rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3],
-                   rx_buf[4], rx_buf[5], rx_buf[6], rx_buf[7],
-                   rx_buf[8], rx_buf[9], rx_buf[10], rx_buf[11],
-                   rx_buf[12], rx_buf[13], rx_buf[14], rx_buf[15]);
+                   rx_buf[4], rx_buf[5], rx_buf[6], rx_buf[7]);
         }
 
         // Look for COBS frame terminator (0x00)
@@ -333,13 +331,13 @@ static int spi_process(void) {
             // Found a complete COBS frame
             if (process_cobs_frame(rx_buf, frame_end) == 0) {
                 s_frame_decoded_count++;
-                printf("[spi_slave] FRAME DECODED OK: frame_end=%d\n", (int)frame_end);
+                ESP_LOGI(TAG, "FRAME DECODED OK: frame_end=%d", (int)frame_end);
                 messages_processed++;
             } else {
-                printf("[spi_slave] FRAME DECODE FAILED: frame_end=%d\n", (int)frame_end);
+                ESP_LOGE(TAG, "FRAME DECODE FAILED: frame_end=%d", (int)frame_end);
             }
         } else if (s_data_trans_count <= 10) {
-            printf("[spi_slave] no COBS frame (frame_end=%d, rx_len=%d)\n", (int)frame_end, (int)rx_len);
+            ESP_LOGD(TAG, "no COBS frame (frame_end=%d, rx_len=%d)", (int)frame_end, (int)rx_len);
         }
     }
 
@@ -350,7 +348,7 @@ static int spi_process(void) {
     // Copy pending ACK to TX buffer if available
     if (pending_ack_len > 0) {
         memcpy(tx_buffers[buf_idx], pending_ack_buf, pending_ack_len);
-        printf("[spi_slave] ACK loaded to TX buf[%d] (%d bytes)\n", buf_idx, (int)pending_ack_len);
+        ESP_LOGI(TAG, "ACK loaded to TX buf[%d] (%d bytes)", buf_idx, (int)pending_ack_len);
         pending_ack_len = 0;
         ack_buf_idx = buf_idx;
         // GPIO already set LOW by spi_send_ack(), no need to set again
@@ -362,7 +360,7 @@ static int spi_process(void) {
 
 // Call periodically to print SPI stats
 void spi_slave_print_stats(void) {
-    printf("[spi_slave] stats: trans=%lu data=%lu frames_found=%lu decoded=%lu\n",
+    ESP_LOGI(TAG, "stats: trans=%lu data=%lu frames_found=%lu decoded=%lu",
            s_trans_count, s_data_trans_count, s_frame_found_count, s_frame_decoded_count);
 }
 
@@ -398,7 +396,7 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
     // load the ACK from pending_ack_buf into the TX buffer.
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
 
-    printf("[spi_slave] ACK staged: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW\n",
+    ESP_LOGI(TAG, "ACK staged: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW",
            type, seq, response_len, (unsigned)encoded_len);
     return 0;
 }

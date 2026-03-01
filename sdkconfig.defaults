@@ -43,9 +43,9 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_VFS_SUPPORT_IO=y
 CONFIG_SPIFFS_MAX_PARTITIONS=3
 
-# Reduce logging overhead
-CONFIG_LOG_DEFAULT_LEVEL_WARN=y
-CONFIG_LOG_DEFAULT_LEVEL=2
+# Log level
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
 
 # Arduino-compatible performance settings
 # FreeRTOS optimizations matching Arduino
