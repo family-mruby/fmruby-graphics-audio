@@ -276,24 +276,8 @@ static uint32_t s_data_trans_count = 0;
 static uint32_t s_frame_found_count = 0;
 static uint32_t s_frame_decoded_count = 0;
 
-static int spi_process(void) {
-    if (!spi_running) {
-        return 0;
-    }
-
-    // Wait for transaction complete (signaled from ISR)
-    if (xSemaphoreTake(trans_ready_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
-        return 0;  // Timeout - no transaction
-    }
-
-    // Get the completed transaction
-    spi_slave_transaction_t *completed_trans;
-    esp_err_t ret = spi_slave_get_trans_result(SPI_HOST_ID, &completed_trans, 0);
-
-    if (ret != ESP_OK) {
-        return 0;
-    }
-
+// Process a single completed transaction. Returns number of messages decoded.
+static int process_single_transaction(spi_slave_transaction_t *completed_trans) {
     s_trans_count++;
     size_t rx_len = completed_trans->trans_len / 8;
     int messages_processed = 0;
@@ -355,6 +339,31 @@ static int spi_process(void) {
     }
 
     queue_next_transaction();
+    return messages_processed;
+}
+
+static int spi_process(void) {
+    if (!spi_running) {
+        return 0;
+    }
+
+    // Wait for at least one transaction to complete (signaled from ISR)
+    // Note: trans_ready_sem is binary, so multiple ISR gives may be collapsed into one.
+    // We compensate by draining all available results below.
+    if (xSemaphoreTake(trans_ready_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return 0;  // Timeout - no transaction
+    }
+
+    int messages_processed = 0;
+    spi_slave_transaction_t *completed_trans;
+
+    // Drain ALL completed transactions from the SPI driver's result queue.
+    // The binary semaphore only tells us "at least one completed", but there
+    // may be more results waiting (if ISR fired multiple times before we ran).
+    while (spi_slave_get_trans_result(SPI_HOST_ID, &completed_trans, 0) == ESP_OK) {
+        messages_processed += process_single_transaction(completed_trans);
+    }
+
     return messages_processed;
 }
 

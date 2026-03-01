@@ -93,7 +93,7 @@ void comm_task(void *pvParameters) {
             //ESP_LOGW(TAG, "Communication process error");
         }
 
-        // Process decoded messages
+        // Process decoded messages immediately (stages ACKs promptly)
         uint8_t type, seq, sub_cmd;
         const uint8_t *payload;
         size_t payload_len;
@@ -115,9 +115,12 @@ void comm_task(void *pvParameters) {
             spi_slave_print_stats();
         }
 
-        // Small delay to prevent busy waiting
-        // Use 1ms to handle high-frequency graphics commands
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // Only delay when idle (no frames processed).
+        // When busy, loop immediately to re-queue SPI buffers promptly
+        // and prevent the slave's transaction queue from being starved.
+        if (frames_received <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
     }
 
     // Cleanup communication interface
