@@ -40,6 +40,11 @@ static int spi_running = 0;
 static SemaphoreHandle_t spi_mutex = NULL;
 static SemaphoreHandle_t trans_ready_sem = NULL;
 
+// Pending ACK buffer (staged here, copied to TX buffer before re-queue)
+static uint8_t *pending_ack_buf = NULL;
+static volatile size_t pending_ack_len = 0;
+static volatile int ack_buf_idx = -1;  // Which TX buffer contains the ACK (-1 = none)
+
 // Callback called after a transaction is done (ISR context)
 static void IRAM_ATTR spi_post_trans_cb(spi_slave_transaction_t *trans)
 {
@@ -116,7 +121,7 @@ static int spi_init(void) {
     // Initialize message queue
     message_queue_init(g_message_queue);
 
-    // Allocate DMA-capable buffers (double buffered)
+    // Allocate DMA-capable buffers (double buffered + pending ACK)
     for (int i = 0; i < NUM_BUFFERS; i++) {
         rx_buffers[i] = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
         tx_buffers[i] = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
@@ -128,7 +133,28 @@ static int spi_init(void) {
         memset(tx_buffers[i], 0, SPI_FRAME_SIZE);
         memset(&transactions[i], 0, sizeof(spi_slave_transaction_t));
     }
+    if (!pending_ack_buf) {
+        pending_ack_buf = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
+        if (!pending_ack_buf) {
+            ESP_LOGE(TAG, "Failed to allocate pending ACK buffer");
+            goto cleanup_buffers;
+        }
+        memset(pending_ack_buf, 0, SPI_FRAME_SIZE);
+        pending_ack_len = 0;
+    }
     ESP_LOGI(TAG, "DMA buffers allocated (frame_size=%d, double_buffered)", SPI_FRAME_SIZE);
+
+    // Initialize handshake GPIO (active LOW, externally pulled up)
+    gpio_config_t hs_conf = {
+        .pin_bit_mask = (1ULL << FMRB_PIN_SPI_HANDSHAKE),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&hs_conf);
+    gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // HIGH = idle
+    ack_buf_idx = -1;
 
     // Create mutex for thread safety
     spi_mutex = xSemaphoreCreateMutex();
@@ -272,10 +298,18 @@ static int spi_process(void) {
     size_t rx_len = completed_trans->trans_len / 8;
     int messages_processed = 0;
 
+    // Find which buffer was used
+    int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
+
+    // If THIS buffer contained the ACK and was just transmitted, release handshake
+    if (ack_buf_idx == buf_idx) {
+        gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // HIGH = idle (ACK was sent)
+        ack_buf_idx = -1;
+        printf("[spi_slave] ACK transmitted from buf[%d], GPIO HIGH\n", buf_idx);
+    }
+
     if (rx_len > 0) {
         s_data_trans_count++;
-        // Find which buffer was used
-        int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
         uint8_t *rx_buf = (uint8_t*)completed_trans->rx_buffer;
 
         // Debug: log first few transactions with hex dump
@@ -307,17 +341,23 @@ static int spi_process(void) {
         } else if (s_data_trans_count <= 10) {
             printf("[spi_slave] no COBS frame (frame_end=%d, rx_len=%d)\n", (int)frame_end, (int)rx_len);
         }
-
-        // Re-queue this buffer for next transaction
-        current_buf = buf_idx;
-        queue_next_transaction();
-
-        return messages_processed;
     }
 
-    // Re-queue even if no data
+    // Prepare TX buffer before re-queue (safe: buffer is not in DMA queue now)
+    current_buf = buf_idx;
+    memset(tx_buffers[buf_idx], 0, SPI_FRAME_SIZE);
+
+    // Copy pending ACK to TX buffer if available
+    if (pending_ack_len > 0) {
+        memcpy(tx_buffers[buf_idx], pending_ack_buf, pending_ack_len);
+        printf("[spi_slave] ACK loaded to TX buf[%d] (%d bytes)\n", buf_idx, (int)pending_ack_len);
+        pending_ack_len = 0;
+        ack_buf_idx = buf_idx;
+        // GPIO already set LOW by spi_send_ack(), no need to set again
+    }
+
     queue_next_transaction();
-    return 0;
+    return messages_processed;
 }
 
 // Call periodically to print SPI stats
@@ -337,23 +377,29 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
         return -1;
     }
 
-    uint8_t *tx_buf = tx_buffers[current_buf];
+    // Encode ACK into pending buffer (NOT directly into DMA TX buffer)
     size_t encoded_len;
-
-    // Encode ACK using common msgpack module
+    memset(pending_ack_buf, 0, SPI_FRAME_SIZE);
     int result = fmrb_link_encode_ack(type, seq, response_data, response_len,
-                                     tx_buf, SPI_FRAME_SIZE,
+                                     pending_ack_buf, SPI_FRAME_SIZE,
                                      &encoded_len);
 
-    xSemaphoreGive(spi_mutex);
-
     if (result != 0) {
+        xSemaphoreGive(spi_mutex);
         ESP_LOGE(TAG, "Failed to encode ACK");
         return -1;
     }
 
-    ESP_LOGD(TAG, "ACK prepared: type=%u seq=%u response_len=%u encoded_len=%zu",
-              type, seq, response_len, encoded_len);
+    pending_ack_len = encoded_len;
+    xSemaphoreGive(spi_mutex);
+
+    // Signal Master that ACK is pending (active LOW)
+    // Master will poll, triggering a transaction. spi_process() will then
+    // load the ACK from pending_ack_buf into the TX buffer.
+    gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
+
+    printf("[spi_slave] ACK staged: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW\n",
+           type, seq, response_len, (unsigned)encoded_len);
     return 0;
 }
 
@@ -402,6 +448,13 @@ static void spi_cleanup(void) {
             tx_buffers[i] = NULL;
         }
     }
+
+    // Free pending ACK buffer
+    if (pending_ack_buf) {
+        heap_caps_free(pending_ack_buf);
+        pending_ack_buf = NULL;
+    }
+    pending_ack_len = 0;
 
     // Free message queue from PSRAM
     if (g_message_queue) {

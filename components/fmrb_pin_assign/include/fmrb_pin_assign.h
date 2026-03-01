@@ -16,6 +16,7 @@
 #define FMRB_PIN_SPI_MOSI     21   // Slave Input (from Master Output)
 #define FMRB_PIN_SPI_CLK      19   // SPI Clock
 #define FMRB_PIN_SPI_CS       22   // SPI Chip Select
+#define FMRB_PIN_SPI_HANDSHAKE 23  // SPI Handshake (Active LOW: LOW=ACK ready, HIGH=idle)
 
 // ========================================
 // I2S Audio Output Pins (apu_emu)

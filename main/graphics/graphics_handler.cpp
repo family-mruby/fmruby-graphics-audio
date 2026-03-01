@@ -735,7 +735,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 #else
                 COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&canvas_id, sizeof(canvas_id));
 #endif
-                return 0;
+                return 1;  // ACK already sent with canvas_id
             }
             break;
 

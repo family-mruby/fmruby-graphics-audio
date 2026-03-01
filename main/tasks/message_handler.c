@@ -85,14 +85,16 @@ static int handle_graphics_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
     }
 
     // Pass to graphics handler
+    // Return convention: 0=success (ACK not sent), >0=success (ACK already sent), <0=error
     int result = graphics_handler_process_command(type, sub_cmd, seq, payload, payload_len);
 
-    // Send ACK to prevent retransmission
     if (result == 0) {
+        // Command succeeded, ACK not yet sent
         comm->send_ack(type, seq, NULL, 0);
     }
+    // result > 0: ACK already sent by handler (e.g. CREATE_CANVAS with canvas_id)
 
-    return result;
+    return (result >= 0) ? 0 : result;
 }
 
 /**
