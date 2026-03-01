@@ -8,59 +8,61 @@
 #include "tasks/audio_task.h"
 #include "tasks/comm_task.h"
 
-static const char *TAG = "main_linux";
+static const char *TAG = "main";
 
 extern "C" void app_main(void)
 {
-  ESP_LOGI(TAG,"Starting app_main\n");
+  printf("[app_main] Starting on core %d\n", xPortGetCoreID());
 
-  // Core0でタスク1を起動
-  printf("Creating gfx task on Core0...\n");
-  xTaskCreatePinnedToCore(
-      graphics_task,        // タスク関数
-      "graphics_task",      // タスク名
-      8192,              // スタックサイズ
-      NULL,              // パラメータ
-      5,                 // 優先度
-      NULL,              // タスクハンドル
-      0                  // Core0に固定
+  BaseType_t ret;
+
+  // Graphics task
+  printf("[app_main] Creating graphics_task (prio=5, core=0)...\n");
+  ret = xTaskCreatePinnedToCore(
+      graphics_task,
+      "graphics_task",
+      8192,
+      NULL,
+      5,
+      NULL,
+      0
   );
+  printf("[app_main] graphics_task create: %s\n", (ret == pdPASS) ? "OK" : "FAILED");
 
-  // Core0でタスク2を起動
-  ESP_LOGI(TAG,"Creating Audio task on Core0...\n");
-  xTaskCreatePinnedToCore(
-      audio_task,           // タスク関数
-      "audio_task",         // タスク名
-      8192,              // スタックサイズ
-      NULL,              // パラメータ
-      6,                 // 優先度
-      NULL,              // タスクハンドル
-      0                  // Core0に固定
+  // Audio task
+  printf("[app_main] Creating audio_task (prio=6, core=0)...\n");
+  ret = xTaskCreatePinnedToCore(
+      audio_task,
+      "audio_task",
+      8192,
+      NULL,
+      6,
+      NULL,
+      0
   );
+  printf("[app_main] audio_task create: %s\n", (ret == pdPASS) ? "OK" : "FAILED");
 
-  // Core0でSPIタスクを起動
-  ESP_LOGI(TAG,"Creating SPI task on Core1...\n");
-  xTaskCreatePinnedToCore(
-      comm_task,             // タスク関数
-      "comm_task",           // タスク名
-      4096,              // スタックサイズ
-      NULL,              // パラメータ
-      7,                 // 優先度
-      NULL,              // タスクハンドル
-      0                  // Core0に固定
+  // Communication task (SPI slave)
+  printf("[app_main] Creating comm_task (prio=7, core=0)...\n");
+  ret = xTaskCreatePinnedToCore(
+      comm_task,
+      "comm_task",
+      4096,
+      NULL,
+      7,
+      NULL,
+      0
   );
+  printf("[app_main] comm_task create: %s\n", (ret == pdPASS) ? "OK" : "FAILED");
 
-  // Core1 はLovyanGFXのメモリアクセス専用
+  printf("[app_main] All tasks created.\n");
 
-  ESP_LOGI(TAG,"All tasks created successfully!\n");
-
-  int count=0;
-  while(1) {
+  int count = 0;
+  while (1) {
     count++;
-    if (count % 10 == 0) {  // 10秒ごとに出力
-        ESP_LOGI(TAG,"UI task running... count=%u (core %d)\n", count, xPortGetCoreID());
+    if (count % 10 == 0) {
+        printf("[app_main] running... count=%d (core %d)\n", count, xPortGetCoreID());
     }
-
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }

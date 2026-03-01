@@ -245,6 +245,11 @@ static int spi_receive(uint8_t *buf, size_t buf_size) {
     return copy_len;
 }
 
+static uint32_t s_trans_count = 0;
+static uint32_t s_data_trans_count = 0;
+static uint32_t s_frame_found_count = 0;
+static uint32_t s_frame_decoded_count = 0;
+
 static int spi_process(void) {
     if (!spi_running) {
         return 0;
@@ -263,15 +268,25 @@ static int spi_process(void) {
         return 0;
     }
 
+    s_trans_count++;
     size_t rx_len = completed_trans->trans_len / 8;
     int messages_processed = 0;
 
     if (rx_len > 0) {
+        s_data_trans_count++;
         // Find which buffer was used
         int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
         uint8_t *rx_buf = (uint8_t*)completed_trans->rx_buffer;
 
-        ESP_LOGD(TAG, "SPI Slave[%d]: Received %d bytes", buf_idx, (int)rx_len);
+        // Debug: log first few transactions with hex dump
+        if (s_data_trans_count <= 10) {
+            printf("[spi_slave] trans#%lu buf[%d] rx_len=%d first16: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   s_data_trans_count, buf_idx, (int)rx_len,
+                   rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3],
+                   rx_buf[4], rx_buf[5], rx_buf[6], rx_buf[7],
+                   rx_buf[8], rx_buf[9], rx_buf[10], rx_buf[11],
+                   rx_buf[12], rx_buf[13], rx_buf[14], rx_buf[15]);
+        }
 
         // Look for COBS frame terminator (0x00)
         size_t frame_end = 0;
@@ -280,10 +295,17 @@ static int spi_process(void) {
         }
 
         if (frame_end > 0 && frame_end < rx_len) {
+            s_frame_found_count++;
             // Found a complete COBS frame
             if (process_cobs_frame(rx_buf, frame_end) == 0) {
+                s_frame_decoded_count++;
+                printf("[spi_slave] FRAME DECODED OK: frame_end=%d\n", (int)frame_end);
                 messages_processed++;
+            } else {
+                printf("[spi_slave] FRAME DECODE FAILED: frame_end=%d\n", (int)frame_end);
             }
+        } else if (s_data_trans_count <= 10) {
+            printf("[spi_slave] no COBS frame (frame_end=%d, rx_len=%d)\n", (int)frame_end, (int)rx_len);
         }
 
         // Re-queue this buffer for next transaction
@@ -296,6 +318,12 @@ static int spi_process(void) {
     // Re-queue even if no data
     queue_next_transaction();
     return 0;
+}
+
+// Call periodically to print SPI stats
+void spi_slave_print_stats(void) {
+    printf("[spi_slave] stats: trans=%lu data=%lu frames_found=%lu decoded=%lu\n",
+           s_trans_count, s_data_trans_count, s_frame_found_count, s_frame_decoded_count);
 }
 
 static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {

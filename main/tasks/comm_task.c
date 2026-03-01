@@ -55,6 +55,7 @@ void comm_task_stop(void) {
 }
 
 void comm_task(void *pvParameters) {
+    printf("[comm_task] started on core %d\n", (int)xPortGetCoreID());
     ESP_LOGI(TAG, "Communication task started on core %d", (int)xPortGetCoreID());
 
 #ifdef ENABLE_SPI_TEST
@@ -64,19 +65,25 @@ void comm_task(void *pvParameters) {
 #endif
     const comm_interface_t *comm = COMM_INTERFACE;
     if (!comm) {
-        ESP_LOGE(TAG, "Failed to get communication interface");
+        printf("[comm_task] ERROR: comm interface is NULL\n");
         vTaskDelete(NULL);
         return;
     }
 
-    // Initialize communication interface 
-    if (comm->init() < 0) {
-        ESP_LOGE(TAG, "Communication interface initialization failed");
+    printf("[comm_task] Calling comm->init()...\n");
+    // Initialize communication interface
+    int init_ret = comm->init();
+    printf("[comm_task] comm->init() returned %d\n", init_ret);
+    if (init_ret < 0) {
+        printf("[comm_task] ERROR: SPI init failed (%d)\n", init_ret);
         vTaskDelete(NULL);
         return;
     }
 
-    ESP_LOGI(TAG, "Communication interface initialized successfully");
+    printf("[comm_task] SPI initialized OK. Entering main loop.\n");
+
+    extern void spi_slave_print_stats(void);
+    int loop_count = 0;
 
     // Main communication processing loop
     while (task_running) {
@@ -93,12 +100,20 @@ void comm_task(void *pvParameters) {
         size_t payload_len;
 
         while (comm->receive_message(&type, &seq, &sub_cmd, &payload, &payload_len) > 0) {
+            printf("[comm_task] MSG: type=%u seq=%u sub_cmd=0x%02x len=%u\n",
+                   type, seq, sub_cmd, (unsigned)payload_len);
             // Handle message in application layer
             int result = message_handler_process(type, seq, sub_cmd, payload, payload_len);
             if (result < 0) {
-                ESP_LOGW(TAG, "Message handler failed: type=%u seq=%u sub_cmd=0x%02x",
-                         type, seq, sub_cmd);
+                printf("[comm_task] handler FAILED: type=%u seq=%u sub_cmd=0x%02x\n",
+                       type, seq, sub_cmd);
             }
+        }
+
+        // Print stats every 5 seconds
+        loop_count++;
+        if (loop_count % 5000 == 0) {
+            spi_slave_print_stats();
         }
 
         // Small delay to prevent busy waiting

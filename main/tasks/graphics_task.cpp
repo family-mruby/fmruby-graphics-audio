@@ -97,6 +97,7 @@ void graphics_task(void *pvParameters) {
         timeout_count++;
         if (timeout_count > 60) {  // 6 second timeout
             ESP_LOGE(TAG, "Timeout waiting for display initialization");
+            vTaskDelete(NULL);
             return;
         }
     }
