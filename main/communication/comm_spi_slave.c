@@ -289,7 +289,7 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     if (ack_buf_idx == buf_idx) {
         gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // HIGH = idle (ACK was sent)
         ack_buf_idx = -1;
-        ESP_LOGI(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
+        ESP_LOGD(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
     }
 
     if (rx_len > 0) {
@@ -315,7 +315,7 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
             // Found a complete COBS frame
             if (process_cobs_frame(rx_buf, frame_end) == 0) {
                 s_frame_decoded_count++;
-                ESP_LOGI(TAG, "FRAME DECODED OK: frame_end=%d", (int)frame_end);
+                ESP_LOGD(TAG, "FRAME DECODED OK: frame_end=%d", (int)frame_end);
                 messages_processed++;
             } else {
                 ESP_LOGE(TAG, "FRAME DECODE FAILED: frame_end=%d", (int)frame_end);
@@ -332,7 +332,7 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     // Copy pending ACK to TX buffer if available
     if (pending_ack_len > 0) {
         memcpy(tx_buffers[buf_idx], pending_ack_buf, pending_ack_len);
-        ESP_LOGI(TAG, "ACK loaded to TX buf[%d] (%d bytes)", buf_idx, (int)pending_ack_len);
+        ESP_LOGD(TAG, "ACK loaded to TX buf[%d] (%d bytes)", buf_idx, (int)pending_ack_len);
         pending_ack_len = 0;
         ack_buf_idx = buf_idx;
         // GPIO already set LOW by spi_send_ack(), no need to set again
@@ -405,7 +405,7 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
     // load the ACK from pending_ack_buf into the TX buffer.
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
 
-    ESP_LOGI(TAG, "ACK staged: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW",
+    ESP_LOGD(TAG, "ACK staged: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW",
            type, seq, response_len, (unsigned)encoded_len);
     return 0;
 }

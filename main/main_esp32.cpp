@@ -28,27 +28,27 @@ extern "C" void app_main(void)
   );
   ESP_LOGI(TAG, "graphics_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
 
-  // Audio task
-  ESP_LOGI(TAG, "Creating audio_task (prio=6, core=0)...");
+  // Audio task (highest priority - hard real-time 60Hz constraint)
+  ESP_LOGI(TAG, "Creating audio_task (prio=7, core=0)...");
   ret = xTaskCreatePinnedToCore(
       audio_task,
       "audio_task",
       8192,
       NULL,
-      6,
+      7,
       NULL,
       0
   );
   ESP_LOGI(TAG, "audio_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
 
   // Communication task (SPI slave)
-  ESP_LOGI(TAG, "Creating comm_task (prio=7, core=0)...");
+  ESP_LOGI(TAG, "Creating comm_task (prio=6, core=0)...");
   ret = xTaskCreatePinnedToCore(
       comm_task,
       "comm_task",
       8192,
       NULL,
-      7,
+      6,
       NULL,
       0
   );

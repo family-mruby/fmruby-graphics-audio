@@ -217,7 +217,7 @@ void audio_check_impl(void){
     } else if (sleep_time_us < 0) {
       // If we're more than one frame behind, reset timing
 #ifdef AUDIO_DEBUG
-      printf("Frame timing reset - processing took too long %lld\n",sleep_time_us);
+      printf("Audio Frame timing reset - processing took too long %lld\n",sleep_time_us);
 #endif
       next_frame_time = esp_timer_get_time();
     }

@@ -99,7 +99,7 @@ void comm_task(void *pvParameters) {
         size_t payload_len;
 
         while (comm->receive_message(&type, &seq, &sub_cmd, &payload, &payload_len) > 0) {
-            ESP_LOGI(TAG, "MSG: type=%u seq=%u sub_cmd=0x%02x len=%u",
+            ESP_LOGD(TAG, "MSG: type=%u seq=%u sub_cmd=0x%02x len=%u",
                    type, seq, sub_cmd, (unsigned)payload_len);
             // Handle message in application layer
             int result = message_handler_process(type, seq, sub_cmd, payload, payload_len);
