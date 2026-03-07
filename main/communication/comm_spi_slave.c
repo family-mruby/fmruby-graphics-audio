@@ -289,7 +289,7 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     if (ack_buf_idx == buf_idx) {
         gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // HIGH = idle (ACK was sent)
         ack_buf_idx = -1;
-        ESP_LOGD(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
+        ESP_LOGI(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
     }
 
     if (rx_len > 0) {
@@ -332,10 +332,11 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     // Copy pending ACK to TX buffer if available
     if (pending_ack_len > 0) {
         memcpy(tx_buffers[buf_idx], pending_ack_buf, pending_ack_len);
-        ESP_LOGD(TAG, "ACK loaded to TX buf[%d] (%d bytes)", buf_idx, (int)pending_ack_len);
         pending_ack_len = 0;
         ack_buf_idx = buf_idx;
-        // GPIO already set LOW by spi_send_ack(), no need to set again
+        // GPIO already LOW (set by spi_send_ack). ACK now in TX buffer,
+        // will be transmitted on next SPI transaction.
+        ESP_LOGI(TAG, "ACK loaded to TX buf[%d]", buf_idx);
     }
 
     queue_next_transaction();
@@ -400,12 +401,13 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
     pending_ack_len = encoded_len;
     xSemaphoreGive(spi_mutex);
 
-    // Signal Master that ACK is pending (active LOW)
-    // Master will poll, triggering a transaction. spi_process() will then
-    // load the ACK from pending_ack_buf into the TX buffer.
+    // Signal master that ACK is pending (active LOW).
+    // ACK is in staging buffer, not DMA TX buffer yet.
+    // Master's first poll will trigger copy to TX buffer,
+    // and second poll will read the actual ACK data.
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
 
-    ESP_LOGD(TAG, "ACK staged: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW",
+    ESP_LOGI(TAG, "ACK staged: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW",
            type, seq, response_len, (unsigned)encoded_len);
     return 0;
 }
