@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "freertos/message_buffer.h"
 #include "driver/spi_slave.h"
 #include "driver/gpio.h"
@@ -42,9 +43,13 @@ static int spi_running = 0;
 static SemaphoreHandle_t spi_mutex = NULL;
 static SemaphoreHandle_t trans_ready_sem = NULL;
 
-// Pending ACK buffer (staged here, copied to TX buffer before re-queue)
-static uint8_t *pending_ack_buf = NULL;
-static volatile size_t pending_ack_len = 0;
+// ACK queue: message_handler_task enqueues, comm_task dequeues and handles DMA+GPIO
+typedef struct {
+    uint8_t data[SPI_FRAME_SIZE];
+    size_t len;
+} ack_queue_item_t;
+
+static QueueHandle_t s_ack_queue = NULL;
 static volatile int ack_buf_idx = -1;  // Which TX buffer contains the ACK (-1 = none)
 
 // Callback called after a transaction is done (ISR context)
@@ -112,7 +117,7 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
 
     s_msg_buffer = msg_buffer;
 
-    // Allocate DMA-capable buffers (double buffered + pending ACK)
+    // Allocate DMA-capable buffers (double buffered)
     for (int i = 0; i < NUM_BUFFERS; i++) {
         rx_buffers[i] = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
         tx_buffers[i] = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
@@ -124,14 +129,11 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         memset(tx_buffers[i], 0, SPI_FRAME_SIZE);
         memset(&transactions[i], 0, sizeof(spi_slave_transaction_t));
     }
-    if (!pending_ack_buf) {
-        pending_ack_buf = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
-        if (!pending_ack_buf) {
-            ESP_LOGE(TAG, "Failed to allocate pending ACK buffer");
-            goto cleanup_buffers;
-        }
-        memset(pending_ack_buf, 0, SPI_FRAME_SIZE);
-        pending_ack_len = 0;
+    // Create ACK queue (message_handler_task -> comm_task)
+    s_ack_queue = xQueueCreate(2, sizeof(ack_queue_item_t));
+    if (!s_ack_queue) {
+        ESP_LOGE(TAG, "Failed to create ACK queue");
+        goto cleanup_buffers;
     }
     ESP_LOGI(TAG, "DMA buffers allocated (frame_size=%d, double_buffered)", SPI_FRAME_SIZE);
 
@@ -320,14 +322,13 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     current_buf = buf_idx;
     memset(tx_buffers[buf_idx], 0, SPI_FRAME_SIZE);
 
-    // Copy pending ACK to TX buffer if available
-    if (pending_ack_len > 0) {
-        memcpy(tx_buffers[buf_idx], pending_ack_buf, pending_ack_len);
-        pending_ack_len = 0;
+    // Dequeue pending ACK and copy to TX buffer
+    ack_queue_item_t ack_item;
+    if (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
+        memcpy(tx_buffers[buf_idx], ack_item.data, ack_item.len);
         ack_buf_idx = buf_idx;
-        // GPIO already LOW (set by spi_send_ack). ACK now in TX buffer,
-        // will be transmitted on next SPI transaction.
-        ESP_LOGI(TAG, "ACK loaded to TX buf[%d]", buf_idx);
+        gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);  // LOW = ACK ready in TX buffer
+        ESP_LOGI(TAG, "ACK loaded to TX buf[%d], GPIO LOW", buf_idx);
     }
 
     queue_next_transaction();
@@ -371,35 +372,24 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
         return -1;
     }
 
-    if (xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        ESP_LOGE(TAG, "Cannot send ACK: mutex timeout");
-        return -1;
-    }
-
-    // Encode ACK into pending buffer (NOT directly into DMA TX buffer)
-    size_t encoded_len;
-    memset(pending_ack_buf, 0, SPI_FRAME_SIZE);
+    // Encode ACK into queue item (comm_task will handle DMA buffer + GPIO)
+    ack_queue_item_t item;
+    memset(item.data, 0, SPI_FRAME_SIZE);
     int result = fmrb_link_encode_ack(type, seq, response_data, response_len,
-                                     pending_ack_buf, SPI_FRAME_SIZE,
-                                     &encoded_len);
-
+                                     item.data, SPI_FRAME_SIZE,
+                                     &item.len);
     if (result != 0) {
-        xSemaphoreGive(spi_mutex);
         ESP_LOGE(TAG, "Failed to encode ACK");
         return -1;
     }
 
-    pending_ack_len = encoded_len;
-    xSemaphoreGive(spi_mutex);
+    if (xQueueSend(s_ack_queue, &item, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGE(TAG, "ACK queue full");
+        return -1;
+    }
 
-    // Signal master that ACK is pending (active LOW).
-    // ACK is in staging buffer, not DMA TX buffer yet.
-    // Master's first poll will trigger copy to TX buffer,
-    // and second poll will read the actual ACK data.
-    gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
-
-    ESP_LOGI(TAG, "ACK staged: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW",
-           type, seq, response_len, (unsigned)encoded_len);
+    ESP_LOGI(TAG, "ACK queued: type=%u seq=%u resp_len=%u encoded=%u",
+           type, seq, response_len, (unsigned)item.len);
     return 0;
 }
 
@@ -434,12 +424,11 @@ static void spi_cleanup(void) {
         }
     }
 
-    // Free pending ACK buffer
-    if (pending_ack_buf) {
-        heap_caps_free(pending_ack_buf);
-        pending_ack_buf = NULL;
+    // Free ACK queue
+    if (s_ack_queue) {
+        vQueueDelete(s_ack_queue);
+        s_ack_queue = NULL;
     }
-    pending_ack_len = 0;
 
     s_msg_buffer = NULL;
     spi_running = 0;

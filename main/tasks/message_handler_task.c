@@ -157,7 +157,7 @@ void message_handler_task(void *pvParameters) {
     while (task_running) {
         // Wait for a message from the comm_task
         // pdMS_TO_TICKS(100) = 100ms timeout to allow task_running check
-        bytes_recv = xMessageBufferReceive(msg_buffer, &msg, sizeof(message_data_t), pdMS_TO_TICKS(100));
+        bytes_recv = xMessageBufferReceive(msg_buffer, &msg, sizeof(message_data_t), pdMS_TO_TICKS(1000));
         
         if (bytes_recv > 0) {
             // Process the message
