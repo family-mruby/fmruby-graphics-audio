@@ -100,9 +100,11 @@ void graphics_task(void *pvParameters) {
         timeout_count++;
         if (timeout_count > 60) {  // 6 second timeout
             ESP_LOGE(TAG, "Timeout waiting for display initialization");
+#ifndef CONFIG_IDF_TARGET_LINUX
             ESP_LOGI(TAG, "Starting LGFX test drawing...");
             lgfx_test();
             // lgfx_test() runs an infinite loop, so we won't reach here
+#endif
             vTaskDelete(NULL);
             return;
         }

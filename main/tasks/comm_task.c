@@ -1,9 +1,10 @@
 #include "comm_task.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/message_buffer.h"
 #include "esp_log.h"
 #include "comm_interface.h"
-#include "message_handler.h"
+#include <string.h>
 
 static const char *TAG = "comm_task";
 static volatile int task_running = 1;
@@ -57,6 +58,13 @@ void comm_task_stop(void) {
 void comm_task(void *pvParameters) {
     ESP_LOGI(TAG, "started on core %d", (int)xPortGetCoreID());
 
+    MessageBufferHandle_t msg_buffer = (MessageBufferHandle_t)pvParameters;
+    if (!msg_buffer) {
+        ESP_LOGE(TAG, "Invalid MessageBuffer handle");
+        vTaskDelete(NULL);
+        return;
+    }
+
 #ifdef ENABLE_SPI_TEST
     //testing SPI
     comm_test();
@@ -84,6 +92,15 @@ void comm_task(void *pvParameters) {
     extern void spi_slave_print_stats(void);
     int loop_count = 0;
 
+    // Message structure to send to message_handler_task
+    typedef struct {
+        uint8_t type;
+        uint8_t seq;
+        uint8_t sub_cmd;
+        uint16_t payload_len;
+        uint8_t payload[1024];  // MSG_QUEUE_MAX_PAYLOAD
+    } message_data_t;
+
     // Main communication processing loop
     while (task_running) {
         // Process low-level communication (accept, read, decode frames)
@@ -93,7 +110,7 @@ void comm_task(void *pvParameters) {
             //ESP_LOGW(TAG, "Communication process error");
         }
 
-        // Process decoded messages immediately (stages ACKs promptly)
+        // Forward decoded messages to handler task via MessageBuffer
         uint8_t type, seq, sub_cmd;
         const uint8_t *payload;
         size_t payload_len;
@@ -101,11 +118,28 @@ void comm_task(void *pvParameters) {
         while (comm->receive_message(&type, &seq, &sub_cmd, &payload, &payload_len) > 0) {
             ESP_LOGD(TAG, "MSG: type=%u seq=%u sub_cmd=0x%02x len=%u",
                    type, seq, sub_cmd, (unsigned)payload_len);
-            // Handle message in application layer
-            int result = message_handler_process(type, seq, sub_cmd, payload, payload_len);
-            if (result < 0) {
-                ESP_LOGE(TAG, "handler FAILED: type=%u seq=%u sub_cmd=0x%02x",
-                       type, seq, sub_cmd);
+            
+            // Prepare message for handler task
+            message_data_t msg = {
+                .type = type,
+                .seq = seq,
+                .sub_cmd = sub_cmd,
+                .payload_len = (uint16_t)payload_len
+            };
+            
+            // Copy payload (safe as payload_len <= 1024)
+            if (payload_len <= sizeof(msg.payload)) {
+                memcpy(msg.payload, payload, payload_len);
+            } else {
+                ESP_LOGE(TAG, "Payload too large: %zu bytes", payload_len);
+                continue;
+            }
+            
+            // Send to message_handler_task via MessageBuffer
+            size_t bytes_sent = xMessageBufferSend(msg_buffer, (void*)&msg, 
+                                                   sizeof(message_data_t), pdMS_TO_TICKS(100));
+            if (bytes_sent == 0) {
+                ESP_LOGW(TAG, "Failed to send message to handler task (buffer full?)");
             }
         }
 

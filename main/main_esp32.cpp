@@ -1,11 +1,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/message_buffer.h"
 #include "esp_timer.h"
 #include "communication/comm_interface.h"
 #include "esp_log.h"
 #include "tasks/graphics_task.h"
 #include "tasks/audio_task.h"
 #include "tasks/comm_task.h"
+#include "tasks/message_handler_task.h"
 
 static const char *TAG = "main";
 
@@ -14,6 +16,16 @@ extern "C" void app_main(void)
   ESP_LOGI(TAG, "Starting on core %d", xPortGetCoreID());
 
   BaseType_t ret;
+
+  // Create MessageBuffer for comm_task -> message_handler_task communication
+  // Size: max message = ~1100 bytes (type+seq+sub_cmd+len + 1024 payload)
+  // Allocate 2x max message size for headroom
+  MessageBufferHandle_t msg_buffer = xMessageBufferCreate(2200);
+  if (msg_buffer == NULL) {
+    ESP_LOGE(TAG, "Failed to create message buffer");
+    while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+  }
+  ESP_LOGI(TAG, "Message buffer created for inter-task communication");
 
   // Graphics task
   ESP_LOGI(TAG, "Creating graphics_task (prio=5, core=0)...");
@@ -41,18 +53,31 @@ extern "C" void app_main(void)
   );
   ESP_LOGI(TAG, "audio_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
 
-  // Communication task (SPI slave)
+  // Communication task (SPI slave) - high priority for responsiveness
   ESP_LOGI(TAG, "Creating comm_task (prio=6, core=0)...");
   ret = xTaskCreatePinnedToCore(
       comm_task,
       "comm_task",
       8192,
-      NULL,
+      (void*)msg_buffer,      // Pass MessageBuffer handle
       6,
       NULL,
       0
   );
   ESP_LOGI(TAG, "comm_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
+
+  // Message handler task - lower priority for application processing
+  ESP_LOGI(TAG, "Creating message_handler_task (prio=5, core=0)...");
+  ret = xTaskCreatePinnedToCore(
+      message_handler_task,
+      "message_handler_task",
+      8192,
+      (void*)msg_buffer,      // Pass MessageBuffer handle
+      5,
+      NULL,
+      0
+  );
+  ESP_LOGI(TAG, "message_handler_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
 
   ESP_LOGI(TAG, "All tasks created.");
 

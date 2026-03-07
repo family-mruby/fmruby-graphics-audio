@@ -8,11 +8,13 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/message_buffer.h"
 
 #include "esp_log.h"
 #include "graphics_task.h"
 #include "audio_task.h"
 #include "comm_task.h"
+#include "message_handler_task.h"
 
 static const char *TAG = "main_linux";
 
@@ -28,6 +30,7 @@ extern "C" void signal_handler(int sig) {
 
     // Stop all tasks (sets task_running flags)
     comm_task_stop();
+    message_handler_task_stop();
     audio_task_stop();
     graphics_task_stop();
 
@@ -61,6 +64,14 @@ extern "C" int app_main(void)
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    // Create MessageBuffer for comm_task -> message_handler_task communication
+    MessageBufferHandle_t msg_buffer = xMessageBufferCreate(2200);
+    if (msg_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to create message buffer");
+        return -1;
+    }
+    printf("Message buffer created for inter-task communication\n");
+
     printf("Creating Audio task ...\n");
     xTaskCreatePinnedToCore(
         audio_task,           // タスク関数
@@ -77,12 +88,22 @@ extern "C" int app_main(void)
         comm_task,             // タスク関数
         "comm_task",           // タスク名
         8192*2,              // スタックサイズ
-        NULL,              // パラメータ
+        (void*)msg_buffer,   // パラメータ(MessageBuffer)
         5,                 // 優先度
         NULL,              // タスクハンドル
         0                  // Core0(仮)
     );
 
+    printf("Creating message_handler task ...\n");
+    xTaskCreatePinnedToCore(
+        message_handler_task,  // タスク関数
+        "message_handler_task", // タスク名
+        8192,                  // スタックサイズ
+        (void*)msg_buffer,    // パラメータ(MessageBuffer)
+        4,                    // 優先度
+        NULL,                 // タスクハンドル
+        0                     // Core0(仮)
+    );
 
     printf("Creating LGFX user_func for SDL2...\n");
     return lgfx::Panel_sdl::main(user_func);

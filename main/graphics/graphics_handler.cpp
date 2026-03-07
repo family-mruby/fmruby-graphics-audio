@@ -97,7 +97,8 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     }
 
     canvas_state_t* canvas = &g_canvases[g_canvas_count];
-    g_canvas_count++;
+    // Note: g_canvas_count is incremented AFTER all initialization is complete
+    // to prevent race condition with graphics_task render loop
     canvas->canvas_id = canvas_id;
 
     // Always allocate at display screen size to avoid reallocation on resize
@@ -118,7 +119,6 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->draw_buffer_mem = fmrb_mempool_canvas_alloc_buffer();
     if (!canvas->draw_buffer_mem) {
         ESP_LOGE(TAG, "Failed to allocate draw buffer memory for canvas %u", canvas_id);
-        g_canvas_count--;
         return nullptr;
     }
 
@@ -127,7 +127,7 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     if (!canvas->render_buffer_mem) {
         ESP_LOGE(TAG, "Failed to allocate render buffer memory for canvas %u", canvas_id);
         fmrb_mempool_canvas_free_buffer(canvas->draw_buffer_mem);
-        g_canvas_count--;
+        canvas->draw_buffer_mem = nullptr;
         return nullptr;
     }
 
@@ -140,6 +140,9 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->render_buffer = new LGFX_Sprite(g_lgfx);
     canvas->render_buffer->setColorDepth(8);  // RGB332
     canvas->render_buffer->setBuffer(canvas->render_buffer_mem, req_width, req_height, 8);
+
+    // All initialization complete - now make visible to render task
+    g_canvas_count++;
 
     ESP_LOGI(TAG, "Canvas allocated: ID=%u, allocated_size=%dx%d, active_size=%dx%d, z_order=%d",
               canvas_id, canvas->width, canvas->height,
@@ -203,6 +206,9 @@ static void graphics_handler_render_frame_internal() {
     canvas_sort_by_zorder();
 
     LGFX_Sprite* screen_buffer = g_canvases[0].render_buffer; //system GUI canvas
+    if (!screen_buffer) {
+        return;  // Canvas not fully initialized yet
+    }
 
     // Composite all visible canvases to screen buffer (NOT to g_lgfx directly)
     for (size_t i = 1; i < g_canvas_count; i++) {
