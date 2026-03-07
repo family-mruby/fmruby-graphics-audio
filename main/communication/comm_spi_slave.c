@@ -51,6 +51,10 @@ typedef struct {
 static QueueHandle_t s_ack_queue = NULL;
 static volatile int ack_buf_idx = -1;  // Which TX buffer contains the ACK (-1 = none)
 
+// Cached EMPTY frame (encoded once at init, reused for all TX buffer fills)
+static uint8_t s_empty_frame[SPI_FRAME_SIZE];
+static size_t s_empty_frame_len = 0;
+
 // Callback called after a transaction is done (ISR context)
 static void IRAM_ATTR spi_post_trans_cb(spi_slave_transaction_t *trans)
 {
@@ -134,7 +138,21 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         ESP_LOGE(TAG, "Failed to create ACK queue");
         goto cleanup_buffers;
     }
-    ESP_LOGI(TAG, "DMA buffers allocated (frame_size=%d, double_buffered)", SPI_FRAME_SIZE);
+    // Encode EMPTY frame (cached for reuse in TX buffer fills)
+    memset(s_empty_frame, 0, SPI_FRAME_SIZE);
+    int enc_ret = fmrb_link_encode_ack(FMRB_LINK_TYPE_EMPTY, 0, NULL, 0,
+                                        s_empty_frame, SPI_FRAME_SIZE, &s_empty_frame_len);
+    if (enc_ret != 0) {
+        ESP_LOGE(TAG, "Failed to encode EMPTY frame");
+        goto cleanup_buffers;
+    }
+
+    // Fill initial TX buffers with EMPTY frame
+    for (int i = 0; i < NUM_BUFFERS; i++) {
+        memcpy(tx_buffers[i], s_empty_frame, s_empty_frame_len);
+    }
+    ESP_LOGI(TAG, "DMA buffers allocated (frame_size=%d, num_buffers=%d, empty_frame=%zu bytes)",
+             SPI_FRAME_SIZE, NUM_BUFFERS, s_empty_frame_len);
 
     // Initialize handshake GPIO (active LOW, externally pulled up)
     gpio_config_t hs_conf = {
@@ -271,8 +289,10 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     }
 
     // Prepare TX buffer before re-queue (safe: buffer is not in DMA queue now)
+    // Fill with EMPTY frame so master always receives a valid COBS message
     current_buf = buf_idx;
     memset(tx_buffers[buf_idx], 0, SPI_FRAME_SIZE);
+    memcpy(tx_buffers[buf_idx], s_empty_frame, s_empty_frame_len);
 
     // Dequeue pending ACK and copy to TX buffer
     ack_queue_item_t ack_item;
