@@ -4,15 +4,17 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/message_buffer.h"
 #include "driver/spi_slave.h"
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "fmrb_link_msgpack.h"
-#include "message_queue.h"
+#include "comm_message.h"
 #include "fmrb_link_protocol.h"
 #include "fmrb_pin_assign.h"
 
@@ -22,13 +24,13 @@ static const char *TAG = "spi_slave";
 #define SPI_HOST_ID      SPI2_HOST
 
 // Fixed frame size - MUST match Master (increased for better throughput)
-#define SPI_FRAME_SIZE   256
+#define SPI_FRAME_SIZE   (COMM_MSG_MAX_PAYLOAD)
 
 // Double buffering for continuous operation
 #define NUM_BUFFERS      2
 
-// Message queue for decoded messages (dynamically allocated in PSRAM to save 525KB DRAM)
-static message_queue_t* g_message_queue = NULL;
+// MessageBuffer handle for forwarding decoded messages
+static MessageBufferHandle_t s_msg_buffer = NULL;
 
 // DMA-capable buffers (dynamically allocated)
 static uint8_t *rx_buffers[NUM_BUFFERS] = {NULL, NULL};
@@ -61,30 +63,30 @@ static void IRAM_ATTR spi_post_setup_cb(spi_slave_transaction_t *trans)
     // Transaction is queued and ready
 }
 
-// Process a COBS frame and enqueue the decoded message
+// Process a COBS frame and send the decoded message to MessageBuffer
 static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
-    uint8_t type, seq, sub_cmd;
-    uint8_t payload_buffer[MSG_QUEUE_MAX_PAYLOAD];
+    message_data_t msg;
     size_t payload_len;
 
-    // Decode frame using common msgpack module
+    // Decode frame directly into message_data_t
     int result = fmrb_link_decode_frame(encoded_data, encoded_len,
-                                       &type, &seq, &sub_cmd,
-                                       payload_buffer, sizeof(payload_buffer),
+                                       &msg.type, &msg.seq, &msg.sub_cmd,
+                                       msg.payload, sizeof(msg.payload),
                                        &payload_len);
     if (result != 0) {
         ESP_LOGE(TAG, "Frame decode failed");
         return -1;
     }
+    msg.payload_len = (uint16_t)payload_len;
 
     ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
-               type, seq, sub_cmd, payload_len);
+               msg.type, msg.seq, msg.sub_cmd, payload_len);
 
-    // Enqueue the decoded message using common queue module
-    result = message_queue_enqueue(g_message_queue, type, seq, sub_cmd,
-                                   payload_buffer, payload_len);
-    if (result != 0) {
-        ESP_LOGE(TAG, "Failed to enqueue message");
+    // Send directly to MessageBuffer
+    size_t send_size = offsetof(message_data_t, payload) + payload_len;
+    size_t bytes_sent = xMessageBufferSend(s_msg_buffer, &msg, send_size, pdMS_TO_TICKS(100));
+    if (bytes_sent == 0) {
+        ESP_LOGE(TAG, "Failed to send to MessageBuffer (full?)");
         return -1;
     }
 
@@ -103,23 +105,12 @@ static esp_err_t queue_next_transaction(void)
     return spi_slave_queue_trans(SPI_HOST_ID, &transactions[buf_idx], 0);
 }
 
-static int spi_init(void) {
+static int spi_init(MessageBufferHandle_t msg_buffer) {
     if (spi_running) {
         return 0;
     }
 
-    // Allocate message queue in PSRAM (525KB)
-    if (!g_message_queue) {
-        g_message_queue = (message_queue_t*)heap_caps_malloc(sizeof(message_queue_t), MALLOC_CAP_SPIRAM);
-        if (!g_message_queue) {
-            ESP_LOGE(TAG, "Failed to allocate message queue in PSRAM (%zu bytes)", sizeof(message_queue_t));
-            return -1;
-        }
-        ESP_LOGI(TAG, "Message queue allocated in PSRAM (%zu bytes)", sizeof(message_queue_t));
-    }
-
-    // Initialize message queue
-    message_queue_init(g_message_queue);
+    s_msg_buffer = msg_buffer;
 
     // Allocate DMA-capable buffers (double buffered + pending ACK)
     for (int i = 0; i < NUM_BUFFERS; i++) {
@@ -412,21 +403,6 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
     return 0;
 }
 
-static int spi_receive_message(uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
-                                const uint8_t **payload, size_t *payload_len) {
-    // Dequeue message using common queue module
-    int result = message_queue_dequeue(g_message_queue, type, seq, sub_cmd,
-                                       payload, payload_len);
-
-    if (result > 0) {
-        ESP_LOGD(TAG, "Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
-                   *type, *seq, *sub_cmd, *payload_len,
-                   message_queue_count(g_message_queue), MSG_QUEUE_MAX_MESSAGES);
-    }
-
-    return result;
-}
-
 static int spi_is_running(void) {
     return spi_running;
 }
@@ -465,12 +441,7 @@ static void spi_cleanup(void) {
     }
     pending_ack_len = 0;
 
-    // Free message queue from PSRAM
-    if (g_message_queue) {
-        heap_caps_free(g_message_queue);
-        g_message_queue = NULL;
-    }
-
+    s_msg_buffer = NULL;
     spi_running = 0;
     ESP_LOGI(TAG, "SPI slave communication stopped");
 }
@@ -480,7 +451,6 @@ static const comm_interface_t spi_comm = {
     .send = spi_send,
     .receive = spi_receive,
     .process = spi_process,
-    .receive_message = spi_receive_message,
     .send_ack = spi_send_ack,
     .is_running = spi_is_running,
     .cleanup = spi_cleanup,

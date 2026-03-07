@@ -3,6 +3,7 @@
 #include "freertos/message_buffer.h"
 #include "esp_timer.h"
 #include "communication/comm_interface.h"
+#include "communication/comm_message.h"
 #include "esp_log.h"
 #include "tasks/graphics_task.h"
 #include "tasks/audio_task.h"
@@ -18,9 +19,9 @@ extern "C" void app_main(void)
   BaseType_t ret;
 
   // Create MessageBuffer for comm_task -> message_handler_task communication
-  // Size: max message = ~1100 bytes (type+seq+sub_cmd+len + 1024 payload)
-  // Allocate 2x max message size for headroom
-  MessageBufferHandle_t msg_buffer = xMessageBufferCreate(2200);
+  // Max message = sizeof(message_data_t) = ~261 bytes + 4 bytes FreeRTOS overhead
+  // Buffer holds ~8 full-size messages
+  MessageBufferHandle_t msg_buffer = xMessageBufferCreate((sizeof(message_data_t) + 4) * 8);
   if (msg_buffer == NULL) {
     ESP_LOGE(TAG, "Failed to create message buffer");
     while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }

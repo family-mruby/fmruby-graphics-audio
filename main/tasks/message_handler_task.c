@@ -3,6 +3,7 @@
 #include "graphics_handler.h"
 #include "audio_handler.h"
 #include "comm_interface.h"
+#include "comm_message.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/message_buffer.h"
@@ -15,15 +16,6 @@ static volatile int task_running = 0;
 
 // Forward declaration - implemented in main.cpp
 extern int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth);
-
-// Message structure exchanged between comm_task and message_handler_task
-typedef struct {
-    uint8_t type;
-    uint8_t seq;
-    uint8_t sub_cmd;
-    uint16_t payload_len;
-    uint8_t payload[1024];  // MSG_QUEUE_MAX_PAYLOAD
-} message_data_t;
 
 /**
  * Handle CONTROL messages

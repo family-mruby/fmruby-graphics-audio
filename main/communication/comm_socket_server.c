@@ -1,6 +1,6 @@
 #include "socket_server.h"
 #include "fmrb_link_msgpack.h"
-#include "message_queue.h"
+#include "comm_message.h"
 #include "fmrb_link_protocol.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,12 +10,14 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <fcntl.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/message_buffer.h"
 #include "esp_log.h"
 
 static const char *TAG = "socket_server";
 
-// Message queue for decoded messages
-static message_queue_t g_message_queue;
+// MessageBuffer handle for forwarding decoded messages
+static MessageBufferHandle_t s_msg_buffer = NULL;
 
 static int server_fd = -1;
 static int client_fd = -1;
@@ -84,35 +86,33 @@ static int accept_connection(void) {
 }
 
 static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
-    uint8_t type, seq, sub_cmd;
-    uint8_t payload_buffer[MSG_QUEUE_MAX_PAYLOAD];
+    message_data_t msg;
     size_t payload_len;
 
-    // Decode frame using common msgpack module
+    // Decode frame directly into message_data_t
     int result = fmrb_link_decode_frame(encoded_data, encoded_len,
-                                       &type, &seq, &sub_cmd,
-                                       payload_buffer, sizeof(payload_buffer),
+                                       &msg.type, &msg.seq, &msg.sub_cmd,
+                                       msg.payload, sizeof(msg.payload),
                                        &payload_len);
     if (result != 0) {
         ESP_LOGE(TAG, "Frame decode failed");
         return -1;
     }
+    msg.payload_len = (uint16_t)payload_len;
 
     ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
-               type, seq, sub_cmd, payload_len);
+               msg.type, msg.seq, msg.sub_cmd, payload_len);
 
-    // Enqueue the decoded message using common queue module
-    result = message_queue_enqueue(&g_message_queue, type, seq, sub_cmd,
-                                   payload_buffer, payload_len);
-    if (result != 0) {
-        ESP_LOGE(TAG, "Failed to enqueue message");
+    // Send directly to MessageBuffer
+    size_t send_size = offsetof(message_data_t, payload) + payload_len;
+    size_t bytes_sent = xMessageBufferSend(s_msg_buffer, &msg, send_size, pdMS_TO_TICKS(100));
+    if (bytes_sent == 0) {
+        ESP_LOGE(TAG, "Failed to send to MessageBuffer (full?)");
         return -1;
     }
 
     return 0;
 }
-
-// Legacy process_message() removed - now using msgpack + COBS protocol via process_cobs_frame()
 
 static int read_message(void) {
     static uint8_t buffer[BUFFER_SIZE];
@@ -266,9 +266,8 @@ int socket_server_is_running(void) {
 // comm_interface implementation for Linux/socket
 #include "comm_interface.h"
 
-static int comm_socket_init(void) {
-    // Initialize message queue
-    message_queue_init(&g_message_queue);
+static int comm_socket_init(MessageBufferHandle_t msg_buffer) {
+    s_msg_buffer = msg_buffer;
     return socket_server_start();
 }
 
@@ -290,25 +289,9 @@ static int comm_socket_receive(uint8_t *buf, size_t buf_size) {
     return 0;
 }
 
-static int comm_socket_receive_message(uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
-                                        const uint8_t **payload, size_t *payload_len) {
-    // Dequeue message using common queue module
-    int result = message_queue_dequeue(&g_message_queue, type, seq, sub_cmd,
-                                       payload, payload_len);
-
-    if (result > 0) {
-        ESP_LOGD(TAG, "Dequeued message: type=%u seq=%u sub_cmd=0x%02x len=%zu (queue=%d/%d)",
-                   *type, *seq, *sub_cmd, *payload_len,
-                   message_queue_count(&g_message_queue), MSG_QUEUE_MAX_MESSAGES);
-    }
-
-    return result;
-}
-
 static void comm_socket_cleanup(void) {
     socket_server_stop();
-    // Clear message queue
-    message_queue_init(&g_message_queue);
+    s_msg_buffer = NULL;
 }
 
 static const comm_interface_t socket_comm_impl = {
@@ -316,7 +299,6 @@ static const comm_interface_t socket_comm_impl = {
     .send = comm_socket_send,
     .receive = comm_socket_receive,
     .process = comm_socket_process,
-    .receive_message = comm_socket_receive_message,
     .send_ack = socket_server_send_ack,
     .is_running = socket_server_is_running,
     .cleanup = comm_socket_cleanup

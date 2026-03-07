@@ -11,6 +11,7 @@
 #include "freertos/message_buffer.h"
 
 #include "esp_log.h"
+#include "comm_message.h"
 #include "graphics_task.h"
 #include "audio_task.h"
 #include "comm_task.h"
@@ -65,7 +66,9 @@ extern "C" int app_main(void)
     signal(SIGTERM, signal_handler);
 
     // Create MessageBuffer for comm_task -> message_handler_task communication
-    MessageBufferHandle_t msg_buffer = xMessageBufferCreate(2200);
+    // Max message = sizeof(message_data_t) + 4 bytes FreeRTOS overhead
+    // Buffer holds ~8 full-size messages
+    MessageBufferHandle_t msg_buffer = xMessageBufferCreate((sizeof(message_data_t) + 4) * 8);
     if (msg_buffer == NULL) {
         ESP_LOGE(TAG, "Failed to create message buffer");
         return -1;

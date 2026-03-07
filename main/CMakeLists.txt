@@ -20,7 +20,6 @@ if(CONFIG_IDF_TARGET_LINUX)
         "input_linux/input_socket.c"
         "communication/comm_socket_server.c"
         "communication/fmrb_link_msgpack.c"
-        "communication/message_queue.c"
     )
 else()
     # ESP32 platform implementation
@@ -32,7 +31,6 @@ else()
         "audio/audio_check.c"
         "communication/comm_spi_slave.c"
         "communication/fmrb_link_msgpack.c"
-        "communication/message_queue.c"
     )
 endif()
 

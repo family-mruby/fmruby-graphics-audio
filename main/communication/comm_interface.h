@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/message_buffer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,9 +16,10 @@ extern "C" {
 typedef struct {
     /**
      * Initialize communication interface
+     * @param msg_buffer MessageBuffer handle for forwarding decoded messages
      * @return 0 on success, -1 on error
      */
-    int (*init)(void);
+    int (*init)(MessageBufferHandle_t msg_buffer);
 
     /**
      * Send data through communication interface
@@ -38,22 +41,10 @@ typedef struct {
      * Process communication (non-blocking)
      * Should be called regularly from main loop or task
      * This handles low-level protocol (accept connections, read data, decode frames)
+     * Decoded messages are sent directly to the MessageBuffer.
      * @return Number of frames received, or -1 on error
      */
     int (*process)(void);
-
-    /**
-     * Receive decoded message (non-blocking)
-     * Returns the next decoded message from the receive queue
-     * @param type Output: message type
-     * @param seq Output: sequence number
-     * @param sub_cmd Output: sub-command
-     * @param payload Output: pointer to payload buffer (owned by comm layer, valid until next call)
-     * @param payload_len Output: payload length
-     * @return 1 if message received, 0 if no message available, -1 on error
-     */
-    int (*receive_message)(uint8_t *type, uint8_t *seq, uint8_t *sub_cmd,
-                           const uint8_t **payload, size_t *payload_len);
 
     /**
      * Send ACK response
