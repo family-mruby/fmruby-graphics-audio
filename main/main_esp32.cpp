@@ -4,6 +4,7 @@
 #include "esp_timer.h"
 #include "communication/comm_interface.h"
 #include "communication/comm_message.h"
+#include "common/fmrb_task_config.h"
 #include "esp_log.h"
 #include "tasks/graphics_task.h"
 #include "tasks/audio_task.h"
@@ -19,9 +20,7 @@ extern "C" void app_main(void)
   BaseType_t ret;
 
   // Create MessageBuffer for comm_task -> message_handler_task communication
-  // Max message = sizeof(message_data_t) = ~261 bytes + 4 bytes FreeRTOS overhead
-  // Buffer holds ~8 full-size messages
-  MessageBufferHandle_t msg_buffer = xMessageBufferCreate((sizeof(message_data_t) + 4) * 8);
+  MessageBufferHandle_t msg_buffer = xMessageBufferCreate((sizeof(message_data_t) + 4) * MSG_BUFFER_NUM_MESSAGES);
   if (msg_buffer == NULL) {
     ESP_LOGE(TAG, "Failed to create message buffer");
     while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
@@ -29,54 +28,50 @@ extern "C" void app_main(void)
   ESP_LOGI(TAG, "Message buffer created for inter-task communication");
 
   // Graphics task
-  ESP_LOGI(TAG, "Creating graphics_task (prio=5, core=0)...");
   ret = xTaskCreatePinnedToCore(
       graphics_task,
       "graphics_task",
-      8192,
+      GRAPHICS_TASK_STACK_SIZE,
       NULL,
-      5,
+      GRAPHICS_TASK_PRIORITY,
       NULL,
-      0
+      GRAPHICS_TASK_CORE
   );
   ESP_LOGI(TAG, "graphics_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
 
-  // Audio task (highest priority - hard real-time 60Hz constraint)
-  ESP_LOGI(TAG, "Creating audio_task (prio=7, core=0)...");
+  // Audio task
   ret = xTaskCreatePinnedToCore(
       audio_task,
       "audio_task",
-      8192,
+      AUDIO_TASK_STACK_SIZE,
       NULL,
-      7,
+      AUDIO_TASK_PRIORITY,
       NULL,
-      0
+      AUDIO_TASK_CORE
   );
   ESP_LOGI(TAG, "audio_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
 
-  // Communication task (SPI slave) - high priority for responsiveness
-  ESP_LOGI(TAG, "Creating comm_task (prio=6, core=0)...");
+  // Communication task
   ret = xTaskCreatePinnedToCore(
       comm_task,
       "comm_task",
-      8192,
-      (void*)msg_buffer,      // Pass MessageBuffer handle
-      6,
+      COMM_TASK_STACK_SIZE,
+      (void*)msg_buffer,
+      COMM_TASK_PRIORITY,
       NULL,
-      0
+      COMM_TASK_CORE
   );
   ESP_LOGI(TAG, "comm_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
 
-  // Message handler task - lower priority for application processing
-  ESP_LOGI(TAG, "Creating message_handler_task (prio=5, core=0)...");
+  // Message handler task
   ret = xTaskCreatePinnedToCore(
       message_handler_task,
       "message_handler_task",
-      8192,
-      (void*)msg_buffer,      // Pass MessageBuffer handle
-      5,
+      MESSAGE_HANDLER_TASK_STACK_SIZE,
+      (void*)msg_buffer,
+      MESSAGE_HANDLER_TASK_PRIORITY,
       NULL,
-      0
+      MESSAGE_HANDLER_TASK_CORE
   );
   ESP_LOGI(TAG, "message_handler_task create: %s", (ret == pdPASS) ? "OK" : "FAILED");
 

@@ -12,6 +12,7 @@
 
 #include "esp_log.h"
 #include "comm_message.h"
+#include "fmrb_task_config.h"
 #include "graphics_task.h"
 #include "audio_task.h"
 #include "comm_task.h"
@@ -66,49 +67,46 @@ extern "C" int app_main(void)
     signal(SIGTERM, signal_handler);
 
     // Create MessageBuffer for comm_task -> message_handler_task communication
-    // Max message = sizeof(message_data_t) + 4 bytes FreeRTOS overhead
-    // Buffer holds ~8 full-size messages
-    MessageBufferHandle_t msg_buffer = xMessageBufferCreate((sizeof(message_data_t) + 4) * 8);
+    MessageBufferHandle_t msg_buffer = xMessageBufferCreate((sizeof(message_data_t) + 4) * MSG_BUFFER_NUM_MESSAGES);
     if (msg_buffer == NULL) {
         ESP_LOGE(TAG, "Failed to create message buffer");
         return -1;
     }
     printf("Message buffer created for inter-task communication\n");
 
-    printf("Creating Audio task ...\n");
+    // Audio task
     xTaskCreatePinnedToCore(
-        audio_task,           // タスク関数
-        "audio_task",         // タスク名
-        8192*2,              // スタックサイズ
-        NULL,              // パラメータ
-        6,                 // 優先度
-        NULL,              // タスクハンドル
-        0                  // Core0(仮)
+        audio_task,
+        "audio_task",
+        AUDIO_TASK_STACK_SIZE,
+        NULL,
+        AUDIO_TASK_PRIORITY,
+        NULL,
+        AUDIO_TASK_CORE
     );
 
-    printf("Creating comm task ...\n");
+    // Communication task
     xTaskCreatePinnedToCore(
-        comm_task,             // タスク関数
-        "comm_task",           // タスク名
-        8192*2,              // スタックサイズ
-        (void*)msg_buffer,   // パラメータ(MessageBuffer)
-        5,                 // 優先度
-        NULL,              // タスクハンドル
-        0                  // Core0(仮)
+        comm_task,
+        "comm_task",
+        COMM_TASK_STACK_SIZE,
+        (void*)msg_buffer,
+        COMM_TASK_PRIORITY,
+        NULL,
+        COMM_TASK_CORE
     );
 
-    printf("Creating message_handler task ...\n");
+    // Message handler task
     xTaskCreatePinnedToCore(
-        message_handler_task,  // タスク関数
-        "message_handler_task", // タスク名
-        8192,                  // スタックサイズ
-        (void*)msg_buffer,    // パラメータ(MessageBuffer)
-        4,                    // 優先度
-        NULL,                 // タスクハンドル
-        0                     // Core0(仮)
+        message_handler_task,
+        "message_handler_task",
+        MESSAGE_HANDLER_TASK_STACK_SIZE,
+        (void*)msg_buffer,
+        MESSAGE_HANDLER_TASK_PRIORITY,
+        NULL,
+        MESSAGE_HANDLER_TASK_CORE
     );
 
     printf("Creating LGFX user_func for SDL2...\n");
     return lgfx::Panel_sdl::main(user_func);
 }
-
