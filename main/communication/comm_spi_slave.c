@@ -28,7 +28,9 @@ static const char *TAG = "spi_slave";
 #define SPI_FRAME_SIZE   (COMM_MSG_MAX_PAYLOAD)
 
 // Double buffering for continuous operation
-#define NUM_BUFFERS      5
+// Keep at 2: ACK loaded into completed buffer is re-queued next,
+// so master receives it after just 1 additional poll.
+#define NUM_BUFFERS      2
 
 // MessageBuffer handle for forwarding decoded messages
 static MessageBufferHandle_t s_msg_buffer = NULL;
@@ -50,6 +52,15 @@ typedef struct {
 
 static QueueHandle_t s_ack_queue = NULL;
 static volatile int ack_buf_idx = -1;  // Which TX buffer contains the ACK (-1 = none)
+
+// Handshake GPIO control (active LOW: LOW = slave has data, HIGH = idle)
+static inline void spi_handshake_set_ready(void) {
+    gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
+}
+
+static inline void spi_handshake_set_idle(void) {
+    gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);
+}
 
 // Cached EMPTY frame (encoded once at init, reused for all TX buffer fills)
 static uint8_t s_empty_frame[SPI_FRAME_SIZE];
@@ -163,7 +174,7 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&hs_conf);
-    gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // HIGH = idle
+    spi_handshake_set_idle();
     ack_buf_idx = -1;
 
     // Create binary semaphore for transaction complete signaling
@@ -250,7 +261,7 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
 
     // If THIS buffer contained the ACK and was just transmitted, release handshake
     if (ack_buf_idx == buf_idx) {
-        gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // HIGH = idle (ACK was sent)
+        spi_handshake_set_idle();  // ACK was sent
         ack_buf_idx = -1;
         ESP_LOGI(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
     }
@@ -299,7 +310,7 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     if (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
         memcpy(tx_buffers[buf_idx], ack_item.data, ack_item.len);
         ack_buf_idx = buf_idx;
-        gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);  // LOW = ACK ready in TX buffer
+        spi_handshake_set_ready();
         ESP_LOGI(TAG, "ACK loaded to TX buf[%d], GPIO LOW", buf_idx);
     }
 
@@ -360,7 +371,12 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
         return -1;
     }
 
-    ESP_LOGI(TAG, "ACK queued: type=%u seq=%u resp_len=%u encoded=%u",
+    // Signal master to poll. With NUM_BUFFERS=2:
+    // Poll 1: triggers process_single_transaction() which loads ACK into TX buffer
+    // Poll 2: master receives ACK, GPIO goes HIGH
+    spi_handshake_set_ready();
+
+    ESP_LOGI(TAG, "ACK queued: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW",
            type, seq, response_len, (unsigned)item.len);
     return 0;
 }
