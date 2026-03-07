@@ -17,6 +17,9 @@ extern "C" {
 #include "../mempool/fmrb_mempool.h"
 }
 
+// LGFX test drawing (lgfx_test.cpp)
+extern void lgfx_test(void);
+
 static const char *TAG = "graphics_task";
 static volatile int task_running = 0;
 
@@ -97,6 +100,9 @@ void graphics_task(void *pvParameters) {
         timeout_count++;
         if (timeout_count > 60) {  // 6 second timeout
             ESP_LOGE(TAG, "Timeout waiting for display initialization");
+            ESP_LOGI(TAG, "Starting LGFX test drawing...");
+            lgfx_test();
+            // lgfx_test() runs an infinite loop, so we won't reach here
             vTaskDelete(NULL);
             return;
         }
