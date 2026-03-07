@@ -28,7 +28,7 @@ static const char *TAG = "spi_slave";
 #define SPI_FRAME_SIZE   (COMM_MSG_MAX_PAYLOAD)
 
 // Double buffering for continuous operation
-#define NUM_BUFFERS      2
+#define NUM_BUFFERS      5
 
 // MessageBuffer handle for forwarding decoded messages
 static MessageBufferHandle_t s_msg_buffer = NULL;
@@ -40,7 +40,6 @@ static spi_slave_transaction_t transactions[NUM_BUFFERS];
 static int current_buf = 0;
 
 static int spi_running = 0;
-static SemaphoreHandle_t spi_mutex = NULL;
 static SemaphoreHandle_t trans_ready_sem = NULL;
 
 // ACK queue: message_handler_task enqueues, comm_task dequeues and handles DMA+GPIO
@@ -149,18 +148,11 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // HIGH = idle
     ack_buf_idx = -1;
 
-    // Create mutex for thread safety
-    spi_mutex = xSemaphoreCreateMutex();
-    if (!spi_mutex) {
-        ESP_LOGE(TAG, "Failed to create mutex");
-        goto cleanup_buffers;
-    }
-
     // Create binary semaphore for transaction complete signaling
     trans_ready_sem = xSemaphoreCreateBinary();
     if (!trans_ready_sem) {
         ESP_LOGE(TAG, "Failed to create semaphore");
-        goto cleanup_mutex;
+        goto cleanup_buffers;
     }
 
     // Configure SPI bus for slave mode
@@ -214,9 +206,6 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
 cleanup_sem:
     vSemaphoreDelete(trans_ready_sem);
     trans_ready_sem = NULL;
-cleanup_mutex:
-    vSemaphoreDelete(spi_mutex);
-    spi_mutex = NULL;
 cleanup_buffers:
     for (int i = 0; i < NUM_BUFFERS; i++) {
         if (rx_buffers[i]) heap_caps_free(rx_buffers[i]);
@@ -225,43 +214,6 @@ cleanup_buffers:
         tx_buffers[i] = NULL;
     }
     return -1;
-}
-
-static int spi_send(const uint8_t *data, size_t len) {
-    if (!spi_running || !data || len == 0) {
-        return -1;
-    }
-
-    if (len > SPI_FRAME_SIZE) {
-        len = SPI_FRAME_SIZE;
-    }
-
-    if (xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        return -1;
-    }
-
-    // Copy data to current TX buffer
-    memcpy(tx_buffers[current_buf], data, len);
-
-    xSemaphoreGive(spi_mutex);
-    return len;
-}
-
-static int spi_receive(uint8_t *buf, size_t buf_size) {
-    if (!spi_running || !buf || buf_size == 0) {
-        return 0;
-    }
-
-    if (xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        return 0;
-    }
-
-    // Copy received data from current RX buffer
-    size_t copy_len = (buf_size < SPI_FRAME_SIZE) ? buf_size : SPI_FRAME_SIZE;
-    memcpy(buf, rx_buffers[current_buf], copy_len);
-
-    xSemaphoreGive(spi_mutex);
-    return copy_len;
 }
 
 static uint32_t s_trans_count = 0;
@@ -402,11 +354,6 @@ static void spi_cleanup(void) {
         spi_slave_free(SPI_HOST_ID);
     }
 
-    if (spi_mutex) {
-        vSemaphoreDelete(spi_mutex);
-        spi_mutex = NULL;
-    }
-
     if (trans_ready_sem) {
         vSemaphoreDelete(trans_ready_sem);
         trans_ready_sem = NULL;
@@ -437,8 +384,8 @@ static void spi_cleanup(void) {
 
 static const comm_interface_t spi_comm = {
     .init = spi_init,
-    .send = spi_send,
-    .receive = spi_receive,
+    .send = NULL,
+    .receive = NULL,
     .process = spi_process,
     .send_ack = spi_send_ack,
     .is_running = spi_is_running,
