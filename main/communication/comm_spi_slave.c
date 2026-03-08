@@ -98,6 +98,11 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     }
     msg.payload_len = (uint16_t)payload_len;
 
+    // Skip EMPTY frames (no-data polling from master)
+    if (msg.type == FMRB_LINK_TYPE_EMPTY) {
+        return 0;
+    }
+
     ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
                msg.type, msg.seq, msg.sub_cmd, payload_len);
 
@@ -259,13 +264,6 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     // Find which buffer was used
     int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
 
-    // If THIS buffer contained the ACK and was just transmitted, release handshake
-    if (ack_buf_idx == buf_idx) {
-        spi_handshake_set_idle();  // ACK was sent
-        ack_buf_idx = -1;
-        ESP_LOGI(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
-    }
-
     if (rx_len > 0) {
         s_data_trans_count++;
         uint8_t *rx_buf = (uint8_t*)completed_trans->rx_buffer;
@@ -300,21 +298,48 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     }
 
     // Prepare TX buffer before re-queue (safe: buffer is not in DMA queue now)
-    // Fill with EMPTY frame so master always receives a valid COBS message
     current_buf = buf_idx;
     memset(tx_buffers[buf_idx], 0, SPI_FRAME_SIZE);
-    memcpy(tx_buffers[buf_idx], s_empty_frame, s_empty_frame_len);
 
-    // Dequeue pending ACK and copy to TX buffer
+    // Check if THIS completed buffer carried a previous ACK (now transmitted)
+    bool prev_ack_transmitted = (ack_buf_idx == buf_idx);
+    if (prev_ack_transmitted) {
+        ack_buf_idx = -1;
+    }
+
+    // Pack ACK frames into TX buffer (multiple frames concatenated with 0x00 delimiters)
+    size_t tx_offset = 0;
+    bool ack_loaded = false;
     ack_queue_item_t ack_item;
-    if (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
-        memcpy(tx_buffers[buf_idx], ack_item.data, ack_item.len);
+    while (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
+        if (tx_offset + ack_item.len <= SPI_FRAME_SIZE) {
+            memcpy(tx_buffers[buf_idx] + tx_offset, ack_item.data, ack_item.len);
+            tx_offset += ack_item.len;
+            ack_loaded = true;
+        } else {
+            // No room - put back at front of queue for next transaction
+            xQueueSendToFront(s_ack_queue, &ack_item, 0);
+            break;
+        }
+    }
+
+    if (ack_loaded) {
         ack_buf_idx = buf_idx;
-        spi_handshake_set_ready();
-        ESP_LOGI(TAG, "ACK loaded to TX buf[%d], GPIO LOW", buf_idx);
+    } else {
+        // No ACK - fill with EMPTY
+        memcpy(tx_buffers[buf_idx], s_empty_frame, s_empty_frame_len);
     }
 
     queue_next_transaction();
+
+    // GPIO control after queue: buffer is in SPI queue before signaling master
+    if (ack_loaded) {
+        spi_handshake_set_ready();
+        ESP_LOGI(TAG, "ACK loaded to TX buf[%d], GPIO LOW", buf_idx);
+    } else if (prev_ack_transmitted) {
+        spi_handshake_set_idle();
+        ESP_LOGI(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
+    }
     return messages_processed;
 }
 
@@ -371,12 +396,10 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
         return -1;
     }
 
-    // Signal master to poll. With NUM_BUFFERS=2:
-    // Poll 1: triggers process_single_transaction() which loads ACK into TX buffer
-    // Poll 2: master receives ACK, GPIO goes HIGH
+    // Signal master that slave has data (master will poll via SPI)
     spi_handshake_set_ready();
 
-    ESP_LOGI(TAG, "ACK queued: type=%u seq=%u resp_len=%u encoded=%u, GPIO LOW",
+    ESP_LOGI(TAG, "ACK queued: type=%u seq=%u resp_len=%u encoded=%u",
            type, seq, response_len, (unsigned)item.len);
     return 0;
 }
