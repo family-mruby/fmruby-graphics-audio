@@ -56,12 +56,16 @@ typedef struct {
 static QueueHandle_t s_ack_queue = NULL;
 static volatile int ack_buf_idx = -1;  // Which TX buffer contains the ACK (-1 = none)
 
+// Pending transaction counter (ISR decrements, task increments)
+static volatile int s_pending_trans = 0;
+static volatile uint32_t s_queue_empty_count = 0;  // Queue exhaustion count (diagnostic)
+
 // Handshake GPIO control (active LOW: LOW = slave has data, HIGH = idle)
-static inline void spi_handshake_set_ready(void) {
+static inline void IRAM_ATTR spi_handshake_set_ready(void) {
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
 }
 
-static inline void spi_handshake_set_idle(void) {
+static inline void IRAM_ATTR spi_handshake_set_idle(void) {
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);
 }
 
@@ -72,6 +76,22 @@ static size_t s_empty_frame_len = 0;
 // Callback called after a transaction is done (ISR context)
 static void IRAM_ATTR spi_post_trans_cb(spi_slave_transaction_t *trans)
 {
+    s_pending_trans--;
+
+    // ACK buffer just transmitted → immediately set GPIO HIGH (no task delay)
+    if (ack_buf_idx >= 0) {
+        int buf_idx = (trans->tx_buffer == tx_buffers[0]) ? 0 : 1;
+        if (ack_buf_idx == buf_idx) {
+            gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // GPIO HIGH
+            ack_buf_idx = -1;
+        }
+    }
+
+    // Queue exhaustion detection
+    if (s_pending_trans <= 0) {
+        s_queue_empty_count++;
+    }
+
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     xSemaphoreGiveFromISR(trans_ready_sem, &xHigherPriorityTaskWoken);
     if (xHigherPriorityTaskWoken) {
@@ -129,7 +149,11 @@ static esp_err_t queue_next_transaction(void)
     transactions[buf_idx].tx_buffer = tx_buffers[buf_idx];
     transactions[buf_idx].rx_buffer = rx_buffers[buf_idx];
 
-    return spi_slave_queue_trans(SPI_HOST_ID, &transactions[buf_idx], 0);
+    esp_err_t ret = spi_slave_queue_trans(SPI_HOST_ID, &transactions[buf_idx], 0);
+    if (ret == ESP_OK) {
+        s_pending_trans++;
+    }
+    return ret;
 }
 
 static int spi_init(MessageBufferHandle_t msg_buffer) {
@@ -234,6 +258,7 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         }
     }
     current_buf = 0;
+    s_pending_trans = NUM_BUFFERS;
 
     spi_running = 1;
     ESP_LOGI(TAG, "SPI slave initialized - MOSI:%d MISO:%d CLK:%d CS:%d (frame=%d bytes)",
@@ -304,12 +329,6 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     current_buf = buf_idx;
     memset(tx_buffers[buf_idx], 0, SPI_FRAME_SIZE);
 
-    // Check if THIS completed buffer carried a previous ACK (now transmitted)
-    bool prev_ack_transmitted = (ack_buf_idx == buf_idx);
-    if (prev_ack_transmitted) {
-        ack_buf_idx = -1;
-    }
-
     // Pack ACK frames into TX buffer (multiple frames concatenated with 0x00 delimiters)
     size_t tx_offset = 0;
     bool ack_loaded = false;
@@ -337,7 +356,7 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     // All slow operations (logging, GPIO) must be AFTER this point.
     queue_next_transaction();
 
-    // GPIO control after queue: buffer is in SPI queue before signaling master
+    // GPIO LOW only when ACK is loaded (GPIO HIGH is handled by ISR in post_trans_cb)
     if (ack_loaded) {
         ESP_LOGI(TAG, "ACK loaded to TX buf[%d], GPIO LOW", buf_idx);
         if (s_debug_dump) ESP_LOGI(TAG, "TX buf[%d][0..31]: "
@@ -363,10 +382,13 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
                  tx_buffers[buf_idx][28], tx_buffers[buf_idx][29],
                  tx_buffers[buf_idx][30], tx_buffers[buf_idx][31]);
         spi_handshake_set_ready();
-    } else if (prev_ack_transmitted) {
-        spi_handshake_set_idle();
-        ESP_LOGI(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
     }
+
+    // Queue exhaustion warning (logged from task context)
+    if (s_queue_empty_count > 0) {
+        ESP_LOGW(TAG, "SPI queue exhausted %lu times", s_queue_empty_count);
+    }
+
     return messages_processed;
 }
 
@@ -397,8 +419,9 @@ static int spi_process(void) {
 
 // Call periodically to print SPI stats
 void spi_slave_print_stats(void) {
-    ESP_LOGI(TAG, "stats: trans=%lu data=%lu frames_found=%lu decoded=%lu",
-           s_trans_count, s_data_trans_count, s_frame_found_count, s_frame_decoded_count);
+    ESP_LOGI(TAG, "stats: trans=%lu data=%lu frames_found=%lu decoded=%lu queue_empty=%lu",
+           s_trans_count, s_data_trans_count, s_frame_found_count, s_frame_decoded_count,
+           s_queue_empty_count);
 }
 
 static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
