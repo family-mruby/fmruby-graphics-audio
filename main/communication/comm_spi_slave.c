@@ -21,6 +21,9 @@
 
 static const char *TAG = "spi_slave";
 
+// Debug: set to true to enable TX/RX frame hex dumps
+static bool s_debug_dump = false;
+
 // SPI Slave pin configuration - must match master's configuration
 #define SPI_HOST_ID      SPI2_HOST
 
@@ -330,12 +333,36 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
         memcpy(tx_buffers[buf_idx], s_empty_frame, s_empty_frame_len);
     }
 
+    // Re-queue ASAP to keep slave SPI queue non-empty.
+    // All slow operations (logging, GPIO) must be AFTER this point.
     queue_next_transaction();
 
     // GPIO control after queue: buffer is in SPI queue before signaling master
     if (ack_loaded) {
-        spi_handshake_set_ready();
         ESP_LOGI(TAG, "ACK loaded to TX buf[%d], GPIO LOW", buf_idx);
+        if (s_debug_dump) ESP_LOGI(TAG, "TX buf[%d][0..31]: "
+                 "%02x %02x %02x %02x %02x %02x %02x %02x "
+                 "%02x %02x %02x %02x %02x %02x %02x %02x "
+                 "%02x %02x %02x %02x %02x %02x %02x %02x "
+                 "%02x %02x %02x %02x %02x %02x %02x %02x",
+                 buf_idx,
+                 tx_buffers[buf_idx][0],  tx_buffers[buf_idx][1],
+                 tx_buffers[buf_idx][2],  tx_buffers[buf_idx][3],
+                 tx_buffers[buf_idx][4],  tx_buffers[buf_idx][5],
+                 tx_buffers[buf_idx][6],  tx_buffers[buf_idx][7],
+                 tx_buffers[buf_idx][8],  tx_buffers[buf_idx][9],
+                 tx_buffers[buf_idx][10], tx_buffers[buf_idx][11],
+                 tx_buffers[buf_idx][12], tx_buffers[buf_idx][13],
+                 tx_buffers[buf_idx][14], tx_buffers[buf_idx][15],
+                 tx_buffers[buf_idx][16], tx_buffers[buf_idx][17],
+                 tx_buffers[buf_idx][18], tx_buffers[buf_idx][19],
+                 tx_buffers[buf_idx][20], tx_buffers[buf_idx][21],
+                 tx_buffers[buf_idx][22], tx_buffers[buf_idx][23],
+                 tx_buffers[buf_idx][24], tx_buffers[buf_idx][25],
+                 tx_buffers[buf_idx][26], tx_buffers[buf_idx][27],
+                 tx_buffers[buf_idx][28], tx_buffers[buf_idx][29],
+                 tx_buffers[buf_idx][30], tx_buffers[buf_idx][31]);
+        spi_handshake_set_ready();
     } else if (prev_ack_transmitted) {
         spi_handshake_set_idle();
         ESP_LOGI(TAG, "ACK transmitted from buf[%d], GPIO HIGH", buf_idx);
