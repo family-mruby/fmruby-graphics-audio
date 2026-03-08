@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 /**
- * Decode a COBS+CRC32+msgpack frame
+ * Decode a COBS+msgpack frame (CRC is handled at transport layer)
  * @param encoded_data COBS encoded frame data (without 0x00 terminator)
  * @param encoded_len Length of encoded data
  * @param type Output: message type
@@ -26,7 +26,7 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
                            size_t *payload_len);
 
 /**
- * Encode ACK response as msgpack+CRC32+COBS
+ * Encode ACK response as msgpack+COBS (CRC is handled at transport layer)
  * @param type Message type
  * @param seq Sequence number
  * @param response_data Optional response payload

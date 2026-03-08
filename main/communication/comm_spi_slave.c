@@ -18,21 +18,11 @@
 #include "comm_message.h"
 #include "fmrb_link_protocol.h"
 #include "fmrb_pin_assign.h"
+#include "spi_frame.h"
 
 static const char *TAG = "spi_slave";
 
-// Debug: set to true to enable TX/RX frame hex dumps
-static bool s_debug_dump = false;
-
-// SPI Slave pin configuration - must match master's configuration
 #define SPI_HOST_ID      SPI2_HOST
-
-// Fixed frame size - MUST match Master (increased for better throughput)
-#define SPI_FRAME_SIZE   (COMM_MSG_MAX_PAYLOAD)
-
-// Double buffering for continuous operation
-// Keep at 2: ACK loaded into completed buffer is re-queued next,
-// so master receives it after just 1 additional poll.
 #define NUM_BUFFERS      2
 
 // MessageBuffer handle for forwarding decoded messages
@@ -47,70 +37,91 @@ static int current_buf = 0;
 static int spi_running = 0;
 static SemaphoreHandle_t trans_ready_sem = NULL;
 
-// ACK queue: message_handler_task enqueues, comm_task dequeues and handles DMA+GPIO
+// ACK queue: message_handler_task enqueues via send_ack(), comm_task dequeues
 typedef struct {
-    uint8_t data[SPI_FRAME_SIZE];
-    size_t len;
+    uint8_t ack_seq;
+    uint8_t status;
+    uint8_t data[SPI_MAX_DATA];  // COBS encoded response (optional)
+    uint8_t data_len;
 } ack_queue_item_t;
 
 static QueueHandle_t s_ack_queue = NULL;
-static volatile int ack_buf_idx = -1;  // Which TX buffer contains the ACK (-1 = none)
+
+// Latest response state (updated from ACK queue, referenced by fill_response)
+static volatile uint8_t s_last_status = STS_BOOT;
+static volatile uint8_t s_last_ack_seq = 0;
+static uint8_t s_resp_data[SPI_MAX_DATA];
+static volatile uint8_t s_resp_data_len = 0;
 
 // Pending transaction counter (ISR decrements, task increments)
 static volatile int s_pending_trans = 0;
-static volatile uint32_t s_queue_empty_count = 0;  // Queue exhaustion count (diagnostic)
+static volatile uint32_t s_queue_empty_count = 0;
 
-// Handshake GPIO control (active LOW: LOW = slave has data, HIGH = idle)
-static inline void IRAM_ATTR spi_handshake_set_ready(void) {
+// READY GPIO control (HIGH = ready to receive, LOW = busy)
+static inline void IRAM_ATTR set_ready_high(void) {
+    gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);
+}
+static inline void IRAM_ATTR set_ready_low(void) {
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
 }
 
-static inline void IRAM_ATTR spi_handshake_set_idle(void) {
-    gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);
-}
-
-// Cached EMPTY frame (encoded once at init, reused for all TX buffer fills)
-static uint8_t s_empty_frame[SPI_FRAME_SIZE];
-static size_t s_empty_frame_len = 0;
-
-// Callback called after a transaction is done (ISR context)
-static void IRAM_ATTR spi_post_trans_cb(spi_slave_transaction_t *trans)
-{
-    s_pending_trans--;
-
-    // ACK buffer just transmitted → immediately set GPIO HIGH (no task delay)
-    if (ack_buf_idx >= 0) {
-        int buf_idx = (trans->tx_buffer == tx_buffers[0]) ? 0 : 1;
-        if (ack_buf_idx == buf_idx) {
-            gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);  // GPIO HIGH
-            ack_buf_idx = -1;
-        }
-    }
-
-    // Queue exhaustion detection
-    if (s_pending_trans <= 0) {
-        s_queue_empty_count++;
-    }
-
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xSemaphoreGiveFromISR(trans_ready_sem, &xHigherPriorityTaskWoken);
-    if (xHigherPriorityTaskWoken) {
-        portYIELD_FROM_ISR();
-    }
-}
-
-// Callback called before a transaction starts (ISR context)
+// ISR: transaction setup (do nothing; READY is managed by pending counter)
 static void IRAM_ATTR spi_post_setup_cb(spi_slave_transaction_t *trans)
 {
-    // Transaction is queued and ready
+    (void)trans;
 }
 
-// Process a COBS frame and send the decoded message to MessageBuffer
+// ISR: transaction complete → pending update + READY control + semaphore notify
+static void IRAM_ATTR spi_post_trans_cb(spi_slave_transaction_t *trans)
+{
+    (void)trans;
+    s_pending_trans--;
+    if (s_pending_trans <= 0) {
+        set_ready_low();  // Queue exhausted → block master
+        s_queue_empty_count++;
+    }
+    BaseType_t hp = pdFALSE;
+    xSemaphoreGiveFromISR(trans_ready_sem, &hp);
+    if (hp) portYIELD_FROM_ISR();
+}
+
+// Build response frame into TX buffer
+static void fill_response(uint8_t *tx_buf)
+{
+    spi_frame_t *f = (spi_frame_t *)tx_buf;
+    memset(f, 0, SPI_FRAME_SIZE);
+    f->magic = SPI_FRAME_MAGIC;
+    f->seq = 0;
+    f->ack_seq = s_last_ack_seq;
+    f->status = s_last_status;
+    f->data_len = s_resp_data_len;
+    if (s_resp_data_len > 0) {
+        memcpy(f->data, s_resp_data, s_resp_data_len);
+    }
+    spi_frame_finalize(f);
+}
+
+// Queue next transaction to keep slave always ready
+static esp_err_t queue_next_transaction(void)
+{
+    int buf_idx = current_buf;
+
+    transactions[buf_idx].length = SPI_FRAME_SIZE * 8;  // Length in bits
+    transactions[buf_idx].tx_buffer = tx_buffers[buf_idx];
+    transactions[buf_idx].rx_buffer = rx_buffers[buf_idx];
+
+    esp_err_t ret = spi_slave_queue_trans(SPI_HOST_ID, &transactions[buf_idx], 0);
+    if (ret == ESP_OK) {
+        s_pending_trans++;
+    }
+    return ret;
+}
+
+// Process a COBS frame from data[] and send decoded message to MessageBuffer
 static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     message_data_t msg;
     size_t payload_len;
 
-    // Decode frame directly into message_data_t
     int result = fmrb_link_decode_frame(encoded_data, encoded_len,
                                        &msg.type, &msg.seq, &msg.sub_cmd,
                                        msg.payload, sizeof(msg.payload),
@@ -129,7 +140,6 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
                msg.type, msg.seq, msg.sub_cmd, payload_len);
 
-    // Send directly to MessageBuffer
     size_t send_size = offsetof(message_data_t, payload) + payload_len;
     size_t bytes_sent = xMessageBufferSend(s_msg_buffer, &msg, send_size, pdMS_TO_TICKS(100));
     if (bytes_sent == 0) {
@@ -140,20 +150,140 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     return 0;
 }
 
-// Queue next transaction to keep slave always ready
-static esp_err_t queue_next_transaction(void)
-{
-    int buf_idx = current_buf;
+static uint32_t s_trans_count = 0;
+static uint32_t s_data_trans_count = 0;
+static uint32_t s_frame_decoded_count = 0;
 
-    transactions[buf_idx].length = SPI_FRAME_SIZE * 8;  // Length in bits
-    transactions[buf_idx].tx_buffer = tx_buffers[buf_idx];
-    transactions[buf_idx].rx_buffer = rx_buffers[buf_idx];
+// Process a single completed transaction using spi_frame_t header
+static int process_single_transaction(spi_slave_transaction_t *completed_trans) {
+    s_trans_count++;
+    int messages_processed = 0;
 
-    esp_err_t ret = spi_slave_queue_trans(SPI_HOST_ID, &transactions[buf_idx], 0);
-    if (ret == ESP_OK) {
-        s_pending_trans++;
+    int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
+    spi_frame_t *f = (spi_frame_t *)completed_trans->rx_buffer;
+
+    // Validate frame header + CRC16 and process COBS payload
+    if (spi_frame_validate(f) && f->data_len > 0) {
+        s_data_trans_count++;
+
+        // Update status to RX_OK immediately (master can see via polling)
+        s_last_ack_seq = f->seq;
+        s_last_status = STS_RX_OK;
+        s_resp_data_len = 0;
+
+        // Parse multiple COBS messages from data[0..data_len-1]
+        size_t pos = 0;
+        while (pos < f->data_len) {
+            // Skip leading 0x00 delimiters
+            while (pos < f->data_len && f->data[pos] == 0x00) pos++;
+            if (pos >= f->data_len) break;
+
+            // Find COBS frame end (0x00)
+            size_t frame_start = pos;
+            while (pos < f->data_len && f->data[pos] != 0x00) pos++;
+            size_t frame_len = pos - frame_start;
+
+            if (process_cobs_frame(f->data + frame_start, frame_len) == 0) {
+                s_frame_decoded_count++;
+                messages_processed++;
+            }
+        }
+    } else if (f->magic == SPI_FRAME_MAGIC && !spi_frame_validate(f)) {
+        // CRC error
+        s_last_ack_seq = f->seq;
+        s_last_status = STS_CRC_ERR;
+        s_resp_data_len = 0;
+        ESP_LOGW(TAG, "CRC error on seq=%u", f->seq);
     }
-    return ret;
+    // magic mismatch or data_len==0: dummy polling → no status change
+
+    // Dequeue ACK response from message_handler_task (if available)
+    ack_queue_item_t ack_item;
+    if (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
+        s_last_ack_seq = ack_item.ack_seq;
+        s_last_status = ack_item.status;
+        s_resp_data_len = ack_item.data_len;
+        if (ack_item.data_len > 0) {
+            memcpy(s_resp_data, ack_item.data, ack_item.data_len);
+        }
+    }
+
+    // Fill TX buffer with response → re-queue → update READY
+    current_buf = buf_idx;
+    fill_response(tx_buffers[buf_idx]);
+    queue_next_transaction();
+    if (s_pending_trans > 0) {
+        set_ready_high();
+    }
+
+    // Queue exhaustion warning (logged from task context)
+    if (s_queue_empty_count > 0) {
+        ESP_LOGW(TAG, "SPI queue exhausted %lu times", s_queue_empty_count);
+    }
+
+    return messages_processed;
+}
+
+static int spi_process(void) {
+    if (!spi_running) {
+        return 0;
+    }
+
+    // Wait for at least one transaction to complete (signaled from ISR)
+    if (xSemaphoreTake(trans_ready_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return 0;
+    }
+
+    int messages_processed = 0;
+    spi_slave_transaction_t *completed_trans;
+
+    // Drain ALL completed transactions from the SPI driver's result queue
+    while (spi_slave_get_trans_result(SPI_HOST_ID, &completed_trans, 0) == ESP_OK) {
+        messages_processed += process_single_transaction(completed_trans);
+    }
+
+    return messages_processed;
+}
+
+// Call periodically to print SPI stats
+void spi_slave_print_stats(void) {
+    ESP_LOGI(TAG, "stats: trans=%lu data=%lu decoded=%lu queue_empty=%lu",
+           s_trans_count, s_data_trans_count, s_frame_decoded_count,
+           s_queue_empty_count);
+}
+
+static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
+    if (!spi_running) {
+        ESP_LOGE(TAG, "Cannot send ACK: SPI not running");
+        return -1;
+    }
+
+    ack_queue_item_t item = {
+        .ack_seq = seq,
+        .status = STS_APP_OK,
+        .data_len = 0,
+    };
+
+    // If response payload exists, COBS encode it into data[]
+    if (response_data && response_len > 0) {
+        size_t enc_len = 0;
+        int enc_ret = fmrb_link_encode_ack(type, seq, response_data, response_len,
+                                           item.data, SPI_MAX_DATA, &enc_len);
+        if (enc_ret != 0) {
+            ESP_LOGE(TAG, "Failed to encode ACK");
+            return -1;
+        }
+        item.data_len = (uint8_t)enc_len;
+    }
+
+    if (xQueueSend(s_ack_queue, &item, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGE(TAG, "ACK queue full");
+        return -1;
+    }
+
+    ESP_LOGD(TAG, "ACK queued: type=%u seq=%u resp_len=%u data_len=%u",
+           type, seq, response_len, item.data_len);
+    return 0;
 }
 
 static int spi_init(MessageBufferHandle_t msg_buffer) {
@@ -175,29 +305,15 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         memset(tx_buffers[i], 0, SPI_FRAME_SIZE);
         memset(&transactions[i], 0, sizeof(spi_slave_transaction_t));
     }
+
     // Create ACK queue (message_handler_task -> comm_task)
     s_ack_queue = xQueueCreate(2, sizeof(ack_queue_item_t));
     if (!s_ack_queue) {
         ESP_LOGE(TAG, "Failed to create ACK queue");
         goto cleanup_buffers;
     }
-    // Encode EMPTY frame (cached for reuse in TX buffer fills)
-    memset(s_empty_frame, 0, SPI_FRAME_SIZE);
-    int enc_ret = fmrb_link_encode_ack(FMRB_LINK_TYPE_EMPTY, 0, NULL, 0,
-                                        s_empty_frame, SPI_FRAME_SIZE, &s_empty_frame_len);
-    if (enc_ret != 0) {
-        ESP_LOGE(TAG, "Failed to encode EMPTY frame");
-        goto cleanup_buffers;
-    }
 
-    // Fill initial TX buffers with EMPTY frame
-    for (int i = 0; i < NUM_BUFFERS; i++) {
-        memcpy(tx_buffers[i], s_empty_frame, s_empty_frame_len);
-    }
-    ESP_LOGI(TAG, "DMA buffers allocated (frame_size=%d, num_buffers=%d, empty_frame=%zu bytes)",
-             SPI_FRAME_SIZE, NUM_BUFFERS, s_empty_frame_len);
-
-    // Initialize handshake GPIO (active LOW, externally pulled up)
+    // READY GPIO initialization (LOW = not ready during init)
     gpio_config_t hs_conf = {
         .pin_bit_mask = (1ULL << FMRB_PIN_SPI_HANDSHAKE),
         .mode = GPIO_MODE_OUTPUT,
@@ -206,8 +322,7 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&hs_conf);
-    spi_handshake_set_idle();
-    ack_buf_idx = -1;
+    set_ready_low();
 
     // Create binary semaphore for transaction complete signaling
     trans_ready_sem = xSemaphoreCreateBinary();
@@ -226,11 +341,10 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         .max_transfer_sz = SPI_FRAME_SIZE,
     };
 
-    // Configure SPI slave interface
     spi_slave_interface_config_t slvcfg = {
-        .mode = 0,  // SPI mode 0 (CPOL=0, CPHA=0)
+        .mode = 0,
         .spics_io_num = FMRB_PIN_SPI_CS,
-        .queue_size = NUM_BUFFERS,  // Match buffer count
+        .queue_size = NUM_BUFFERS,
         .flags = 0,
         .post_setup_cb = spi_post_setup_cb,
         .post_trans_cb = spi_post_trans_cb,
@@ -238,19 +352,18 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
 
     // Enable pull-ups on SPI lines for stability
     gpio_set_pull_mode(FMRB_PIN_SPI_MOSI, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(FMRB_PIN_SPI_MISO, GPIO_PULLUP_ONLY);
     gpio_set_pull_mode(FMRB_PIN_SPI_CLK, GPIO_PULLUP_ONLY);
     gpio_set_pull_mode(FMRB_PIN_SPI_CS, GPIO_PULLUP_ONLY);
 
-    // Initialize SPI slave interface
     esp_err_t ret = spi_slave_initialize(SPI_HOST_ID, &buscfg, &slvcfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI slave initialization failed: %d", ret);
         goto cleanup_sem;
     }
 
-    // Pre-queue transactions to be always ready
+    // Fill initial TX buffers with BOOT status frame and queue
     for (int i = 0; i < NUM_BUFFERS; i++) {
+        fill_response(tx_buffers[i]);
         current_buf = i;
         ret = queue_next_transaction();
         if (ret != ESP_OK) {
@@ -260,9 +373,11 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
     current_buf = 0;
     s_pending_trans = NUM_BUFFERS;
 
+    set_ready_high();
     spi_running = 1;
-    ESP_LOGI(TAG, "SPI slave initialized - MOSI:%d MISO:%d CLK:%d CS:%d (frame=%d bytes)",
-           FMRB_PIN_SPI_MOSI, FMRB_PIN_SPI_MISO, FMRB_PIN_SPI_CLK, FMRB_PIN_SPI_CS, SPI_FRAME_SIZE);
+    ESP_LOGI(TAG, "SPI slave initialized - MOSI:%d MISO:%d CLK:%d CS:%d HS:%d (frame=%d bytes)",
+           FMRB_PIN_SPI_MOSI, FMRB_PIN_SPI_MISO, FMRB_PIN_SPI_CLK,
+           FMRB_PIN_SPI_CS, FMRB_PIN_SPI_HANDSHAKE, SPI_FRAME_SIZE);
     return 0;
 
 cleanup_sem:
@@ -276,182 +391,6 @@ cleanup_buffers:
         tx_buffers[i] = NULL;
     }
     return -1;
-}
-
-static uint32_t s_trans_count = 0;
-static uint32_t s_data_trans_count = 0;
-static uint32_t s_frame_found_count = 0;
-static uint32_t s_frame_decoded_count = 0;
-
-// Process a single completed transaction. Returns number of messages decoded.
-static int process_single_transaction(spi_slave_transaction_t *completed_trans) {
-    s_trans_count++;
-    size_t rx_len = completed_trans->trans_len / 8;
-    int messages_processed = 0;
-
-    // Find which buffer was used
-    int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
-
-    if (rx_len > 0) {
-        s_data_trans_count++;
-        uint8_t *rx_buf = (uint8_t*)completed_trans->rx_buffer;
-
-        // Debug: log first few transactions with hex dump
-        if (s_data_trans_count <= 10) {
-            ESP_LOGI(TAG, "trans#%lu buf[%d] rx_len=%d first8: %02x %02x %02x %02x %02x %02x %02x %02x",
-                   s_data_trans_count, buf_idx, (int)rx_len,
-                   rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3],
-                   rx_buf[4], rx_buf[5], rx_buf[6], rx_buf[7]);
-        }
-
-        // Look for COBS frame terminator (0x00)
-        size_t frame_end = 0;
-        while (frame_end < rx_len && rx_buf[frame_end] != 0x00) {
-            frame_end++;
-        }
-
-        if (frame_end > 0 && frame_end < rx_len) {
-            s_frame_found_count++;
-            // Found a complete COBS frame
-            if (process_cobs_frame(rx_buf, frame_end) == 0) {
-                s_frame_decoded_count++;
-                ESP_LOGD(TAG, "FRAME DECODED OK: frame_end=%d", (int)frame_end);
-                messages_processed++;
-            } else {
-                ESP_LOGE(TAG, "FRAME DECODE FAILED: frame_end=%d", (int)frame_end);
-            }
-        } else if (s_data_trans_count <= 10) {
-            ESP_LOGD(TAG, "no COBS frame (frame_end=%d, rx_len=%d)", (int)frame_end, (int)rx_len);
-        }
-    }
-
-    // Prepare TX buffer before re-queue (safe: buffer is not in DMA queue now)
-    current_buf = buf_idx;
-    memset(tx_buffers[buf_idx], 0, SPI_FRAME_SIZE);
-
-    // Pack ACK frames into TX buffer (multiple frames concatenated with 0x00 delimiters)
-    size_t tx_offset = 0;
-    bool ack_loaded = false;
-    ack_queue_item_t ack_item;
-    while (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
-        if (tx_offset + ack_item.len <= SPI_FRAME_SIZE) {
-            memcpy(tx_buffers[buf_idx] + tx_offset, ack_item.data, ack_item.len);
-            tx_offset += ack_item.len;
-            ack_loaded = true;
-        } else {
-            // No room - put back at front of queue for next transaction
-            xQueueSendToFront(s_ack_queue, &ack_item, 0);
-            break;
-        }
-    }
-
-    if (ack_loaded) {
-        ack_buf_idx = buf_idx;
-    } else {
-        // No ACK - fill with EMPTY
-        memcpy(tx_buffers[buf_idx], s_empty_frame, s_empty_frame_len);
-    }
-
-    // Re-queue ASAP to keep slave SPI queue non-empty.
-    // All slow operations (logging, GPIO) must be AFTER this point.
-    queue_next_transaction();
-
-    // GPIO LOW only when ACK is loaded (GPIO HIGH is handled by ISR in post_trans_cb)
-    if (ack_loaded) {
-        ESP_LOGI(TAG, "ACK loaded to TX buf[%d], GPIO LOW", buf_idx);
-        if (s_debug_dump) ESP_LOGI(TAG, "TX buf[%d][0..31]: "
-                 "%02x %02x %02x %02x %02x %02x %02x %02x "
-                 "%02x %02x %02x %02x %02x %02x %02x %02x "
-                 "%02x %02x %02x %02x %02x %02x %02x %02x "
-                 "%02x %02x %02x %02x %02x %02x %02x %02x",
-                 buf_idx,
-                 tx_buffers[buf_idx][0],  tx_buffers[buf_idx][1],
-                 tx_buffers[buf_idx][2],  tx_buffers[buf_idx][3],
-                 tx_buffers[buf_idx][4],  tx_buffers[buf_idx][5],
-                 tx_buffers[buf_idx][6],  tx_buffers[buf_idx][7],
-                 tx_buffers[buf_idx][8],  tx_buffers[buf_idx][9],
-                 tx_buffers[buf_idx][10], tx_buffers[buf_idx][11],
-                 tx_buffers[buf_idx][12], tx_buffers[buf_idx][13],
-                 tx_buffers[buf_idx][14], tx_buffers[buf_idx][15],
-                 tx_buffers[buf_idx][16], tx_buffers[buf_idx][17],
-                 tx_buffers[buf_idx][18], tx_buffers[buf_idx][19],
-                 tx_buffers[buf_idx][20], tx_buffers[buf_idx][21],
-                 tx_buffers[buf_idx][22], tx_buffers[buf_idx][23],
-                 tx_buffers[buf_idx][24], tx_buffers[buf_idx][25],
-                 tx_buffers[buf_idx][26], tx_buffers[buf_idx][27],
-                 tx_buffers[buf_idx][28], tx_buffers[buf_idx][29],
-                 tx_buffers[buf_idx][30], tx_buffers[buf_idx][31]);
-        spi_handshake_set_ready();
-    }
-
-    // Queue exhaustion warning (logged from task context)
-    if (s_queue_empty_count > 0) {
-        ESP_LOGW(TAG, "SPI queue exhausted %lu times", s_queue_empty_count);
-    }
-
-    return messages_processed;
-}
-
-static int spi_process(void) {
-    if (!spi_running) {
-        return 0;
-    }
-
-    // Wait for at least one transaction to complete (signaled from ISR)
-    // Note: trans_ready_sem is binary, so multiple ISR gives may be collapsed into one.
-    // We compensate by draining all available results below.
-    if (xSemaphoreTake(trans_ready_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
-        return 0;  // Timeout - no transaction
-    }
-
-    int messages_processed = 0;
-    spi_slave_transaction_t *completed_trans;
-
-    // Drain ALL completed transactions from the SPI driver's result queue.
-    // The binary semaphore only tells us "at least one completed", but there
-    // may be more results waiting (if ISR fired multiple times before we ran).
-    while (spi_slave_get_trans_result(SPI_HOST_ID, &completed_trans, 0) == ESP_OK) {
-        messages_processed += process_single_transaction(completed_trans);
-    }
-
-    return messages_processed;
-}
-
-// Call periodically to print SPI stats
-void spi_slave_print_stats(void) {
-    ESP_LOGI(TAG, "stats: trans=%lu data=%lu frames_found=%lu decoded=%lu queue_empty=%lu",
-           s_trans_count, s_data_trans_count, s_frame_found_count, s_frame_decoded_count,
-           s_queue_empty_count);
-}
-
-static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
-    if (!spi_running) {
-        ESP_LOGE(TAG, "Cannot send ACK: SPI not running");
-        return -1;
-    }
-
-    // Encode ACK into queue item (comm_task will handle DMA buffer + GPIO)
-    ack_queue_item_t item;
-    memset(item.data, 0, SPI_FRAME_SIZE);
-    int result = fmrb_link_encode_ack(type, seq, response_data, response_len,
-                                     item.data, SPI_FRAME_SIZE,
-                                     &item.len);
-    if (result != 0) {
-        ESP_LOGE(TAG, "Failed to encode ACK");
-        return -1;
-    }
-
-    if (xQueueSend(s_ack_queue, &item, pdMS_TO_TICKS(100)) != pdTRUE) {
-        ESP_LOGE(TAG, "ACK queue full");
-        return -1;
-    }
-
-    // Signal master that slave has data (master will poll via SPI)
-    spi_handshake_set_ready();
-
-    ESP_LOGI(TAG, "ACK queued: type=%u seq=%u resp_len=%u encoded=%u",
-           type, seq, response_len, (unsigned)item.len);
-    return 0;
 }
 
 static int spi_is_running(void) {
@@ -468,7 +407,6 @@ static void spi_cleanup(void) {
         trans_ready_sem = NULL;
     }
 
-    // Free DMA buffers
     for (int i = 0; i < NUM_BUFFERS; i++) {
         if (rx_buffers[i]) {
             heap_caps_free(rx_buffers[i]);
@@ -480,7 +418,6 @@ static void spi_cleanup(void) {
         }
     }
 
-    // Free ACK queue
     if (s_ack_queue) {
         vQueueDelete(s_ack_queue);
         s_ack_queue = NULL;

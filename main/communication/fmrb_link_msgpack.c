@@ -24,7 +24,7 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
         return -1;
     }
 
-    // Allocate buffer for decoded data (COBS + CRC32)
+    // Allocate buffer for COBS decoded data
     uint8_t *decoded_buffer = (uint8_t*)malloc(encoded_len);
     if (!decoded_buffer) {
         ESP_LOGE(TAG, "Failed to allocate decode buffer");
@@ -33,26 +33,16 @@ int fmrb_link_decode_frame(const uint8_t *encoded_data, size_t encoded_len,
 
     // COBS decode
     ssize_t decoded_len = fmrb_link_cobs_decode(encoded_data, encoded_len, decoded_buffer);
-    if (decoded_len < (ssize_t)sizeof(uint32_t)) {
-        ESP_LOGE(TAG, "COBS decode failed or frame too small");
+    if (decoded_len <= 0) {
+        ESP_LOGE(TAG, "COBS decode failed or frame empty");
         free(decoded_buffer);
         return -1;
     }
 
-    // Separate msgpack data and CRC32
-    size_t msgpack_len = decoded_len - sizeof(uint32_t);
+    // CRC32 is not used at message level; integrity is ensured by transport layer
+    // (spi_frame_t CRC16 for SPI, TCP checksum for socket)
+    size_t msgpack_len = (size_t)decoded_len;
     uint8_t *msgpack_data = decoded_buffer;
-    uint32_t received_crc;
-    memcpy(&received_crc, decoded_buffer + msgpack_len, sizeof(uint32_t));
-
-    // Verify CRC32
-    uint32_t calculated_crc = fmrb_link_crc32_update(0, msgpack_data, msgpack_len);
-    if (received_crc != calculated_crc) {
-        ESP_LOGE(TAG, "CRC32 mismatch: expected=0x%08x, actual=0x%08x",
-                calculated_crc, received_crc);
-        free(decoded_buffer);
-        return -1;
-    }
 
     // Unpack msgpack array: [type, seq, sub_cmd, payload]
     msgpack_unpacked msg;
@@ -243,23 +233,9 @@ int fmrb_link_encode_ack(uint8_t type, uint8_t seq,
         msgpack_pack_nil(&pk);
     }
 
-    // Add CRC32 to msgpack message
-    uint32_t crc = fmrb_link_crc32_update(0, (const uint8_t*)sbuf.data, sbuf.size);
-    size_t msg_with_crc_len = sbuf.size + sizeof(uint32_t);
-    uint8_t *msg_with_crc = (uint8_t*)malloc(msg_with_crc_len);
-    if (!msg_with_crc) {
-        msgpack_sbuffer_destroy(&sbuf);
-        ESP_LOGE(TAG, "Failed to allocate buffer for CRC");
-        return -1;
-    }
-
-    memcpy(msg_with_crc, sbuf.data, sbuf.size);
-    memcpy(msg_with_crc + sbuf.size, &crc, sizeof(uint32_t));
+    // COBS encode msgpack directly (no CRC32; transport layer handles integrity)
+    size_t cobs_len = fmrb_link_cobs_encode((const uint8_t*)sbuf.data, sbuf.size, encoded_out);
     msgpack_sbuffer_destroy(&sbuf);
-
-    // COBS encode the msgpack + CRC32
-    size_t cobs_len = fmrb_link_cobs_encode(msg_with_crc, msg_with_crc_len, encoded_out);
-    free(msg_with_crc);
 
     if (cobs_len == 0 || cobs_len >= encoded_out_size) {
         ESP_LOGE(TAG, "COBS encode failed or buffer too small");
