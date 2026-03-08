@@ -53,8 +53,8 @@ static void esp32_display_cleanup(void);
 static int esp32_display_init(uint16_t width, uint16_t height, uint8_t color_depth) {
     // Guard against double initialization
     if (g_lgfx != nullptr) {
-        ESP_LOGW(TAG, "Display already initialized, cleaning up first");
-        esp32_display_cleanup();
+        ESP_LOGW(TAG, "Display already initialized");
+        return 0;
     }
 
     ESP_LOGI(TAG, "Initializing ESP32/CVBS display: %dx%d, %d-bit color", width, height, color_depth);

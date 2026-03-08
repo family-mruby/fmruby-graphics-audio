@@ -161,7 +161,7 @@ void message_handler_task(void *pvParameters) {
         
         if (bytes_recv > 0) {
             // Process the message
-            ESP_LOGD(TAG, "Received message: type=%u seq=%u sub_cmd=0x%02x len=%u",
+            ESP_LOGI(TAG, "Received message: type=%u seq=%u sub_cmd=0x%02x len=%u",
                    msg.type, msg.seq, msg.sub_cmd, msg.payload_len);
             
             int result = process_message(msg.type, msg.seq, msg.sub_cmd,

@@ -25,6 +25,8 @@ static const char *TAG = "graphics_handler";
 // Get g_lgfx from display interface (defined in display_sdl2.cpp or display_cvbs.cpp)
 static LovyanGFX* g_lgfx = nullptr;
 
+// Next canvas ID to allocate
+static uint16_t g_next_canvas_id = 1;
 
 // Canvas state structure
 typedef struct {
@@ -78,7 +80,7 @@ static const uint8_t cursor_pattern[16][16] = {
 
 // Screen double buffer for compositing all canvases
 static uint16_t g_current_target = FMRB_CANVAS_SCREEN;  // 0=screen, other=canvas
-static bool g_graphics_initialized = false;  // Flag to prevent multiple initializations
+static volatile bool g_graphics_initialized = false;  // Flag to prevent multiple initializations (volatile for cross-task access)
 
 // Canvas helper functions
 static canvas_state_t* canvas_state_find(uint16_t canvas_id) {
@@ -295,6 +297,10 @@ extern "C" int graphics_handler_init(void) {
 }
 
 extern "C" void graphics_handler_cleanup(void) {
+    // Disable rendering first (checked by render_frame)
+    g_graphics_initialized = false;
+    g_lgfx = nullptr;  // Invalidate pointer to prevent stale access from render loop
+
     // Delete all canvases
     while (g_canvas_count > 0) {
         canvas_state_free(&g_canvases[0]);
@@ -308,16 +314,15 @@ extern "C" void graphics_handler_cleanup(void) {
     }
 
     g_current_target = FMRB_CANVAS_SCREEN;
-    g_graphics_initialized = false;  // Reset initialization flag
+    g_next_canvas_id = 1;  // Reset canvas ID counter
 
-    // Note: g_lgfx is managed by main.cpp, don't delete here
     ESP_LOGI(TAG, "Graphics handler cleaned up");
 }
 
 // SDL_Renderer function removed - not needed in abstracted interface
 
 extern "C" void graphics_handler_render_frame(void) {
-    if (!g_lgfx) {
+    if (!g_lgfx || !g_graphics_initialized) {
         return;
     }
     graphics_handler_render_frame_internal();
@@ -325,9 +330,6 @@ extern "C" void graphics_handler_render_frame(void) {
 
 // Use comm_interface send_ack function
 // (No forward declaration needed - using COMM_INTERFACE macro)
-
-// Next canvas ID to allocate
-static uint16_t g_next_canvas_id = 1;
 
 extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_type, uint8_t seq, const uint8_t *data, size_t size) {
     if (!g_lgfx) {

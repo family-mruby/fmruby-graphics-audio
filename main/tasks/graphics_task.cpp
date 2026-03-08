@@ -31,6 +31,11 @@ static uint16_t display_height = 320;
 extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth) {
     ESP_LOGI(TAG, "Initializing display: %dx%d, %d-bit color", width, height, color_depth);
 
+    if (display_initialized) {
+        ESP_LOGW(TAG, "Display already initialized, ignoring re-init request");
+        return 0;
+    }
+
     display_width = width;
     display_height = height;
 
