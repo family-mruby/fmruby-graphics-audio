@@ -54,14 +54,15 @@ static uint8_t s_resp_data[SPI_MAX_DATA];
 static volatile uint8_t s_resp_data_len = 0;
 
 // Pending transaction counter (ISR decrements, task increments)
+static portMUX_TYPE s_pending_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile int s_pending_trans = 0;
 static volatile uint32_t s_queue_empty_count = 0;
 
 // READY GPIO control (HIGH = ready to receive, LOW = busy)
-static inline void IRAM_ATTR set_ready_high(void) {
+static inline void IRAM_ATTR set_spi_ready(void) {
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 1);
 }
-static inline void IRAM_ATTR set_ready_low(void) {
+static inline void IRAM_ATTR set_spi_busy(void) {
     gpio_set_level(FMRB_PIN_SPI_HANDSHAKE, 0);
 }
 
@@ -75,11 +76,13 @@ static void IRAM_ATTR spi_post_setup_cb(spi_slave_transaction_t *trans)
 static void IRAM_ATTR spi_post_trans_cb(spi_slave_transaction_t *trans)
 {
     (void)trans;
+    portENTER_CRITICAL_ISR(&s_pending_mux);
     s_pending_trans--;
     if (s_pending_trans <= 0) {
-        set_ready_low();  // Queue exhausted → block master
+        set_spi_busy();  // Queue exhausted → block master
         s_queue_empty_count++;
     }
+    portEXIT_CRITICAL_ISR(&s_pending_mux);
     BaseType_t hp = pdFALSE;
     xSemaphoreGiveFromISR(trans_ready_sem, &hp);
     if (hp) portYIELD_FROM_ISR();
@@ -112,7 +115,9 @@ static esp_err_t queue_next_transaction(void)
 
     esp_err_t ret = spi_slave_queue_trans(SPI_HOST_ID, &transactions[buf_idx], 0);
     if (ret == ESP_OK) {
+        portENTER_CRITICAL(&s_pending_mux);
         s_pending_trans++;
+        portEXIT_CRITICAL(&s_pending_mux);
     }
     return ret;
 }
@@ -211,14 +216,26 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     // Fill TX buffer with response → re-queue → update READY
     current_buf = buf_idx;
     fill_response(tx_buffers[buf_idx]);
+
+    ESP_LOGD(TAG, "RX: seq=%u ack=%u st=0x%02x dlen=%u msgs=%d | TX: ack=%u st=0x%02x dlen=%u",
+             f->seq, f->ack_seq, f->status, f->data_len, messages_processed,
+             s_last_ack_seq, s_last_status, s_resp_data_len);
+
     queue_next_transaction();
-    if (s_pending_trans > 0) {
-        set_ready_high();
+    portENTER_CRITICAL(&s_pending_mux);
+    int pending = s_pending_trans;
+    portEXIT_CRITICAL(&s_pending_mux);
+    if (pending > 0) {
+        set_spi_ready();
     }
 
     // Queue exhaustion warning (logged from task context)
-    if (s_queue_empty_count > 0) {
-        ESP_LOGW(TAG, "SPI queue exhausted %lu times", s_queue_empty_count);
+    portENTER_CRITICAL(&s_pending_mux);
+    uint32_t empty_count = s_queue_empty_count;
+    s_queue_empty_count = 0;
+    portEXIT_CRITICAL(&s_pending_mux);
+    if (empty_count > 0) {
+        //ESP_LOGW(TAG, "SPI queue exhausted %lu times", empty_count);
     }
 
     return messages_processed;
@@ -322,7 +339,7 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&hs_conf);
-    set_ready_low();
+    set_spi_busy();
 
     // Create binary semaphore for transaction complete signaling
     trans_ready_sem = xSemaphoreCreateBinary();
@@ -371,9 +388,12 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         }
     }
     current_buf = 0;
+    portENTER_CRITICAL(&s_pending_mux);
     s_pending_trans = NUM_BUFFERS;
+    s_queue_empty_count = 0;
+    portEXIT_CRITICAL(&s_pending_mux);
 
-    set_ready_high();
+    set_spi_ready();
     spi_running = 1;
     ESP_LOGI(TAG, "SPI slave initialized - MOSI:%d MISO:%d CLK:%d CS:%d HS:%d (frame=%d bytes)",
            FMRB_PIN_SPI_MOSI, FMRB_PIN_SPI_MISO, FMRB_PIN_SPI_CLK,
