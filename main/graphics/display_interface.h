@@ -42,6 +42,17 @@ typedef struct {
      * Cleanup and shutdown display
      */
     void (*cleanup)(void);
+
+    /**
+     * Get display scaling factors (optional, NULL if not applicable)
+     * @param scaling_x Pointer to receive X scaling factor (NULL to skip)
+     * @param scaling_y Pointer to receive Y scaling factor (NULL to skip)
+     * @return 0 on success, -1 if not supported
+     *
+     * For SDL2: Returns the scaling factor used to enlarge the display window
+     * For ESP32: Not applicable (always 1x), returns -1
+     */
+    int (*get_scaling)(uint_fast8_t* scaling_x, uint_fast8_t* scaling_y);
 } display_interface_t;
 
 // Get the active display interface

@@ -122,6 +122,7 @@ static const display_interface_t esp32_display_interface = {
     .process_events = esp32_display_process_events,
     .display = esp32_display_display,
     .cleanup = esp32_display_cleanup,
+    .get_scaling = NULL,  // Not applicable for ESP32 (always 1x)
 };
 
 // Get the display interface

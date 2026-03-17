@@ -53,6 +53,10 @@ public:
 // Global LGFX instance
 LGFX* g_lgfx = nullptr;
 
+// Scaling factors (set during initialization)
+static uint_fast8_t g_scaling_x = 2;
+static uint_fast8_t g_scaling_y = 2;
+
 // Linux/SDL2 implementation functions
 static int linux_display_init(uint16_t width, uint16_t height, uint8_t color_depth) {
     ESP_LOGI(TAG, "Initializing Linux/SDL2 display: %dx%d, %d-bit color", width, height, color_depth);
@@ -65,7 +69,9 @@ static int linux_display_init(uint16_t width, uint16_t height, uint8_t color_dep
 
     // Create LovyanGFX instance with specified resolution
     // Default scaling: 2x for better visibility on modern displays
-    g_lgfx = new LGFX(width, height, 2, 2);
+    g_scaling_x = 2;
+    g_scaling_y = 2;
+    g_lgfx = new LGFX(width, height, g_scaling_x, g_scaling_y);
     if (!g_lgfx) {
         ESP_LOGE(TAG, "Failed to create LovyanGFX instance");
         return -1;
@@ -99,18 +105,16 @@ static void* linux_display_get_lgfx(void) {
 }
 
 static int linux_display_process_events(void) {
-    // SDL2 event processing is handled by input_handler
-    // This function is called to process display-specific events (like window close)
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_QUIT) {
-            ESP_LOGI(TAG, "SDL_QUIT event received");
-            return 1;  // Signal quit
-        }
-        // Other events are handled by input_handler, so push back
-        SDL_PushEvent(&event);
-        break;  // Only check one event per call to avoid infinite loop
-    }
+    // SDL2 event processing is handled by input_handler via SDL_AddEventWatch
+    // input_handler intercepts all events (including SDL_QUIT) before SDL_PollEvent
+    // This function is kept for API compatibility but does nothing
+    //
+    // IMPORTANT: Do NOT call SDL_PollEvent here!
+    // Calling SDL_PollEvent and SDL_PushEvent creates a race condition:
+    // 1. Event Watch callback sends event to Core
+    // 2. SDL_PollEvent retrieves event
+    // 3. SDL_PushEvent puts event back in queue
+    // 4. Event Watch callback may trigger again -> duplicate events
     return 0;  // Continue normally
 }
 
@@ -129,6 +133,13 @@ static void linux_display_cleanup(void) {
     ESP_LOGI(TAG, "Linux/SDL2 display cleanup complete");
 }
 
+static int linux_display_get_scaling(uint_fast8_t* scaling_x, uint_fast8_t* scaling_y) {
+    // Return the scaling factors set during initialization
+    if (scaling_x) *scaling_x = g_scaling_x;
+    if (scaling_y) *scaling_y = g_scaling_y;
+    return 0;
+}
+
 // Display interface structure for Linux/SDL2
 static const display_interface_t linux_display_interface = {
     .init = linux_display_init,
@@ -136,6 +147,7 @@ static const display_interface_t linux_display_interface = {
     .process_events = linux_display_process_events,
     .display = linux_display_display,
     .cleanup = linux_display_cleanup,
+    .get_scaling = linux_display_get_scaling,
 };
 
 // Get the display interface

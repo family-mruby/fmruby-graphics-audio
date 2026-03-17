@@ -8,12 +8,18 @@
 
 // Include HID event definitions (path relative to build)
 #include "../../main/include/fmrb_hid_event.h"
+#include "../graphics/display_interface.h"
 
 static const char *TAG = "input_handler";
 
 static bool g_initialized = false;
 static int g_last_mouse_x = 0;
 static int g_last_mouse_y = 0;
+static volatile bool g_quit_requested = false;
+
+// Display scaling factors for coordinate transformation
+static uint_fast8_t g_scaling_x = 1;
+static uint_fast8_t g_scaling_y = 1;
 
 // Event watch callback - called before SDL_PollEvent consumes events
 static int event_watch_callback(void* userdata, SDL_Event* event) {
@@ -55,8 +61,9 @@ static int event_watch_callback(void* userdata, SDL_Event* event) {
                 hid_mouse_button_event_t mouse_event;
                 mouse_event.button = event->button.button;
                 mouse_event.state = 1;  // pressed
-                mouse_event.x = (uint16_t)event->button.x;
-                mouse_event.y = (uint16_t)event->button.y;
+                // Transform window coordinates to logical coordinates by dividing by scaling
+                mouse_event.x = (uint16_t)(event->button.x / g_scaling_x);
+                mouse_event.y = (uint16_t)(event->button.y / g_scaling_y);
                 input_socket_send_event(HID_EVENT_MOUSE_BUTTON, &mouse_event, sizeof(mouse_event));
             }
             break;
@@ -68,16 +75,17 @@ static int event_watch_callback(void* userdata, SDL_Event* event) {
                 hid_mouse_button_event_t mouse_event;
                 mouse_event.button = event->button.button;
                 mouse_event.state = 0;  // released
-                mouse_event.x = (uint16_t)event->button.x;
-                mouse_event.y = (uint16_t)event->button.y;
+                // Transform window coordinates to logical coordinates by dividing by scaling
+                mouse_event.x = (uint16_t)(event->button.x / g_scaling_x);
+                mouse_event.y = (uint16_t)(event->button.y / g_scaling_y);
                 input_socket_send_event(HID_EVENT_MOUSE_BUTTON, &mouse_event, sizeof(mouse_event));
             }
             break;
 
         case SDL_MOUSEMOTION:
-            // Update current mouse position
-            g_last_mouse_x = event->motion.x;
-            g_last_mouse_y = event->motion.y;
+            // Update current mouse position (store in logical coordinates)
+            g_last_mouse_x = event->motion.x / g_scaling_x;
+            g_last_mouse_y = event->motion.y / g_scaling_y;
 
             // Mouse motion events are very frequent (100+ events/sec when moving)
             // Only log occasionally for debugging
@@ -88,14 +96,16 @@ static int event_watch_callback(void* userdata, SDL_Event* event) {
             // Send to Core with throttling (every 10th event to reduce bandwidth)
             if (motion_count % 10 == 0) {
                 hid_mouse_motion_event_t motion_event;
-                motion_event.x = (uint16_t)event->motion.x;
-                motion_event.y = (uint16_t)event->motion.y;
+                // Transform window coordinates to logical coordinates by dividing by scaling
+                motion_event.x = (uint16_t)(event->motion.x / g_scaling_x);
+                motion_event.y = (uint16_t)(event->motion.y / g_scaling_y);
                 input_socket_send_event(HID_EVENT_MOUSE_MOTION, &motion_event, sizeof(motion_event));
             }
             break;
 
         case SDL_QUIT:
             ESP_LOGI(TAG, "SDL_QUIT event received");
+            g_quit_requested = true;
             break;
 
         default:
@@ -112,6 +122,23 @@ int input_handler_init(void) {
         return 0;
     }
 
+    // Get display scaling factors for coordinate transformation
+    const display_interface_t* display = DISPLAY_INTERFACE;
+    if (display && display->get_scaling) {
+        int ret = display->get_scaling(&g_scaling_x, &g_scaling_y);
+        if (ret == 0) {
+            ESP_LOGI(TAG, "Display scaling: %ux%u", g_scaling_x, g_scaling_y);
+        } else {
+            ESP_LOGW(TAG, "Failed to get display scaling, using 1x1");
+            g_scaling_x = 1;
+            g_scaling_y = 1;
+        }
+    } else {
+        ESP_LOGI(TAG, "Display does not support scaling (using 1x1)");
+        g_scaling_x = 1;
+        g_scaling_y = 1;
+    }
+
     // Register event watch callback
     // This callback is called BEFORE SDL_PollEvent consumes the event
     SDL_AddEventWatch(event_watch_callback, NULL);
@@ -125,6 +152,11 @@ int input_handler_process_events(void) {
     if (!g_initialized) {
         ESP_LOGE(TAG, "Input handler not initialized");
         return -1;
+    }
+
+    // Check if quit was requested via SDL_QUIT event
+    if (g_quit_requested) {
+        return 1;  // Signal quit
     }
 
     // Events are now handled by event_watch_callback
