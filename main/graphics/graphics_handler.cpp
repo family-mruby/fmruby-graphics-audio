@@ -58,9 +58,13 @@ static size_t g_canvas_count = 0;
 
 // Cursor management
 static LGFX_Sprite* g_cursor_sprite = nullptr;
+static LGFX_Sprite* g_cursor_save = nullptr;   // Saved pixels under cursor
 static bool g_cursor_visible = true;
+static bool g_cursor_drawn = false;             // Whether cursor is currently baked into screen_buffer
 static int g_cursor_x = 240;  // Default: screen center
 static int g_cursor_y = 135;
+static int g_cursor_save_x = 0;  // Position where pixels were saved
+static int g_cursor_save_y = 0;
 static const uint32_t CURSOR_TRANSPARENT_COLOR = 0xFF00FF;  // Magenta
 
 // 16x16 arrow cursor pattern (0=transparent, 1=white outline, 2=black body)
@@ -218,6 +222,12 @@ static void graphics_handler_render_frame_internal() {
         return;  // Canvas not fully initialized yet
     }
 
+    // Restore pixels under previous cursor before compositing
+    if (g_cursor_drawn && g_cursor_save) {
+        g_cursor_save->pushSprite(screen_buffer, g_cursor_save_x, g_cursor_save_y);
+        g_cursor_drawn = false;
+    }
+
     // Composite all visible canvases to screen buffer (NOT to g_lgfx directly)
     for (size_t i = 1; i < g_canvas_count; i++) {
         canvas_state_t* canvas = &g_canvases[i];
@@ -233,9 +243,24 @@ static void graphics_handler_render_frame_internal() {
         }
     }
 
-    // Draw cursor on top of everything in screen_buffer (if visible)
-    if (g_cursor_visible && g_cursor_sprite) {
+    // Save background under cursor, then draw cursor on screen_buffer
+    if (g_cursor_visible && g_cursor_sprite && g_cursor_save) {
+        // Save the 16x16 area that cursor will overwrite
+        for (int y = 0; y < 16; y++) {
+            for (int x = 0; x < 16; x++) {
+                int sx = g_cursor_x + x;
+                int sy = g_cursor_y + y;
+                if (sx >= 0 && sx < screen_buffer->width() && sy >= 0 && sy < screen_buffer->height()) {
+                    g_cursor_save->drawPixel(x, y, screen_buffer->readPixel(sx, sy));
+                }
+            }
+        }
+        g_cursor_save_x = g_cursor_x;
+        g_cursor_save_y = g_cursor_y;
+
+        // Draw cursor on top of everything
         g_cursor_sprite->pushSprite(screen_buffer, g_cursor_x, g_cursor_y, CURSOR_TRANSPARENT_COLOR);
+        g_cursor_drawn = true;
         ESP_LOGD(TAG, "Cursor drawn at (%d, %d)", g_cursor_x, g_cursor_y);
     }
 
@@ -289,6 +314,12 @@ extern "C" int graphics_handler_init(void) {
     g_cursor_sprite->createSprite(16, 16);
     g_cursor_sprite->clear(CURSOR_TRANSPARENT_COLOR);
 
+    // Initialize cursor background save sprite (16x16)
+    g_cursor_save = new LGFX_Sprite(g_lgfx);
+    g_cursor_save->setColorDepth(8);
+    g_cursor_save->createSprite(16, 16);
+    g_cursor_drawn = false;
+
     // Draw cursor pattern
     for (int y = 0; y < 16; y++) {
         for (int x = 0; x < 16; x++) {
@@ -319,12 +350,17 @@ extern "C" void graphics_handler_cleanup(void) {
         canvas_state_free(&g_canvases[0]);
     }
 
-    // Delete cursor sprite
+    // Delete cursor sprites
     if (g_cursor_sprite) {
         delete g_cursor_sprite;
         g_cursor_sprite = nullptr;
-        ESP_LOGI(TAG, "Cursor sprite deleted");
     }
+    if (g_cursor_save) {
+        delete g_cursor_save;
+        g_cursor_save = nullptr;
+    }
+    g_cursor_drawn = false;
+    ESP_LOGI(TAG, "Cursor sprites deleted");
 
     // Delete mutex
     if (g_canvas_mutex) {
