@@ -13,6 +13,8 @@ extern "C" {
 #include "esp_log.h"
 #include "display_interface.h"
 #include "../mempool/fmrb_mempool.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
 #include "socket_server.h"  // For socket_server_send_ack
 #else
@@ -21,6 +23,10 @@ extern "C" {
 }
 
 static const char *TAG = "graphics_handler";
+
+// Mutex to protect canvas state (render_buffer, push_x/y, is_visible, etc.)
+// between graphics_task (render) and message_handler_task (command processing)
+static SemaphoreHandle_t g_canvas_mutex = nullptr;
 
 // Get g_lgfx from display interface (defined in display_sdl2.cpp or display_cvbs.cpp)
 static LovyanGFX* g_lgfx = nullptr;
@@ -227,15 +233,15 @@ static void graphics_handler_render_frame_internal() {
         }
     }
 
-    // Finally, push the complete screen buffer to g_lgfx (only once per frame)
-    screen_buffer->pushSprite(g_lgfx, 0, 0);
-    ESP_LOGD(TAG, "Screen buffer pushed to display");
-
-    // Draw cursor on top of everything (if visible)
+    // Draw cursor on top of everything in screen_buffer (if visible)
     if (g_cursor_visible && g_cursor_sprite) {
-        g_cursor_sprite->pushSprite(g_lgfx, g_cursor_x, g_cursor_y, CURSOR_TRANSPARENT_COLOR);
+        g_cursor_sprite->pushSprite(screen_buffer, g_cursor_x, g_cursor_y, CURSOR_TRANSPARENT_COLOR);
         ESP_LOGD(TAG, "Cursor drawn at (%d, %d)", g_cursor_x, g_cursor_y);
     }
+
+    // Push the complete screen buffer (with cursor) to g_lgfx in a single transfer
+    screen_buffer->pushSprite(g_lgfx, 0, 0);
+    ESP_LOGD(TAG, "Screen buffer pushed to display");
 }
 
 // Get current drawing target (screen or canvas)
@@ -269,6 +275,13 @@ extern "C" int graphics_handler_init(void) {
     }
 
     g_lgfx->setAutoDisplay(false);
+
+    // Create mutex for canvas state protection
+    g_canvas_mutex = xSemaphoreCreateMutex();
+    if (!g_canvas_mutex) {
+        ESP_LOGE(TAG, "Failed to create canvas mutex");
+        return -1;
+    }
 
     // Initialize cursor sprite (16x16 arrow)
     g_cursor_sprite = new LGFX_Sprite(g_lgfx);
@@ -313,6 +326,12 @@ extern "C" void graphics_handler_cleanup(void) {
         ESP_LOGI(TAG, "Cursor sprite deleted");
     }
 
+    // Delete mutex
+    if (g_canvas_mutex) {
+        vSemaphoreDelete(g_canvas_mutex);
+        g_canvas_mutex = nullptr;
+    }
+
     g_current_target = FMRB_CANVAS_SCREEN;
     g_next_canvas_id = 1;  // Reset canvas ID counter
 
@@ -325,7 +344,12 @@ extern "C" void graphics_handler_render_frame(void) {
     if (!g_lgfx || !g_graphics_initialized) {
         return;
     }
-    graphics_handler_render_frame_internal();
+    if (xSemaphoreTake(g_canvas_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        graphics_handler_render_frame_internal();
+        xSemaphoreGive(g_canvas_mutex);
+    } else {
+        ESP_LOGD(TAG, "render_frame: mutex timeout, skipping frame");
+    }
 }
 
 // Use comm_interface send_ack function
@@ -798,6 +822,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 ESP_LOGI(TAG, "UPDATE_WINDOW: canvas_id=%u, pos=(%d,%d), active_size=%dx%d",
                           cmd->canvas_id, (int)cmd->x, (int)cmd->y, (int)cmd->width, (int)cmd->height);
 
+                // Lock to prevent render_frame from reading inconsistent state
+                xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
+
                 // Update position
                 canvas->push_x = cmd->x;
                 canvas->push_y = cmd->y;
@@ -813,11 +840,14 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 canvas->render_buffer->setBuffer(canvas->render_buffer_mem,
                                                 canvas->active_width, canvas->active_height, 8);
 
+                canvas->dirty = true;
+
+                xSemaphoreGive(g_canvas_mutex);
+
                 ESP_LOGI(TAG, "Canvas %u resized to %dx%d using setBuffer (allocated: %dx%d)",
                           cmd->canvas_id, canvas->active_width, canvas->active_height,
                           canvas->width, canvas->height);
 
-                canvas->dirty = true;
                 return 0;
             }
             break;
@@ -859,6 +889,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 if (cmd->dest_canvas_id == FMRB_CANVAS_RENDER) {
                     // Push to own render_buffer at (0,0), save position for later screen rendering
+                    // Lock to prevent render_frame from reading while we update
+                    xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
                     dst = src_canvas->render_buffer;
                     dst_name = "render_canvas";
                     src_canvas->push_x = cmd->x;
@@ -896,6 +928,11 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     src_sprite->pushSprite(dst, push_x, push_y);
                     ESP_LOGD(TAG, "Canvas pushed: ID=%u to %s at (%d,%d)", cmd->canvas_id, dst_name, push_x, push_y);
+                }
+
+                // Release mutex if we locked for render_buffer path
+                if (cmd->dest_canvas_id == FMRB_CANVAS_RENDER) {
+                    xSemaphoreGive(g_canvas_mutex);
                 }
 
                 return 0;
