@@ -105,9 +105,11 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
 
     // Send directly to MessageBuffer
     size_t send_size = offsetof(message_data_t, payload) + payload_len;
-    size_t bytes_sent = xMessageBufferSend(s_msg_buffer, &msg, send_size, pdMS_TO_TICKS(100));
+    // Wait with timeout for space to become available
+    size_t bytes_sent = xMessageBufferSend(s_msg_buffer, &msg, send_size, pdMS_TO_TICKS(500));
     if (bytes_sent == 0) {
-        ESP_LOGE(TAG, "Failed to send to MessageBuffer (full?)");
+        ESP_LOGW(TAG, "MessageBuffer full, dropping message (type=%d sub_cmd=0x%02x)",
+                 msg.type, msg.sub_cmd);
         return -1;
     }
 

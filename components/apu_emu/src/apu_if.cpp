@@ -512,4 +512,15 @@ int apuif_parse_apu_log(const char* filename) {
     return true;
 }
 
+/* Memory allocation proxy - ESP32: use PSRAM */
+void *apuemu_malloc(uint32_t size)
+{
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+}
+
+void apuemu_free(void *ptr)
+{
+    free(ptr);
+}
+
 }

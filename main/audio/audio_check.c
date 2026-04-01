@@ -3,270 +3,143 @@
 #include "esp_timer.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <inttypes.h>
-//#include <algorithm>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "esp_system.h"
 #include "esp_littlefs.h"
-#include "driver/gpio.h"
-#include "soc/rtc.h"
 
-#include "string.h"
-#include "noftypes.h"
-#include "nes_apu.h"
 #include "apu_if.h"
-
-// デバッグログ制御フラグ
-#define REPLAY_TEST
-#define AUDIO_DEBUG
-
-#define DEMO_BIN_FILE "/flash/data/sample.reglog"
+#include "nsf_player.h"
 
 #define NTSC_SAMPLE 262
+#define NSF_FILE_PATH "/flash/data/test.nsf"
 
-static volatile int _audio_initialized = 0;
-int _sample_count = -1;
+static nsf_player_t *g_nsf_player = NULL;
 
-static apu_log_header_t _apulog_header;
-static apu_log_entry_t* _apulog_entries;
-static int _apu_init = 0;
-static int _frame_count = 0;
-static int _entry_count = 0;
-static int _play_head = 0;
-
-int exec_seek_play_head(){
-  for (uint32_t i = 0; i < _apulog_header.entry_count; i++) {
-    const apu_log_entry_t* entry = &_apulog_entries[i];
-    if(entry->event_type == APU_EVENT_INIT_END){
-      return i+1;
-    }
-  }
-  return -1;
-}
-
-void exec_init_entries(){
-  _play_head = exec_seek_play_head();
-  if(_play_head < 0){
-    printf("PLAY entry not found\n");
-    return;
-  }
-  for (uint32_t i = 0; i < _play_head; i++) {
-    const apu_log_entry_t* entry = &_apulog_entries[i];
-    if(!entry) return;
-    switch (entry->event_type) {
-      case APU_EVENT_WRITE:
-        apuif_write_reg(entry->addr, entry->data);
-        _frame_count = entry->frame_number;
-        //printf("%8lu 0x%04X 0x%02X\n",i , entry->addr, entry->data);
-        break;
-      case APU_EVENT_INIT_START:
-      case APU_EVENT_INIT_END:
-      case APU_EVENT_PLAY_START:
-      case APU_EVENT_PLAY_END:
-      default:
-        break;
-    }
-  }
-  _entry_count = _play_head;
-}
-
-void exec_play_entries(){
-  //printf("start entry_count=%d\n",_entry_count);
-  for (uint32_t i = _entry_count + 1; i < _apulog_header.entry_count ; i++) {
-    const apu_log_entry_t* entry = &_apulog_entries[i];
-    if(!entry) return;
-    switch (entry->event_type) {
-      case APU_EVENT_WRITE:
-        apuif_write_reg(entry->addr, entry->data);
-        //printf("%8lu 0x%04X 0x%02X %8lu\n",i , entry->addr, entry->data, entry->frame_number);
-        break;
-      case APU_EVENT_PLAY_START:
-        _entry_count = i;
-        //printf("end entry_count=%d\n",_entry_count);
-        return;
-        break;
-      case APU_EVENT_PLAY_END:
-        _entry_count = i+1;
-        //printf("end entry_count=%d\n",_entry_count);
-        return;
-        break;
-      case APU_EVENT_INIT_START:
-      case APU_EVENT_INIT_END:
-      default:
-        printf("unexpected event %d\n",entry->event_type);
-        break;
-    }
-  }
-  //loop
-  _entry_count = _play_head;
-}
-
-void update_audio()
+static void update_audio(void)
 {
-#ifdef REPLAY_TEST  // replay check
-  if(!_apu_init){
-    exec_init_entries();
-    _apu_init = 1;
-  }
+    /* Execute NSF PLAY routine */
+    if (g_nsf_player && g_nsf_player->playing) {
+        nsf_player_tick(g_nsf_player);
+    }
 
-  exec_play_entries();
-#endif
+    /* Generate audio samples from APU */
+    static int16_t abuffer[(NTSC_SAMPLE + 1) * 2];
+    memset(abuffer, 0, sizeof(abuffer));
+    int sample_count = apuif_process(abuffer, sizeof(abuffer));
 
-  static int16_t abuffer[(NTSC_SAMPLE+1)*2];
-  memset(abuffer,0,sizeof(abuffer));
-  _sample_count = apuif_frame_sample_count();
-  
-  if (_sample_count <= 0 || _sample_count > (NTSC_SAMPLE+1)*2) {
-    printf("[AUDIO_ERROR] Invalid sample count: %d\n", _sample_count);
-    return;
-  }
-  
-#if 0
-  // ランダムなテスト音波形を生成
-  for (int i = 0; i < _sample_count; i++) {
-      // -10000 から 10000 の範囲でランダムな値を生成
-      abuffer[i] = (rand() % 20001) - 10000;
-  }
-#else
-  _sample_count = apuif_process(abuffer,sizeof(abuffer));
-#endif
-  
-#ifdef AUDIO_DEBUG
-  // オーディオデバッグ：60フレームごとにチェック
-  static uint32_t audio_frame_count = 0;
-  #if 0
-  if (audio_frame_count % 60 == 0 ) {
-      // サンプル数と最初のいくつかのサンプル値を表示
-      printf("AUDIO[%lu]: samples=%d\n", audio_frame_count, _sample_count);
-      
-      if (_sample_count > 0) {
-          printf("AUDIO: first 8 samples: ");
-          for (int i = 0; i < 8 && i < _sample_count; i++) {
-              printf("0x%04X ", (uint16_t)abuffer[i]);
-          }
-          printf("\n");
-      }
-  }
-  #endif
-  audio_frame_count++;
-#endif
-  apuif_audio_write(abuffer,_sample_count,1);
+    if (sample_count <= 0 || sample_count > (NTSC_SAMPLE + 1) * 2) {
+        printf("[AUDIO_ERROR] Invalid sample count: %d\n", sample_count);
+        return;
+    }
+
+    apuif_audio_write(abuffer, sample_count, 1);
 }
 
-esp_err_t mount_filesystem()
+static esp_err_t mount_filesystem(void)
 {
-  esp_vfs_littlefs_conf_t conf = {
-    .base_path = "/flash",
-    .partition_label = "storage",
-    .format_if_mount_failed = true,
-    .dont_mount = false,
-  };
-  esp_err_t e = esp_vfs_littlefs_register(&conf);
-  if (e != ESP_OK){
-    printf("Failed to mount or format filesystem: %d.\n",e);
-  }
-  vTaskDelay(1);
-  return e;
+    esp_vfs_littlefs_conf_t conf = {
+        .base_path = "/flash",
+        .partition_label = "storage",
+        .format_if_mount_failed = true,
+        .dont_mount = false,
+    };
+    esp_err_t e = esp_vfs_littlefs_register(&conf);
+    if (e != ESP_OK) {
+        printf("Failed to mount or format filesystem: %d.\n", e);
+    }
+    vTaskDelay(1);
+    return e;
 }
 
-void audio_check_impl(void){
-  printf("emu_task on core %d\n", xPortGetCoreID());
-  uint32_t cpu_freq_mhz = CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
-
-  //APU and Audio output HW init
-  apuif_init();
-
-  printf("CPU Frequency: %lu MHz\n", cpu_freq_mhz);
-
-  // 乱数シードの初期化
-  srand(esp_timer_get_time());
-
-  // 60Hz timing constants
-  const uint64_t target_frame_time_us = 16667;  // 60Hz = 16.67ms
-  uint64_t next_frame_time = esp_timer_get_time();
-  uint32_t frame_count = 0;
-  uint32_t total_processing_time = 0;
-
-#ifdef REPLAY_TEST
-  mount_filesystem(); //mount the filesystem!  
-  _apulog_entries = apuif_read_entries(DEMO_BIN_FILE, &_apulog_header);
-  
-  printf("Starting 60Hz NSF playback loop...\n");
-  next_frame_time = esp_timer_get_time();
-  while(true) //emu loop
-  {
-    uint64_t frame_start = esp_timer_get_time();
-    update_audio();
-
-    uint64_t frame_end = esp_timer_get_time();
-    uint32_t processing_time_us = (uint32_t)(frame_end - frame_start);
-    total_processing_time += processing_time_us;
-    frame_count++;
-    
-    // Calculate next frame time
-    next_frame_time += target_frame_time_us;
-    
-    // Sleep until next frame
-    int64_t sleep_time_us = next_frame_time - frame_end;
-    
-    if (sleep_time_us > 1000) {
-      // Sleep if we have more than 1ms left
-      vTaskDelay(pdMS_TO_TICKS(sleep_time_us / 1000));
-    } else if (sleep_time_us < 0) {
-      // If we're more than one frame behind, reset timing
-#ifdef AUDIO_DEBUG
-      printf("Audio Frame timing reset - processing took too long %lld\n",sleep_time_us);
-#endif
-      next_frame_time = esp_timer_get_time();
-    }
-    
-    // Performance logging every 5 seconds (300 frames)
-#ifdef AUDIO_DEBUG
-    if (frame_count % 300 == 0) {
-      uint32_t avg_processing_us = total_processing_time / 300;
-      float cpu_usage = (float)avg_processing_us / target_frame_time_us * 100.0f;
-      printf("NSF 60Hz: avg processing=%lu us, CPU usage=%.1f%%, frame=%lu\n", 
-              avg_processing_us, cpu_usage, frame_count);
-      total_processing_time = 0;
-    }
-#endif
-  }
-#else
-
-  _audio_initialized = 1;
-  while(true) //emu loop
-  {
-    if(apuif_use_external_process() == 0){
-      //audio process is handled by picoruby
-      vTaskDelay(pdMS_TO_TICKS(100));
-      continue;
-    }
-    if(frame_count % 300 == 0){
-      printf("using external loop\n");
+static int load_nsf_from_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        printf("NSF: Cannot open '%s'\n", path);
+        return -1;
     }
 
-    uint64_t frame_start = esp_timer_get_time();
-    update_audio();
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
 
-    uint64_t frame_end = esp_timer_get_time();
-    uint32_t processing_time_us = (uint32_t)(frame_end - frame_start);
-    total_processing_time += processing_time_us;
-    frame_count++;
-    
-    // Calculate next frame time
-    next_frame_time += target_frame_time_us;
-    
-    // Sleep until next frame
-    int64_t sleep_time_us = next_frame_time - frame_end;
-    
-    if (sleep_time_us > 1000) {
-      // Sleep if we have more than 1ms left
-      vTaskDelay(pdMS_TO_TICKS(sleep_time_us / 1000));
-    } else if (sleep_time_us < 0) {
-      next_frame_time = esp_timer_get_time();
+    uint8_t *data = (uint8_t *)apuemu_malloc(fsize);
+    if (!data) {
+        fclose(f);
+        printf("NSF: Failed to allocate %ld bytes for file\n", fsize);
+        return -1;
     }
-  }
-#endif
+
+    if ((long)fread(data, 1, fsize, f) != fsize) {
+        apuemu_free(data);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    /* Allocate NSF player via proxy (PSRAM on ESP32) */
+    g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
+    if (!g_nsf_player) {
+        printf("NSF: Failed to allocate player (%zu bytes)\n", sizeof(nsf_player_t));
+        apuemu_free(data);
+        return -1;
+    }
+
+    int ret = nsf_player_load_mem(g_nsf_player, data, (uint32_t)fsize);
+    apuemu_free(data);
+
+    if (ret != 0) {
+        apuemu_free(g_nsf_player);
+        g_nsf_player = NULL;
+        return -1;
+    }
+
+    return 0;
+}
+
+void audio_check_impl(void)
+{
+    printf("audio_check_impl on core %d\n", xPortGetCoreID());
+
+    /* APU and audio output hardware init */
+    apuif_init();
+
+    /* Mount filesystem and load NSF */
+    mount_filesystem();
+
+    if (load_nsf_from_file(NSF_FILE_PATH) == 0) {
+        nsf_player_start(g_nsf_player, 0);
+        printf("NSF loaded: %d songs\n", g_nsf_player->header.total_songs);
+    } else {
+        printf("NSF: No file at %s, APU will be silent\n", NSF_FILE_PATH);
+    }
+
+    /* 60Hz timing */
+    const uint64_t target_frame_time_us = 16667;
+    uint64_t next_frame_time = esp_timer_get_time();
+    uint32_t frame_count = 0;
+
+    while (true) {
+        uint64_t frame_start = esp_timer_get_time();
+
+        update_audio();
+
+        frame_count++;
+
+        /* Calculate next frame time */
+        next_frame_time += target_frame_time_us;
+
+        /* Sleep until next frame */
+        uint64_t frame_end = esp_timer_get_time();
+        int64_t sleep_time_us = next_frame_time - frame_end;
+
+        if (sleep_time_us > 1000) {
+            vTaskDelay(pdMS_TO_TICKS(sleep_time_us / 1000));
+        } else if (sleep_time_us < 0) {
+            next_frame_time = esp_timer_get_time();
+        }
+    }
 }

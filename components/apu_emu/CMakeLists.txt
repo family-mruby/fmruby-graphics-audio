@@ -3,6 +3,9 @@ if (IDF_TARGET STREQUAL "linux")
     idf_component_register(
         SRCS "src/apu_if_linux.c"
              "src/nofrendo/nes_apu.c"
+             "src/nes_cpu.c"
+             "src/nsf_player.c"
+             "src/fmsq_player.c"
         INCLUDE_DIRS "include"
         PRIV_INCLUDE_DIRS
             "src"
@@ -32,6 +35,9 @@ else()
     idf_component_register(
         SRCS "src/apu_if.cpp"
              "src/nofrendo/nes_apu.c"
+             "src/nes_cpu.c"
+             "src/nsf_player.c"
+             "src/fmsq_player.c"
         INCLUDE_DIRS
             "include"
         PRIV_INCLUDE_DIRS

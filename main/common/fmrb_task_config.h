@@ -29,4 +29,8 @@
 #define MESSAGE_HANDLER_TASK_CORE        0
 
 // MessageBuffer: number of messages buffered between comm and handler tasks
+#ifdef CONFIG_IDF_TARGET_LINUX
+#define MSG_BUFFER_NUM_MESSAGES      1024
+#else
 #define MSG_BUFFER_NUM_MESSAGES      8
+#endif

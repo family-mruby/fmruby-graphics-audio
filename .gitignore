@@ -5,3 +5,4 @@ sdkconfig.1
 dependencies.lock
 storage/*
 .vscode/*
+ws/

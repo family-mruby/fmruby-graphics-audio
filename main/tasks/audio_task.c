@@ -4,6 +4,8 @@
 #include "esp_log.h"
 #include "audio_handler.h"
 #include "apu_if.h"
+#include "nsf_player.h"
+#include "fmsq_player.h"
 
 #include <string.h>
 
@@ -14,67 +16,15 @@ void audio_task_stop(void) {
     task_running = 0;
 }
 
+#define NTSC_SAMPLE 262
+
 #ifdef CONFIG_IDF_TARGET_LINUX
 
-/* Replay state for reglog playback on Linux */
-static apu_log_header_t _replay_header;
-static apu_log_entry_t* _replay_entries = NULL;
-static int _replay_play_head = 0;
-static int _replay_entry_idx = 0;
-static int _replay_initialized = 0;
+#define NSF_FILE_PATH  "/project/flash/data/test.nsf"
+#define FMSQ_FILE_PATH "/project/flash/data/test.fmsq"
 
-#define NTSC_SAMPLE 262
-#define REGLOG_FILE_PATH "/project/flash/data/sample.reglog"
-
-static int replay_seek_play_head(void)
-{
-    for (uint32_t i = 0; i < _replay_header.entry_count; i++) {
-        if (_replay_entries[i].event_type == APU_EVENT_INIT_END) {
-            return i + 1;
-        }
-    }
-    return -1;
-}
-
-static void replay_exec_init(void)
-{
-    _replay_play_head = replay_seek_play_head();
-    if (_replay_play_head < 0) {
-        ESP_LOGE(TAG, "PLAY entry not found in reglog");
-        return;
-    }
-    for (int i = 0; i < _replay_play_head; i++) {
-        const apu_log_entry_t* entry = &_replay_entries[i];
-        if (entry->event_type == APU_EVENT_WRITE) {
-            apuif_write_reg(entry->addr, entry->data);
-        }
-    }
-    _replay_entry_idx = _replay_play_head;
-    _replay_initialized = 1;
-    ESP_LOGI(TAG, "Replay init done, play_head=%d", _replay_play_head);
-}
-
-static void replay_exec_frame(void)
-{
-    for (uint32_t i = _replay_entry_idx + 1; i < _replay_header.entry_count; i++) {
-        const apu_log_entry_t* entry = &_replay_entries[i];
-        switch (entry->event_type) {
-            case APU_EVENT_WRITE:
-                apuif_write_reg(entry->addr, entry->data);
-                break;
-            case APU_EVENT_PLAY_START:
-                _replay_entry_idx = i;
-                return;
-            case APU_EVENT_PLAY_END:
-                _replay_entry_idx = i + 1;
-                return;
-            default:
-                break;
-        }
-    }
-    /* Loop: restart from play_head */
-    _replay_entry_idx = _replay_play_head;
-}
+static nsf_player_t *g_nsf_player = NULL;
+static fmsq_player_t *g_fmsq_player = NULL;
 
 void audio_task(void *pvParameters) {
     ESP_LOGI(TAG, "Audio task started (Linux)");
@@ -85,31 +35,57 @@ void audio_task(void *pvParameters) {
         return;
     }
 
-    /* Initialize APU emulator */
+    /* Initialize main APU (instance 0: NSF) */
     apuif_init();
 
-    /* Try to load reglog file */
-    _replay_entries = apuif_read_entries(REGLOG_FILE_PATH, &_replay_header);
-    if (_replay_entries) {
-        ESP_LOGI(TAG, "Loaded reglog: %u entries, %u frames",
-                 _replay_header.entry_count, _replay_header.frame_count);
-        replay_exec_init();
-    } else {
-        ESP_LOGW(TAG, "No reglog file found at %s, APU will be silent until RPC commands arrive",
-                 REGLOG_FILE_PATH);
+    /* Load NSF file on main APU instance */
+    g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
+    if (g_nsf_player) {
+        if (nsf_player_load(g_nsf_player, NSF_FILE_PATH) == 0) {
+            nsf_player_start(g_nsf_player, 0);
+            ESP_LOGI(TAG, "NSF loaded: %d songs", g_nsf_player->header.total_songs);
+        } else {
+            ESP_LOGW(TAG, "No NSF file at %s", NSF_FILE_PATH);
+            apuemu_free(g_nsf_player);
+            g_nsf_player = NULL;
+        }
+    }
+
+    /* Initialize sub APU (instance 1: FMSQ) and load FMSQ file */
+    apuif_init_sub();
+
+    g_fmsq_player = (fmsq_player_t *)apuemu_malloc(sizeof(fmsq_player_t));
+    if (g_fmsq_player) {
+        if (fmsq_player_load(g_fmsq_player, FMSQ_FILE_PATH) == 0) {
+            fmsq_player_reset(g_fmsq_player);
+            ESP_LOGI(TAG, "FMSQ loaded: %d frames", g_fmsq_player->frame_count);
+        } else {
+            ESP_LOGW(TAG, "No FMSQ file at %s", FMSQ_FILE_PATH);
+            apuemu_free(g_fmsq_player);
+            g_fmsq_player = NULL;
+        }
     }
 
     /* 60Hz audio processing loop */
-    const uint32_t frame_interval_ms = 16; /* ~60Hz */
+    const uint32_t frame_interval_ms = 16;
 
     while (task_running) {
-        if (_replay_entries && _replay_initialized) {
-            replay_exec_frame();
+        /* Tick NSF player on main APU instance */
+        if (g_nsf_player && g_nsf_player->playing) {
+            apuif_select(APUIF_INSTANCE_MAIN);
+            nsf_player_tick(g_nsf_player);
         }
 
+        /* Tick FMSQ player on sub APU instance */
+        if (g_fmsq_player && g_fmsq_player->playing) {
+            apuif_select(APUIF_INSTANCE_SUB);
+            fmsq_player_tick(g_fmsq_player);
+        }
+
+        /* Process both APU instances and mix output */
         int16_t buffer[(NTSC_SAMPLE + 1) * 2];
         memset(buffer, 0, sizeof(buffer));
-        int count = apuif_process(buffer, sizeof(buffer));
+        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
         if (count > 0) {
             apuif_audio_write(buffer, count, 1);
         }
@@ -117,9 +93,15 @@ void audio_task(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(frame_interval_ms));
     }
 
-    if (_replay_entries) {
-        free(_replay_entries);
-        _replay_entries = NULL;
+    if (g_fmsq_player) {
+        fmsq_player_free(g_fmsq_player);
+        apuemu_free(g_fmsq_player);
+        g_fmsq_player = NULL;
+    }
+    if (g_nsf_player) {
+        nsf_player_free(g_nsf_player);
+        apuemu_free(g_nsf_player);
+        g_nsf_player = NULL;
     }
     audio_handler_cleanup();
 

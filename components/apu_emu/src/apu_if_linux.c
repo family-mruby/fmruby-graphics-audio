@@ -22,6 +22,12 @@ static int _audio_fraction = 0;
 static int _initialized = 0;
 static volatile int _use_external_process = 0;
 
+/* Dual APU instance support */
+static apu_t* _apu_sub = NULL;
+static int _sub_initialized = 0;
+static int _current_instance = APUIF_INSTANCE_MAIN;
+static int _sub_audio_fraction = 0;
+
 /* Ring buffer for audio samples (shared with SDL2 callback) */
 #define AUDIO_RING_SIZE 8192
 static int16_t _ring_buffer[AUDIO_RING_SIZE];
@@ -37,6 +43,7 @@ void apuif_init(void)
     _audio_fraction = 0;
 
     _apu = apu_create(0, _audio_frequency, 60, 8);
+    apu_getcontext(_apu); /* save initial state */
 
     _ring_read = 0;
     _ring_write = 0;
@@ -72,7 +79,19 @@ int apuif_process(int16_t* buff, int len)
 
 void apuif_write_reg(uint32_t address, uint8_t value)
 {
-    apu_write(address, value);
+    /* Write to currently selected APU instance.
+     * Both instances need setcontext/getcontext to keep
+     * the saved state in sync with the global apu. */
+    if (_current_instance == APUIF_INSTANCE_SUB && _sub_initialized) {
+        apu_setcontext(_apu_sub);
+        apu_write(address, value);
+        apu_getcontext(_apu_sub);
+        apu_setcontext(_apu); /* restore main as active */
+    } else {
+        apu_setcontext(_apu);
+        apu_write(address, value);
+        apu_getcontext(_apu); /* save back to main */
+    }
 }
 
 uint8_t apuif_read_reg(uint32_t address)
@@ -199,4 +218,91 @@ int apuif_parse_apu_log(const char* filename)
     if (!entries) return -1;
     free(entries);
     return 0;
+}
+
+/* Memory allocation proxy - Linux: standard malloc/free */
+void *apuemu_malloc(uint32_t size)
+{
+    return malloc(size);
+}
+
+void apuemu_free(void *ptr)
+{
+    free(ptr);
+}
+
+/* --- Dual APU instance support --- */
+
+void apuif_init_sub(void)
+{
+    if (_sub_initialized) return;
+    if (!_initialized) {
+        printf("Error: main APU must be initialized before sub\n");
+        return;
+    }
+
+    _apu_sub = apu_create(0, _audio_frequency, 60, 8);
+    apu_getcontext(_apu_sub);
+
+    /* Restore main context */
+    apu_setcontext(_apu);
+
+    _sub_audio_fraction = 0;
+    _sub_initialized = 1;
+    printf("Sub APU initialized for Linux\n");
+}
+
+void apuif_select(int instance)
+{
+    if (instance >= 0 && instance < APUIF_INSTANCE_MAX) {
+        _current_instance = instance;
+    }
+}
+
+int apuif_process_mix(int16_t* buff, int len)
+{
+    /* Process main APU */
+    apu_setcontext(_apu);
+    int n = apuif_frame_sample_count();
+    if (n > len) {
+        printf("bad buffer size %d > %d\n", n, len);
+        return -1;
+    }
+
+    int16_t main_buf[528];
+    apu_process(main_buf, n);
+    uint8_t* b8 = (uint8_t*)main_buf;
+    for (int i = n - 1; i >= 0; i--) {
+        main_buf[i] = (b8[i] ^ 0x80) << 8;
+    }
+    apu_getcontext(_apu);
+
+    if (_sub_initialized) {
+        /* Process sub APU */
+        apu_setcontext(_apu_sub);
+
+        int16_t sub_buf[528];
+        apu_process(sub_buf, n);
+        uint8_t* b8s = (uint8_t*)sub_buf;
+        for (int i = n - 1; i >= 0; i--) {
+            sub_buf[i] = (b8s[i] ^ 0x80) << 8;
+        }
+        apu_getcontext(_apu_sub);
+
+        /* Restore main context */
+        apu_setcontext(_apu);
+
+        /* Mix: average of both channels, clamp to int16 range */
+        for (int i = 0; i < n; i++) {
+            int32_t mixed = (int32_t)main_buf[i] + (int32_t)sub_buf[i];
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            buff[i] = (int16_t)mixed;
+        }
+    } else {
+        /* No sub APU, just copy main */
+        memcpy(buff, main_buf, n * sizeof(int16_t));
+    }
+
+    return n;
 }

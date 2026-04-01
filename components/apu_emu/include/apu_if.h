@@ -65,6 +65,37 @@ void apuif_set_external_process(int flag);
 int apuif_ring_read(int16_t* out, int count);
 #endif
 
+/*
+ * Dual APU instance support for simultaneous playback.
+ * Instance 0: default (NSF/main music)
+ * Instance 1: secondary (FMSQ/effects)
+ *
+ * Before writing to an APU instance, call apuif_select(n).
+ * apuif_process_mix() processes both instances and mixes the output.
+ */
+#define APUIF_INSTANCE_MAIN   0
+#define APUIF_INSTANCE_SUB    1
+#define APUIF_INSTANCE_MAX    2
+
+/* Initialize secondary APU instance */
+void apuif_init_sub(void);
+
+/* Select which APU instance receives write_reg calls */
+void apuif_select(int instance);
+
+/* Process both APU instances and mix into output buffer.
+ * Returns number of samples written. */
+int apuif_process_mix(int16_t* buff, int len);
+
+/*
+ * Memory allocation proxy for apu_emu component.
+ * On ESP32, these map to heap_caps_malloc (PSRAM).
+ * On Linux, these map to standard malloc/free.
+ * Implemented in apu_if_linux.c / apu_if.cpp respectively.
+ */
+void *apuemu_malloc(uint32_t size);
+void  apuemu_free(void *ptr);
+
 #ifdef __cplusplus
 }
 #endif
