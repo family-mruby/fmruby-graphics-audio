@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 #include <stdint.h>
+
+#ifndef __linux__
 #include "fmrb_pin_assign.h"
 
 #define USE_I2S
@@ -16,6 +18,7 @@ extern "C" {
 #else
 #define AUDIO_PIN   FMRB_PIN_AUDIO_PWM
 #endif
+#endif /* !__linux__ */
 
 /* APU event types */
 typedef enum {
@@ -56,6 +59,11 @@ uint8_t apuif_read_reg(uint32_t address);
 void apuif_audio_write(const int16_t* s, int len, int channels);
 int apuif_use_external_process();
 void apuif_set_external_process(int flag);
+
+#ifdef __linux__
+/* Read samples from ring buffer (Linux/SDL2 only) */
+int apuif_ring_read(int16_t* out, int count);
+#endif
 
 #ifdef __cplusplus
 }

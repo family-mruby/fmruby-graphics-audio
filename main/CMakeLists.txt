@@ -50,10 +50,12 @@ set(REQUIRES
     fmrb_pin_assign
 )
 
+# Add apu_emu for all targets
+list(APPEND REQUIRES apu_emu)
+
 # Add ESP32-specific requirements
 if(NOT CONFIG_IDF_TARGET_LINUX)
     list(APPEND REQUIRES
-        apu_emu
         msgpack-esp32
         esp_littlefs
     )

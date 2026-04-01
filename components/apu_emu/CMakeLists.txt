@@ -1,9 +1,20 @@
 # Set required components based on target
 if (IDF_TARGET STREQUAL "linux")
-    # For Linux, create empty component (not used)
     idf_component_register(
+        SRCS "src/apu_if_linux.c"
+             "src/nofrendo/nes_apu.c"
         INCLUDE_DIRS "include"
+        PRIV_INCLUDE_DIRS
+            "src"
+            "src/nofrendo"
+        PRIV_REQUIRES esp_timer
     )
+
+    target_compile_options(__idf_apu_emu PRIVATE
+        -w
+        -Wno-error
+    )
+
     return()
 else()
     set(APU_REQUIRES

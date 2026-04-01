@@ -59,6 +59,11 @@ int user_func(bool* thread_running) {
 
 extern "C" int app_main(void)
 {
+    // Initialize SDL core before creating any tasks that use SDL subsystems.
+    // LovyanGFX will add SDL_INIT_VIDEO later in Panel_sdl::setup(),
+    // and audio_task will add SDL_INIT_AUDIO via SDL_InitSubSystem().
+    SDL_Init(0);
+
     // Disable SDL2 hardware cursor (we'll draw our own)
     SDL_ShowCursor(SDL_DISABLE);
 

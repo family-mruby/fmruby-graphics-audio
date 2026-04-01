@@ -4,8 +4,11 @@
 #include <string.h>
 #include <SDL2/SDL.h>
 #include "esp_log.h"
+#include "apu_if.h"
 
 static const char *TAG = "audio_handler";
+
+#define APU_SAMPLE_RATE 15720
 
 typedef struct {
     uint32_t music_id;
@@ -19,16 +22,33 @@ static uint8_t current_volume = 128;
 static music_track_t music_tracks[FMRB_MAX_MUSIC_TRACKS];
 static int track_count = 0;
 
-// Simple audio callback (placeholder)
-void audio_callback(void *userdata, Uint8 *stream, int len) {
-    // For now, just output silence
-    memset(stream, 0, len);
+/* SDL2 audio callback: read from APU ring buffer */
+static void audio_callback(void *userdata, Uint8 *stream, int len) {
+    int16_t *out = (int16_t *)stream;
+    int total_samples = len / sizeof(int16_t);
+    int mono_samples = total_samples / 2; /* stereo output */
+
+    int16_t mono_buf[512];
+    int remaining = mono_samples;
+    int out_pos = 0;
+
+    while (remaining > 0) {
+        int chunk = remaining > 512 ? 512 : remaining;
+        apuif_ring_read(mono_buf, chunk);
+
+        /* Mono to stereo conversion */
+        for (int i = 0; i < chunk; i++) {
+            out[out_pos++] = mono_buf[i]; /* L */
+            out[out_pos++] = mono_buf[i]; /* R */
+        }
+        remaining -= chunk;
+    }
 }
 
 int audio_handler_init(void) {
     SDL_AudioSpec want, have;
 
-    // Initialize SDL audio subsystem if not already initialized
+    /* Initialize SDL audio subsystem if not already initialized */
     if (!SDL_WasInit(SDL_INIT_AUDIO)) {
         if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
             ESP_LOGE(TAG, "Failed to initialize SDL audio subsystem: %s", SDL_GetError());
@@ -36,36 +56,42 @@ int audio_handler_init(void) {
         }
     }
 
-    // Clear music tracks
+    /* Clear music tracks */
     memset(music_tracks, 0, sizeof(music_tracks));
     track_count = 0;
 
-    // Setup audio specification
+    /* Setup audio specification matching APU output rate */
     SDL_zero(want);
-    want.freq = FMRB_AUDIO_SAMPLE_RATE;
+    want.freq = APU_SAMPLE_RATE;
     want.format = AUDIO_S16LSB;
-    want.channels = FMRB_AUDIO_CHANNELS;
-    want.samples = FMRB_AUDIO_BUFFER_SIZE;
+    want.channels = 2;
+    want.samples = 512;
     want.callback = audio_callback;
 
-    audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have,
+                                       SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (audio_device == 0) {
         ESP_LOGE(TAG, "Failed to open audio device: %s", SDL_GetError());
         return -1;
     }
 
-    ESP_LOGI(TAG, "Audio handler initialized: %d Hz, %d channels",
-           have.freq, have.channels);
+    ESP_LOGI(TAG, "Audio handler initialized: requested %d Hz, got %d Hz, %d channels",
+           APU_SAMPLE_RATE, have.freq, have.channels);
+
+    /* Start playback immediately */
+    SDL_PauseAudioDevice(audio_device, 0);
+
     return 0;
 }
 
 void audio_handler_cleanup(void) {
     if (audio_device) {
+        SDL_PauseAudioDevice(audio_device, 1);
         SDL_CloseAudioDevice(audio_device);
         audio_device = 0;
     }
 
-    // Free music tracks
+    /* Free music tracks */
     for (int i = 0; i < track_count; i++) {
         if (music_tracks[i].data) {
             free(music_tracks[i].data);
@@ -83,7 +109,7 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
         return -1;
     }
 
-    // Find existing track or create new one
+    /* Find existing track or create new one */
     int track_idx = -1;
     for (int i = 0; i < track_count; i++) {
         if (music_tracks[i].music_id == cmd->music_id) {
@@ -95,13 +121,11 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
     if (track_idx == -1) {
         track_idx = track_count++;
     } else {
-        // Free existing data
         if (music_tracks[track_idx].data) {
             free(music_tracks[track_idx].data);
         }
     }
 
-    // Store music data
     music_tracks[track_idx].music_id = cmd->music_id;
     music_tracks[track_idx].size = cmd->data_size;
     music_tracks[track_idx].data = malloc(cmd->data_size);
@@ -118,7 +142,6 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
 }
 
 static int process_play_command(const fmrb_audio_play_cmd_t *cmd) {
-    // Find music track
     for (int i = 0; i < track_count; i++) {
         if (music_tracks[i].music_id == cmd->music_id) {
             ESP_LOGI(TAG, "Playing music track %u", cmd->music_id);
@@ -156,7 +179,6 @@ static int process_resume_command(void) {
 static int process_volume_command(const fmrb_audio_volume_cmd_t *cmd) {
     current_volume = cmd->volume;
     ESP_LOGI(TAG, "Set volume to %u", cmd->volume);
-    // Note: SDL2 doesn't have built-in volume control, would need mixing
     return 0;
 }
 
