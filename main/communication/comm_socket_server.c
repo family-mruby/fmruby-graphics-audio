@@ -121,7 +121,10 @@ static int read_message(void) {
     static size_t buffer_pos = 0;
 
     // Read data into buffer
-    ssize_t bytes_read = read(client_fd, buffer + buffer_pos, BUFFER_SIZE - buffer_pos);
+    ssize_t bytes_read;
+    do {
+        bytes_read = read(client_fd, buffer + buffer_pos, BUFFER_SIZE - buffer_pos);
+    } while (bytes_read < 0 && errno == EINTR);
     if (bytes_read <= 0) {
         if (bytes_read == 0) {
             ESP_LOGI(TAG, "Client disconnected");
@@ -205,7 +208,10 @@ int socket_server_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_da
     }
 
     // Send to client
-    ssize_t written = write(client_fd, encoded_buffer, encoded_len);
+    ssize_t written;
+    do {
+        written = write(client_fd, encoded_buffer, encoded_len);
+    } while (written < 0 && errno == EINTR);
     if (written != (ssize_t)encoded_len) {
         ESP_LOGE(TAG, "Failed to write ACK response: %zd/%zu (client_fd=%d, errno=%d: %s)",
                    written, encoded_len, client_fd, errno, strerror(errno));

@@ -122,7 +122,10 @@ int input_socket_send_event(uint8_t type, const void* data, uint16_t len) {
         memcpy(packet + 3, data, len);
     }
 
-    ssize_t sent = send(g_client_fd, packet, 3 + len, MSG_NOSIGNAL);
+    ssize_t sent;
+    do {
+        sent = send(g_client_fd, packet, 3 + len, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
     if (sent < 0) {
         if (errno == EPIPE || errno == ECONNRESET) {
             ESP_LOGI(TAG, "Client disconnected");
