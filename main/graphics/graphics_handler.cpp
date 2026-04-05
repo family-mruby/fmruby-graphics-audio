@@ -98,7 +98,9 @@ static volatile bool g_graphics_initialized = false;  // Flag to prevent multipl
 
 typedef struct {
     uint16_t image_id;
-    LGFX_Sprite* sprite;
+    LGFX_Sprite* sprite;    // Decoded sprite (NULL if raw PNG mode)
+    uint8_t *png_data;      // Raw PNG data (for direct drawPng)
+    uint32_t png_data_len;  // Raw PNG data length
     uint16_t width;
     uint16_t height;
     bool in_use;
@@ -1104,34 +1106,27 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 if (png_h > (uint16_t)g_lgfx->height()) png_h = g_lgfx->height();
             }
 
-            // Create sprite with actual image dimensions
-            // Use PSRAM for sprite buffer (SRAM is limited on ESP32-WROVER)
-            LGFX_Sprite *sprite = new LGFX_Sprite(g_lgfx);
-            sprite->setColorDepth(lgfx::color_depth_t::rgb332_1Byte);
-            sprite->setPsram(true);
-            sprite->createSprite(png_w, png_h);
-            sprite->fillSprite(IMAGE_TRANSPARENT_COLOR);
-            sprite->drawPng(png_data, file_size, 0, 0);
-
-            free(png_data);
-
-            // Store in image store
+            // Store raw PNG data for direct drawPng at draw time.
+            // This ensures correct color rendering because drawPng handles
+            // color conversion and alpha blending directly on the target canvas.
             uint16_t new_id = g_next_image_id++;
             g_image_store[slot].image_id = new_id;
-            g_image_store[slot].sprite = sprite;
-            g_image_store[slot].width = sprite->width();
-            g_image_store[slot].height = sprite->height();
+            g_image_store[slot].sprite = nullptr;
+            g_image_store[slot].png_data = png_data;  // Transfer ownership
+            g_image_store[slot].png_data_len = (uint32_t)file_size;
+            g_image_store[slot].width = png_w;
+            g_image_store[slot].height = png_h;
             g_image_store[slot].in_use = true;
 
             ESP_LOGI(TAG, "CREATE_IMAGE_FROM_FILE: id=%u, path=%s, %ux%u",
-                    new_id, full_path, sprite->width(), sprite->height());
+                    new_id, full_path, png_w, png_h);
 
             // Send ACK with image_id
             {
                 fmrb_link_graphics_image_created_t resp = {
                     .image_id = new_id,
-                    .width = (uint16_t)sprite->width(),
-                    .height = (uint16_t)sprite->height()
+                    .width = png_w,
+                    .height = png_h
                 };
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
                 socket_server_send_ack(msg_type, seq, (const uint8_t *)&resp, sizeof(resp));
@@ -1158,27 +1153,32 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                     break;
                 }
             }
-            if (!entry || !entry->sprite) {
+            if (!entry) {
                 ESP_LOGE(TAG, "DRAW_IMAGE: image_id=%u not found", cmd->image_id);
                 return -1;
             }
 
-            // Draw to target canvas or screen
-            if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                entry->sprite->pushSprite(g_lgfx, cmd->x, cmd->y);
-                ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) on screen",
-                        cmd->image_id, cmd->x, cmd->y);
-            } else {
-                canvas_state_t *canvas = canvas_state_find(cmd->canvas_id);
-                if (canvas && canvas->draw_buffer) {
-                    entry->sprite->pushSprite(canvas->draw_buffer, cmd->x, cmd->y);
-                    canvas->dirty = true;
-                    ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) on canvas %u",
-                            cmd->image_id, cmd->x, cmd->y, cmd->canvas_id);
+            // Draw PNG directly onto target (correct color/alpha handling)
+            if (entry->png_data && entry->png_data_len > 0) {
+                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
+                    g_lgfx->drawPng(entry->png_data, entry->png_data_len, cmd->x, cmd->y);
+                    ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) on screen",
+                            cmd->image_id, cmd->x, cmd->y);
                 } else {
-                    ESP_LOGE(TAG, "DRAW_IMAGE: canvas %u not found", cmd->canvas_id);
-                    return -1;
+                    canvas_state_t *canvas = canvas_state_find(cmd->canvas_id);
+                    if (canvas && canvas->draw_buffer) {
+                        canvas->draw_buffer->drawPng(entry->png_data, entry->png_data_len, cmd->x, cmd->y);
+                        canvas->dirty = true;
+                        ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) on canvas %u",
+                                cmd->image_id, cmd->x, cmd->y, cmd->canvas_id);
+                    } else {
+                        ESP_LOGE(TAG, "DRAW_IMAGE: canvas %u not found", cmd->canvas_id);
+                        return -1;
+                    }
                 }
+            } else {
+                ESP_LOGE(TAG, "DRAW_IMAGE: image_id=%u has no data", cmd->image_id);
+                return -1;
             }
             return 0;
         }
@@ -1197,8 +1197,13 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                         g_image_store[i].sprite->deleteSprite();
                         delete g_image_store[i].sprite;
                     }
+                    if (g_image_store[i].png_data) {
+                        free(g_image_store[i].png_data);
+                    }
                     g_image_store[i].in_use = false;
                     g_image_store[i].sprite = nullptr;
+                    g_image_store[i].png_data = nullptr;
+                    g_image_store[i].png_data_len = 0;
                     ESP_LOGI(TAG, "DELETE_IMAGE: id=%u deleted", cmd->image_id);
                     return 0;
                 }
