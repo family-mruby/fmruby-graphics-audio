@@ -19,6 +19,7 @@ extern "C" {
 #include "socket_server.h"  // For socket_server_send_ack
 #else
 #include "comm_interface.h"
+#include "esp_heap_caps.h"
 #endif
 }
 
@@ -91,6 +92,26 @@ static const uint8_t cursor_pattern[16][16] = {
 // Screen double buffer for compositing all canvases
 static uint16_t g_current_target = FMRB_CANVAS_SCREEN;  // 0=screen, other=canvas
 static volatile bool g_graphics_initialized = false;  // Flag to prevent multiple initializations (volatile for cross-task access)
+
+// Image store for CREATE_IMAGE_FROM_FILE / DRAW_IMAGE / DELETE_IMAGE
+#define MAX_IMAGE_STORE 8
+
+typedef struct {
+    uint16_t image_id;
+    LGFX_Sprite* sprite;
+    uint16_t width;
+    uint16_t height;
+    bool in_use;
+} image_store_entry_t;
+
+static image_store_entry_t g_image_store[MAX_IMAGE_STORE];
+static uint16_t g_next_image_id = 1;
+
+// Transparent color key for image sprites (RGB332)
+// Used as background fill before drawPng; transparent pixels remain this color.
+// pushSprite skips pixels matching this color.
+// 0xFE = R:7 G:7 B:2 -- near-white, unlikely to appear in actual image content.
+#define IMAGE_TRANSPARENT_COLOR 0xFE
 
 // Canvas helper functions
 static canvas_state_t* canvas_state_find(uint16_t canvas_id) {
@@ -993,6 +1014,198 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 return 0;
             }
             break;
+
+        case FMRB_LINK_GFX_CREATE_IMAGE_FROM_FILE: {
+            if (size < sizeof(fmrb_link_graphics_create_image_from_file_t)) {
+                ESP_LOGE(TAG, "CREATE_IMAGE_FROM_FILE: payload too small");
+                return -1;
+            }
+            const fmrb_link_graphics_create_image_from_file_t *cmd =
+                (const fmrb_link_graphics_create_image_from_file_t *)data;
+            const char *path_data = (const char *)(data + sizeof(*cmd));
+            uint16_t path_len = cmd->path_len;
+
+            if (sizeof(*cmd) + path_len > size) {
+                ESP_LOGE(TAG, "CREATE_IMAGE_FROM_FILE: path extends beyond payload");
+                return -1;
+            }
+
+            // Build full path (skip leading '/' to avoid double-slash)
+            const char *p = path_data;
+            int plen = (int)path_len;
+            if (plen > 0 && p[0] == '/') { p++; plen--; }
+
+            char full_path[256];
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+            snprintf(full_path, sizeof(full_path), "flash/%.*s", plen, p);
+#else
+            snprintf(full_path, sizeof(full_path), "/flash/%.*s", plen, p);
+#endif
+
+            // Find free slot
+            int slot = -1;
+            for (int i = 0; i < MAX_IMAGE_STORE; i++) {
+                if (!g_image_store[i].in_use) {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                ESP_LOGE(TAG, "CREATE_IMAGE_FROM_FILE: image store full");
+                return -1;
+            }
+
+            // Read PNG file
+            FILE *fp = fopen(full_path, "rb");
+            if (!fp) {
+                ESP_LOGE(TAG, "CREATE_IMAGE_FROM_FILE: failed to open %s", full_path);
+                return -1;
+            }
+
+            fseek(fp, 0, SEEK_END);
+            long file_size = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+
+            if (file_size <= 0 || file_size > 200000) {
+                ESP_LOGE(TAG, "CREATE_IMAGE_FROM_FILE: invalid file size %ld", file_size);
+                fclose(fp);
+                return -1;
+            }
+
+            uint8_t *png_data;
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+            png_data = (uint8_t *)malloc(file_size);
+#else
+            png_data = (uint8_t *)heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM);
+#endif
+            if (!png_data) {
+                ESP_LOGE(TAG, "CREATE_IMAGE_FROM_FILE: PSRAM alloc failed for %ld bytes", file_size);
+                fclose(fp);
+                return -1;
+            }
+
+            size_t bytes_read = fread(png_data, 1, file_size, fp);
+            fclose(fp);
+
+            if ((long)bytes_read != file_size) {
+                ESP_LOGE(TAG, "CREATE_IMAGE_FROM_FILE: read error");
+                free(png_data);
+                return -1;
+            }
+
+            // Get PNG dimensions from header (bytes 16-23: width and height as 4-byte big-endian)
+            uint16_t png_w = g_lgfx->width();
+            uint16_t png_h = g_lgfx->height();
+            if (file_size >= 24 && png_data[0] == 0x89 && png_data[1] == 0x50) {
+                png_w = (png_data[16] << 24) | (png_data[17] << 16) | (png_data[18] << 8) | png_data[19];
+                png_h = (png_data[20] << 24) | (png_data[21] << 16) | (png_data[22] << 8) | png_data[23];
+                // Clamp to screen size
+                if (png_w > (uint16_t)g_lgfx->width()) png_w = g_lgfx->width();
+                if (png_h > (uint16_t)g_lgfx->height()) png_h = g_lgfx->height();
+            }
+
+            // Create sprite with actual image dimensions
+            // Use PSRAM for sprite buffer (SRAM is limited on ESP32-WROVER)
+            LGFX_Sprite *sprite = new LGFX_Sprite(g_lgfx);
+            sprite->setColorDepth(lgfx::color_depth_t::rgb332_1Byte);
+            sprite->setPsram(true);
+            sprite->createSprite(png_w, png_h);
+            sprite->fillSprite(IMAGE_TRANSPARENT_COLOR);
+            sprite->drawPng(png_data, file_size, 0, 0);
+
+            free(png_data);
+
+            // Store in image store
+            uint16_t new_id = g_next_image_id++;
+            g_image_store[slot].image_id = new_id;
+            g_image_store[slot].sprite = sprite;
+            g_image_store[slot].width = sprite->width();
+            g_image_store[slot].height = sprite->height();
+            g_image_store[slot].in_use = true;
+
+            ESP_LOGI(TAG, "CREATE_IMAGE_FROM_FILE: id=%u, path=%s, %ux%u",
+                    new_id, full_path, sprite->width(), sprite->height());
+
+            // Send ACK with image_id
+            {
+                fmrb_link_graphics_image_created_t resp = {
+                    .image_id = new_id,
+                    .width = (uint16_t)sprite->width(),
+                    .height = (uint16_t)sprite->height()
+                };
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+                socket_server_send_ack(msg_type, seq, (const uint8_t *)&resp, sizeof(resp));
+#else
+                COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t *)&resp, sizeof(resp));
+#endif
+            }
+            return 1;  // ACK already sent
+        }
+
+        case FMRB_LINK_GFX_DRAW_IMAGE: {
+            if (size < sizeof(fmrb_link_graphics_draw_image_t)) {
+                ESP_LOGE(TAG, "DRAW_IMAGE: payload too small");
+                return -1;
+            }
+            const fmrb_link_graphics_draw_image_t *cmd =
+                (const fmrb_link_graphics_draw_image_t *)data;
+
+            // Find image
+            image_store_entry_t *entry = NULL;
+            for (int i = 0; i < MAX_IMAGE_STORE; i++) {
+                if (g_image_store[i].in_use && g_image_store[i].image_id == cmd->image_id) {
+                    entry = &g_image_store[i];
+                    break;
+                }
+            }
+            if (!entry || !entry->sprite) {
+                ESP_LOGE(TAG, "DRAW_IMAGE: image_id=%u not found", cmd->image_id);
+                return -1;
+            }
+
+            // Draw to target canvas or screen
+            if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
+                entry->sprite->pushSprite(g_lgfx, cmd->x, cmd->y);
+                ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) on screen",
+                        cmd->image_id, cmd->x, cmd->y);
+            } else {
+                canvas_state_t *canvas = canvas_state_find(cmd->canvas_id);
+                if (canvas && canvas->draw_buffer) {
+                    entry->sprite->pushSprite(canvas->draw_buffer, cmd->x, cmd->y);
+                    canvas->dirty = true;
+                    ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) on canvas %u",
+                            cmd->image_id, cmd->x, cmd->y, cmd->canvas_id);
+                } else {
+                    ESP_LOGE(TAG, "DRAW_IMAGE: canvas %u not found", cmd->canvas_id);
+                    return -1;
+                }
+            }
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_DELETE_IMAGE: {
+            if (size < sizeof(fmrb_link_graphics_delete_image_t)) {
+                ESP_LOGE(TAG, "DELETE_IMAGE: payload too small");
+                return -1;
+            }
+            const fmrb_link_graphics_delete_image_t *cmd =
+                (const fmrb_link_graphics_delete_image_t *)data;
+
+            for (int i = 0; i < MAX_IMAGE_STORE; i++) {
+                if (g_image_store[i].in_use && g_image_store[i].image_id == cmd->image_id) {
+                    if (g_image_store[i].sprite) {
+                        g_image_store[i].sprite->deleteSprite();
+                        delete g_image_store[i].sprite;
+                    }
+                    g_image_store[i].in_use = false;
+                    g_image_store[i].sprite = nullptr;
+                    ESP_LOGI(TAG, "DELETE_IMAGE: id=%u deleted", cmd->image_id);
+                    return 0;
+                }
+            }
+            ESP_LOGW(TAG, "DELETE_IMAGE: id=%u not found", cmd->image_id);
+            return 0;
+        }
 
         default:
             ESP_LOGE(TAG, "Unknown graphics command: 0x%02x", cmd_type);

@@ -7,6 +7,7 @@ set(SRCS
     "common/fmrb_link_cobs.c"
     "common/fmrb_link_fragment.c"
     "mempool/fmrb_mempool.c"
+    "file_transfer/file_transfer_handler.c"
 )
 
 # Add platform-specific sources
@@ -43,6 +44,7 @@ set(INCLUDE_DIRS
     "input_linux"
     "mempool"
     "tasks"
+    "file_transfer"
 )
 
 set(REQUIRES

@@ -2,6 +2,7 @@
 #include "fmrb_link_protocol.h"
 #include "graphics_handler.h"
 #include "audio_handler.h"
+#include "file_transfer_handler.h"
 #include "comm_interface.h"
 #include "comm_message.h"
 #include "freertos/FreeRTOS.h"
@@ -103,6 +104,27 @@ static int handle_graphics_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
 }
 
 /**
+ * Handle FILE_TRANSFER messages
+ */
+static int handle_file_transfer_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
+                                        const uint8_t *payload, size_t payload_len) {
+    const comm_interface_t *comm = comm_get_interface();
+    if (!comm) {
+        ESP_LOGE(TAG, "No comm interface available");
+        return -1;
+    }
+
+    int result = file_transfer_handler_process(type, sub_cmd, seq, payload, payload_len);
+
+    if (result == 0) {
+        comm->send_ack(type, seq, NULL, 0);
+    }
+    // result > 0: ACK already sent by handler (e.g. STATUS with response data)
+
+    return (result >= 0) ? 0 : result;
+}
+
+/**
  * Handle AUDIO messages
  */
 static int handle_audio_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
@@ -132,6 +154,9 @@ static int process_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
 
         case FMRB_LINK_TYPE_AUDIO:
             return handle_audio_message(type, seq, sub_cmd, payload, payload_len);
+
+        case FMRB_LINK_TYPE_FILE_TRANSFER:
+            return handle_file_transfer_message(type, seq, sub_cmd, payload, payload_len);
 
         default:
             ESP_LOGE(TAG, "Unknown message type: %u", type);
