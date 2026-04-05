@@ -2,6 +2,7 @@
 #include "freertos/task.h"
 #include "freertos/message_buffer.h"
 #include "esp_timer.h"
+#include "esp_littlefs.h"
 #include "communication/comm_interface.h"
 #include "communication/comm_message.h"
 #include "common/fmrb_task_config.h"
@@ -16,6 +17,20 @@ static const char *TAG = "main";
 extern "C" void app_main(void)
 {
   ESP_LOGI(TAG, "Starting on core %d", xPortGetCoreID());
+
+  // Mount LittleFS once before any task starts
+  esp_vfs_littlefs_conf_t fs_conf = {
+      .base_path = "/flash",
+      .partition_label = "storage",
+      .format_if_mount_failed = true,
+      .dont_mount = false,
+  };
+  esp_err_t fs_ret = esp_vfs_littlefs_register(&fs_conf);
+  if (fs_ret != ESP_OK) {
+      ESP_LOGE(TAG, "LittleFS mount failed: %d", fs_ret);
+  } else {
+      ESP_LOGI(TAG, "LittleFS mounted at /flash");
+  }
 
   BaseType_t ret;
 

@@ -8,7 +8,6 @@
 #include <string.h>
 
 #include "esp_system.h"
-#include "esp_littlefs.h"
 
 #include "apu_if.h"
 #include "nsf_player.h"
@@ -38,21 +37,6 @@ static void update_audio(void)
     apuif_audio_write(abuffer, sample_count, 1);
 }
 
-static esp_err_t mount_filesystem(void)
-{
-    esp_vfs_littlefs_conf_t conf = {
-        .base_path = "/flash",
-        .partition_label = "storage",
-        .format_if_mount_failed = true,
-        .dont_mount = false,
-    };
-    esp_err_t e = esp_vfs_littlefs_register(&conf);
-    if (e != ESP_OK) {
-        printf("Failed to mount or format filesystem: %d.\n", e);
-    }
-    vTaskDelay(1);
-    return e;
-}
 
 static int load_nsf_from_file(const char *path)
 {
@@ -107,8 +91,7 @@ void audio_check_impl(void)
     /* APU and audio output hardware init */
     apuif_init();
 
-    /* Mount filesystem and load NSF */
-    mount_filesystem();
+    /* LittleFS is mounted by app_main before tasks start */
 
     if (load_nsf_from_file(NSF_FILE_PATH) == 0) {
         nsf_player_start(g_nsf_player, 0);

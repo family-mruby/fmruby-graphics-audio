@@ -7,3 +7,4 @@ storage/*
 .vscode/*
 ws/
 .rake_tasks~
+ .serial_port

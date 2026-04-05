@@ -50,23 +50,9 @@ static int ensure_fs_mounted(void)
     ESP_LOGI(TAG, "Using local directory: %s", FILE_TRANSFER_BASE_PATH);
     return 0;
 #else
-    esp_vfs_littlefs_conf_t conf = {
-        .base_path = FILE_TRANSFER_BASE_PATH,
-        .partition_label = "storage",
-        .format_if_mount_failed = true,
-        .dont_mount = false,
-    };
-
-    esp_err_t ret = esp_vfs_littlefs_register(&conf);
-    if (ret == ESP_OK || ret == ESP_ERR_INVALID_STATE) {
-        // ESP_ERR_INVALID_STATE means already mounted
-        g_fs_mounted = true;
-        ESP_LOGI(TAG, "LittleFS mounted at %s", FILE_TRANSFER_BASE_PATH);
-        return 0;
-    }
-
-    ESP_LOGE(TAG, "Failed to mount LittleFS: %d", ret);
-    return -1;
+    // On ESP32, LittleFS is mounted by app_main before tasks start
+    g_fs_mounted = true;
+    return 0;
 #endif
 }
 
