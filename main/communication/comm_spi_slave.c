@@ -53,6 +53,9 @@ static volatile uint8_t s_last_ack_seq = 0;
 static uint8_t s_resp_data[SPI_MAX_DATA];
 static volatile uint8_t s_resp_data_len = 0;
 
+// Set during COBS parsing when any message has ACK_REQUIRED flag
+static volatile bool s_ack_required_in_frame = false;
+
 // Pending transaction counter (ISR decrements, task increments)
 static portMUX_TYPE s_pending_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile int s_pending_trans = 0;
@@ -142,6 +145,11 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
         return 0;
     }
 
+    // Track whether any message in this frame requires a per-message ACK
+    if (msg.type & FMRB_LINK_FLAG_ACK_REQUIRED) {
+        s_ack_required_in_frame = true;
+    }
+
     ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
                msg.type, msg.seq, msg.sub_cmd, payload_len);
 
@@ -168,8 +176,11 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     spi_frame_t *f = (spi_frame_t *)completed_trans->rx_buffer;
 
     // Validate frame header + CRC16 and process COBS payload
+    bool data_frame_received = false;
+    s_ack_required_in_frame = false;
     if (spi_frame_validate(f) && f->data_len > 0) {
         s_data_trans_count++;
+        data_frame_received = true;
 
         // Update status to RX_OK immediately (master can see via polling)
         s_last_ack_seq = f->seq;
@@ -202,7 +213,9 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
     }
     // magic mismatch or data_len==0: dummy polling → no status change
 
-    // Dequeue ACK response from message_handler_task (if available)
+    // Dequeue ACK response from message_handler_task (if available).
+    // Only CONTROL commands (VERSION, INIT_DISPLAY) enqueue here;
+    // GRAPHICS commands do not send per-message ACKs.
     ack_queue_item_t ack_item;
     if (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
         s_last_ack_seq = ack_item.ack_seq;
@@ -211,6 +224,11 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
         if (ack_item.data_len > 0) {
             memcpy(s_resp_data, ack_item.data, ack_item.data_len);
         }
+    } else if (data_frame_received && s_last_status == STS_RX_OK && !s_ack_required_in_frame) {
+        // No per-message ACK expected (fire-and-forget, e.g. GFX batch).
+        // Promote to APP_OK at frame level so the master does not
+        // have to poll indefinitely for a matching ACK.
+        s_last_status = STS_APP_OK;
     }
 
     // Fill TX buffer with response → re-queue → update READY

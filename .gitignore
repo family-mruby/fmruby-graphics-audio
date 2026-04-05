@@ -6,3 +6,4 @@ dependencies.lock
 storage/*
 .vscode/*
 ws/
+.rake_tasks~

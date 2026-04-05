@@ -38,8 +38,10 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                 ESP_LOGI(TAG, "VERSION check: remote=%d, local=%d, seq=%u",
                        remote_version, local_version, seq);
 
-                // Send version response via ACK
-                int result = comm->send_ack(type, seq, &local_version, sizeof(local_version));
+                // Send version response via ACK (CONTROL always has ACK_REQUIRED)
+                int result = (type & FMRB_LINK_FLAG_ACK_REQUIRED)
+                    ? comm->send_ack(type, seq, &local_version, sizeof(local_version))
+                    : 0;
 
                 if (result == 0) {
                     ESP_LOGI(TAG, "VERSION ACK sent successfully");
@@ -63,8 +65,7 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
 
                 int result = init_display_callback(init_cmd->width, init_cmd->height, init_cmd->color_depth);
 
-                // Send ACK to prevent retransmission
-                if (result == 0) {
+                if (result == 0 && (type & FMRB_LINK_FLAG_ACK_REQUIRED)) {
                     comm->send_ack(type, seq, NULL, 0);
                 }
                 return result;
@@ -91,14 +92,17 @@ static int handle_graphics_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
     }
 
     // Pass to graphics handler
-    // Return convention: 0=success (ACK not sent), >0=success (ACK already sent), <0=error
     int result = graphics_handler_process_command(type, sub_cmd, seq, payload, payload_len);
 
-    if (result == 0) {
-        // Command succeeded, ACK not yet sent
-        comm->send_ack(type, seq, NULL, 0);
+    // Only send per-message ACK when ACK_REQUIRED flag is set (e.g. CREATE_CANVAS).
+    // Batch drawing commands are sent without this flag; their frame-level
+    // ACK (STS_APP_OK) is handled by comm_spi_slave.
+    if (type & FMRB_LINK_FLAG_ACK_REQUIRED) {
+        if (result == 0) {
+            comm->send_ack(type, seq, NULL, 0);
+        }
+        // result > 0: ACK already sent by handler (e.g. CREATE_CANVAS with canvas_id)
     }
-    // result > 0: ACK already sent by handler (e.g. CREATE_CANVAS with canvas_id)
 
     return (result >= 0) ? 0 : result;
 }
@@ -116,10 +120,12 @@ static int handle_file_transfer_message(uint8_t type, uint8_t seq, uint8_t sub_c
 
     int result = file_transfer_handler_process(type, sub_cmd, seq, payload, payload_len);
 
-    if (result == 0) {
-        comm->send_ack(type, seq, NULL, 0);
+    if (type & FMRB_LINK_FLAG_ACK_REQUIRED) {
+        if (result == 0) {
+            comm->send_ack(type, seq, NULL, 0);
+        }
+        // result > 0: ACK already sent by handler (e.g. STATUS with response data)
     }
-    // result > 0: ACK already sent by handler (e.g. STATUS with response data)
 
     return (result >= 0) ? 0 : result;
 }
@@ -142,8 +148,8 @@ static int handle_audio_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
  */
 static int process_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                            const uint8_t *payload, size_t payload_len) {
-    // Strip ACK_REQUIRED flag for type matching
-    uint8_t base_type = type & 0x7F;
+    // Strip flag bits (ACK_REQUIRED=0x20, CHUNKED=0x40) for type matching
+    uint8_t base_type = type & ~(FMRB_LINK_FLAG_ACK_REQUIRED | FMRB_LINK_FLAG_CHUNKED);
 
     switch (base_type) {
         case FMRB_LINK_TYPE_CONTROL:
