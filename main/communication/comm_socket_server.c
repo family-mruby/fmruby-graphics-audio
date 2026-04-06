@@ -23,7 +23,7 @@ static int server_fd = -1;
 static int client_fd = -1;
 static int server_running = 0;
 
-#define SOCKET_PATH "/tmp/fmrb_socket"
+#define SOCKET_PATH "/var/run/fmrb/fmrb_socket"
 #define BUFFER_SIZE 4096
 
 static int create_socket_server(void) {

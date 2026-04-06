@@ -17,7 +17,7 @@
 
 static const char *TAG = "input_socket";
 
-#define INPUT_SOCKET_PATH "/tmp/fmrb_input_socket"
+#define INPUT_SOCKET_PATH "/var/run/fmrb/fmrb_input_socket"
 #define MAX_PACKET_SIZE 512
 
 static int g_server_fd = -1;

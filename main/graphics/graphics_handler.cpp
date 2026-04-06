@@ -240,10 +240,20 @@ static void graphics_handler_render_frame_internal() {
     // Sort canvases by Z-order (low to high)
     canvas_sort_by_zorder();
 
-    LGFX_Sprite* screen_buffer = g_canvases[0].render_buffer; //system GUI canvas
-    if (!screen_buffer) {
-        return;  // Canvas not fully initialized yet
+    // Find background canvas: lowest z_order canvas with a valid render buffer.
+    // Prefer visible canvas, but fall back to any canvas with a buffer so that
+    // the display shows content even before the first present() is received.
+    canvas_state_t* bg_canvas = NULL;
+    for (size_t i = 0; i < g_canvas_count; i++) {
+        if (g_canvases[i].render_buffer) {
+            bg_canvas = &g_canvases[i];
+            break;
+        }
     }
+    if (!bg_canvas) {
+        return;  // No canvas with buffer ready yet
+    }
+    LGFX_Sprite* screen_buffer = bg_canvas->render_buffer;
 
     // Restore pixels under previous cursor before compositing
     if (g_cursor_drawn && g_cursor_save) {
@@ -251,9 +261,10 @@ static void graphics_handler_render_frame_internal() {
         g_cursor_drawn = false;
     }
 
-    // Composite all visible canvases to screen buffer (NOT to g_lgfx directly)
-    for (size_t i = 1; i < g_canvas_count; i++) {
+    // Composite all other visible canvases onto the background canvas
+    for (size_t i = 0; i < g_canvas_count; i++) {
         canvas_state_t* canvas = &g_canvases[i];
+        if (canvas == bg_canvas) continue;
         if (canvas->is_visible && canvas->render_buffer) {
             ESP_LOGD(TAG, "Composite canvas ID=%u to screen buffer at (%d,%d), active_size=%dx%d, z_order=%d",
                     canvas->canvas_id, canvas->push_x, canvas->push_y,
