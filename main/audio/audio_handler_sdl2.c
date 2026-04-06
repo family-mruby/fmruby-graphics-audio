@@ -142,9 +142,19 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
 }
 
 static int process_play_command(const fmrb_audio_play_cmd_t *cmd) {
+    ESP_LOGI(TAG, "Play command: music_id=%u", cmd->music_id);
+
+    // Start NSF player with the requested song
+    int ret = audio_task_nsf_play((int)cmd->music_id);
+    if (ret == 0) {
+        current_status = FMRB_AUDIO_STATUS_PLAYING;
+        return 0;
+    }
+
+    // Fallback: check loaded music tracks
     for (int i = 0; i < track_count; i++) {
         if (music_tracks[i].music_id == cmd->music_id) {
-            ESP_LOGI(TAG, "Playing music track %u", cmd->music_id);
+            ESP_LOGI(TAG, "Playing loaded track %u", cmd->music_id);
             current_status = FMRB_AUDIO_STATUS_PLAYING;
             SDL_PauseAudioDevice(audio_device, 0);
             return 0;
@@ -157,8 +167,8 @@ static int process_play_command(const fmrb_audio_play_cmd_t *cmd) {
 
 static int process_stop_command(void) {
     ESP_LOGI(TAG, "Stopping audio playback");
+    audio_task_nsf_stop();
     current_status = FMRB_AUDIO_STATUS_STOPPED;
-    SDL_PauseAudioDevice(audio_device, 1);
     return 0;
 }
 

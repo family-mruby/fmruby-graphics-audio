@@ -41,6 +41,18 @@ void audio_handler_set_volume(uint8_t volume);
 
 void audio_check_impl(void);
 
+/**
+ * @brief Start NSF playback (called from audio command handler)
+ * @param song Song index to play
+ * @return 0 on success, -1 on error
+ */
+int audio_task_nsf_play(int song);
+
+/**
+ * @brief Stop NSF playback
+ */
+void audio_task_nsf_stop(void);
+
 #ifdef __cplusplus
 }
 #endif

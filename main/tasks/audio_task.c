@@ -38,12 +38,11 @@ void audio_task(void *pvParameters) {
     /* Initialize main APU (instance 0: NSF) */
     apuif_init();
 
-    /* Load NSF file on main APU instance */
+    /* Load NSF file on main APU instance (playback starts on command) */
     g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
     if (g_nsf_player) {
         if (nsf_player_load(g_nsf_player, NSF_FILE_PATH) == 0) {
-            nsf_player_start(g_nsf_player, 0);
-            ESP_LOGI(TAG, "NSF loaded: %d songs", g_nsf_player->header.total_songs);
+            ESP_LOGI(TAG, "NSF loaded: %d songs (waiting for play command)", g_nsf_player->header.total_songs);
         } else {
             ESP_LOGW(TAG, "No NSF file at %s", NSF_FILE_PATH);
             apuemu_free(g_nsf_player);
@@ -58,7 +57,8 @@ void audio_task(void *pvParameters) {
     if (g_fmsq_player) {
         if (fmsq_player_load(g_fmsq_player, FMSQ_FILE_PATH) == 0) {
             fmsq_player_reset(g_fmsq_player);
-            ESP_LOGI(TAG, "FMSQ loaded: %d frames", g_fmsq_player->frame_count);
+            g_fmsq_player->playing = 0;  /* Wait for play command */
+            ESP_LOGI(TAG, "FMSQ loaded: %d frames (waiting for play command)", g_fmsq_player->frame_count);
         } else {
             ESP_LOGW(TAG, "No FMSQ file at %s", FMSQ_FILE_PATH);
             apuemu_free(g_fmsq_player);
@@ -109,11 +109,37 @@ void audio_task(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
+int audio_task_nsf_play(int song) {
+    if (!g_nsf_player) {
+        ESP_LOGW(TAG, "NSF player not loaded");
+        return -1;
+    }
+    ESP_LOGI(TAG, "NSF play: song=%d", song);
+    nsf_player_start(g_nsf_player, song);
+    return 0;
+}
+
+void audio_task_nsf_stop(void) {
+    if (g_nsf_player) {
+        ESP_LOGI(TAG, "NSF stop");
+        g_nsf_player->playing = 0;
+    }
+}
+
 #else /* ESP32 */
 
 void audio_task(void *pvParameters) {
     ESP_LOGI(TAG, "Audio task started on core %d", xPortGetCoreID());
     audio_check_impl();
+}
+
+int audio_task_nsf_play(int song) {
+    // TODO: Implement for ESP32
+    return -1;
+}
+
+void audio_task_nsf_stop(void) {
+    // TODO: Implement for ESP32
 }
 
 #endif /* CONFIG_IDF_TARGET_LINUX */
