@@ -42,11 +42,11 @@ void audio_handler_set_volume(uint8_t volume);
 void audio_check_impl(void);
 
 /**
- * @brief Start NSF playback (called from audio command handler)
- * @param song Song index to play
+ * @brief Start NSF playback from file path (called from audio command handler)
+ * @param path NSF file path (relative to flash, e.g. "/data/test.nsf")
  * @return 0 on success, -1 on error
  */
-int audio_task_nsf_play(int song);
+int audio_task_nsf_play(const char *path);
 
 /**
  * @brief Stop NSF playback

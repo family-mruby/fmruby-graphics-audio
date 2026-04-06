@@ -141,28 +141,25 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
     return 0;
 }
 
-static int process_play_command(const fmrb_audio_play_cmd_t *cmd) {
-    ESP_LOGI(TAG, "Play command: music_id=%u", cmd->music_id);
+static int process_play_command(const fmrb_audio_play_cmd_t *cmd, size_t total_size) {
+    // Extract path from command
+    if (total_size < sizeof(fmrb_audio_play_cmd_t) + cmd->path_len) {
+        ESP_LOGE(TAG, "Play command too short");
+        return -1;
+    }
 
-    // Start NSF player with the requested song
-    int ret = audio_task_nsf_play((int)cmd->music_id);
+    char path[128];
+    int len = cmd->path_len < sizeof(path) - 1 ? cmd->path_len : sizeof(path) - 1;
+    memcpy(path, cmd->path, len);
+    path[len] = '\0';
+
+    ESP_LOGI(TAG, "Play command: path=%s", path);
+
+    int ret = audio_task_nsf_play(path);
     if (ret == 0) {
         current_status = FMRB_AUDIO_STATUS_PLAYING;
-        return 0;
     }
-
-    // Fallback: check loaded music tracks
-    for (int i = 0; i < track_count; i++) {
-        if (music_tracks[i].music_id == cmd->music_id) {
-            ESP_LOGI(TAG, "Playing loaded track %u", cmd->music_id);
-            current_status = FMRB_AUDIO_STATUS_PLAYING;
-            SDL_PauseAudioDevice(audio_device, 0);
-            return 0;
-        }
-    }
-
-    ESP_LOGE(TAG, "Music track %u not found", cmd->music_id);
-    return -1;
+    return ret;
 }
 
 static int process_stop_command(void) {
@@ -212,7 +209,7 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
 
         case FMRB_AUDIO_CMD_PLAY:
             if (size >= sizeof(fmrb_audio_play_cmd_t)) {
-                return process_play_command((const fmrb_audio_play_cmd_t*)data);
+                return process_play_command((const fmrb_audio_play_cmd_t*)data, size);
             }
             break;
 

@@ -109,13 +109,44 @@ void audio_task(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
-int audio_task_nsf_play(int song) {
-    if (!g_nsf_player) {
-        ESP_LOGW(TAG, "NSF player not loaded");
+int audio_task_nsf_play(const char *path) {
+    if (!path || path[0] == '\0') {
+        ESP_LOGW(TAG, "NSF play: empty path");
         return -1;
     }
-    ESP_LOGI(TAG, "NSF play: song=%d", song);
-    nsf_player_start(g_nsf_player, song);
+
+    // Build full path: "flash" + path (path starts with /)
+    char full_path[256];
+    snprintf(full_path, sizeof(full_path), "flash%s", path);
+
+    ESP_LOGI(TAG, "NSF play: %s", full_path);
+
+    // Stop current playback
+    if (g_nsf_player && g_nsf_player->playing) {
+        g_nsf_player->playing = 0;
+    }
+
+    // Free existing player if loaded from different file
+    if (g_nsf_player) {
+        nsf_player_free(g_nsf_player);
+    } else {
+        g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
+        if (!g_nsf_player) {
+            ESP_LOGE(TAG, "NSF play: malloc failed");
+            return -1;
+        }
+    }
+
+    // Load and start
+    if (nsf_player_load(g_nsf_player, full_path) != 0) {
+        ESP_LOGE(TAG, "NSF play: failed to load %s", full_path);
+        apuemu_free(g_nsf_player);
+        g_nsf_player = NULL;
+        return -1;
+    }
+
+    apuif_select(APUIF_INSTANCE_MAIN);
+    nsf_player_start(g_nsf_player, 0);
     return 0;
 }
 
@@ -133,7 +164,7 @@ void audio_task(void *pvParameters) {
     audio_check_impl();
 }
 
-int audio_task_nsf_play(int song) {
+int audio_task_nsf_play(const char *path) {
     // TODO: Implement for ESP32
     return -1;
 }
