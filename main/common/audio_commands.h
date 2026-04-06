@@ -35,6 +35,7 @@ typedef struct {
 
 typedef struct {
     uint8_t cmd_type;
+    uint32_t music_id;
     uint16_t path_len;
     char path[];  // Flexible array member
 } __attribute__((packed)) fmrb_audio_play_cmd_t;
