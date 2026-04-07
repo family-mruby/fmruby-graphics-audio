@@ -41,7 +41,7 @@ static SemaphoreHandle_t trans_ready_sem = NULL;
 typedef struct {
     uint8_t ack_seq;
     uint8_t status;
-    uint8_t data[SPI_MAX_DATA];  // COBS encoded response (optional)
+    uint8_t data[FMRB_LINK_FRAME_MAX_DATA];  // COBS encoded response (optional)
     uint8_t data_len;
 } ack_queue_item_t;
 
@@ -50,7 +50,7 @@ static QueueHandle_t s_ack_queue = NULL;
 // Latest response state (updated from ACK queue, referenced by fill_response)
 static volatile uint8_t s_last_status = STS_BOOT;
 static volatile uint8_t s_last_ack_seq = 0;
-static uint8_t s_resp_data[SPI_MAX_DATA];
+static uint8_t s_resp_data[FMRB_LINK_FRAME_MAX_DATA];
 static volatile uint8_t s_resp_data_len = 0;
 
 // Set during COBS parsing when any message has ACK_REQUIRED flag
@@ -95,7 +95,7 @@ static void IRAM_ATTR spi_post_trans_cb(spi_slave_transaction_t *trans)
 static void fill_response(uint8_t *tx_buf)
 {
     spi_frame_t *f = (spi_frame_t *)tx_buf;
-    memset(f, 0, SPI_FRAME_SIZE);
+    memset(f, 0, FMRB_LINK_FRAME_SIZE);
     f->magic = SPI_FRAME_MAGIC;
     f->seq = 0;
     f->ack_seq = s_last_ack_seq;
@@ -112,7 +112,7 @@ static esp_err_t queue_next_transaction(void)
 {
     int buf_idx = current_buf;
 
-    transactions[buf_idx].length = SPI_FRAME_SIZE * 8;  // Length in bits
+    transactions[buf_idx].length = FMRB_LINK_FRAME_SIZE * 8;  // Length in bits
     transactions[buf_idx].tx_buffer = tx_buffers[buf_idx];
     transactions[buf_idx].rx_buffer = rx_buffers[buf_idx];
 
@@ -303,7 +303,7 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
     if (response_data && response_len > 0) {
         size_t enc_len = 0;
         int enc_ret = fmrb_link_encode_ack(type, seq, response_data, response_len,
-                                           item.data, SPI_MAX_DATA, &enc_len);
+                                           item.data, FMRB_LINK_FRAME_MAX_DATA, &enc_len);
         if (enc_ret != 0) {
             ESP_LOGE(TAG, "Failed to encode ACK");
             return -1;
@@ -330,14 +330,14 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
 
     // Allocate DMA-capable buffers (double buffered)
     for (int i = 0; i < NUM_BUFFERS; i++) {
-        rx_buffers[i] = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
-        tx_buffers[i] = (uint8_t *)heap_caps_malloc(SPI_FRAME_SIZE, MALLOC_CAP_DMA);
+        rx_buffers[i] = (uint8_t *)heap_caps_malloc(FMRB_LINK_FRAME_SIZE, MALLOC_CAP_DMA);
+        tx_buffers[i] = (uint8_t *)heap_caps_malloc(FMRB_LINK_FRAME_SIZE, MALLOC_CAP_DMA);
         if (!rx_buffers[i] || !tx_buffers[i]) {
             ESP_LOGE(TAG, "Failed to allocate DMA buffers");
             goto cleanup_buffers;
         }
-        memset(rx_buffers[i], 0, SPI_FRAME_SIZE);
-        memset(tx_buffers[i], 0, SPI_FRAME_SIZE);
+        memset(rx_buffers[i], 0, FMRB_LINK_FRAME_SIZE);
+        memset(tx_buffers[i], 0, FMRB_LINK_FRAME_SIZE);
         memset(&transactions[i], 0, sizeof(spi_slave_transaction_t));
     }
 
@@ -373,7 +373,7 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
         .sclk_io_num = FMRB_PIN_SPI_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = SPI_FRAME_SIZE,
+        .max_transfer_sz = FMRB_LINK_FRAME_SIZE,
     };
 
     spi_slave_interface_config_t slvcfg = {
@@ -415,7 +415,7 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
     spi_running = 1;
     ESP_LOGI(TAG, "SPI slave initialized - MOSI:%d MISO:%d CLK:%d CS:%d HS:%d (frame=%d bytes)",
            FMRB_PIN_SPI_MOSI, FMRB_PIN_SPI_MISO, FMRB_PIN_SPI_CLK,
-           FMRB_PIN_SPI_CS, FMRB_PIN_SPI_HANDSHAKE, SPI_FRAME_SIZE);
+           FMRB_PIN_SPI_CS, FMRB_PIN_SPI_HANDSHAKE, FMRB_LINK_FRAME_SIZE);
     return 0;
 
 cleanup_sem:

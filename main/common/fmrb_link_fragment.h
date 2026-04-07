@@ -25,8 +25,11 @@ extern "C" {
 #endif
 
 // Fragmentation configuration
-#define FMRB_LINK_FRAG_CHUNK_THRESHOLD 200    // Start chunking above this size
-#define FMRB_LINK_FRAG_MAX_CHUNK_PAYLOAD 230  // Max payload per chunk (for 256-byte frames)
+// Chunked msgpack: [type(2) + seq(2) + sub_cmd(2) + bin_hdr(3) + chunk_info(12) + bin_hdr(3) + payload(N)]
+// + COBS worst-case (~2 bytes). Total must fit within FMRB_LINK_FRAME_MAX_DATA.
+#define FMRB_LINK_FRAG_CHUNKED_OVERHEAD 28
+#define FMRB_LINK_FRAG_MAX_CHUNK_PAYLOAD (FMRB_LINK_FRAME_MAX_DATA - FMRB_LINK_FRAG_CHUNKED_OVERHEAD)
+#define FMRB_LINK_FRAG_CHUNK_THRESHOLD  FMRB_LINK_FRAG_MAX_CHUNK_PAYLOAD  // Start chunking above this size
 #define FMRB_LINK_FRAG_WINDOW_SIZE 8          // Sliding window size
 #define FMRB_LINK_FRAG_MAX_CONCURRENT 4       // Max concurrent reassembly contexts
 #define FMRB_LINK_FRAG_TIMEOUT_MS 5000        // Reassembly timeout

@@ -48,6 +48,8 @@ typedef struct {
     uint16_t width, height;        // Canvas allocated dimensions (always max screen size)
     uint16_t active_width, active_height;  // Active drawing area (can be resized)
     bool dirty;                    // Redraw flag
+    bool use_transparent;          // Use transparent color key during composition
+    uint8_t transparent_color;     // RGB332 color treated as transparent
 } canvas_state_t;
 
 // Maximum number of canvases
@@ -149,6 +151,8 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->push_y = 0;
     canvas->is_visible = false;  // Initially invisible until first present()
     canvas->dirty = false;
+    canvas->use_transparent = false;
+    canvas->transparent_color = 0;
 
     // Allocate external memory for draw buffer from mempool
     canvas->draw_buffer_mem = fmrb_mempool_canvas_alloc_buffer();
@@ -255,10 +259,11 @@ static void graphics_handler_render_frame_internal() {
     }
     LGFX_Sprite* screen_buffer = bg_canvas->render_buffer;
 
-    // Restore pixels under previous cursor before compositing
-    if (g_cursor_drawn && g_cursor_save) {
-        g_cursor_save->pushSprite(screen_buffer, g_cursor_save_x, g_cursor_save_y);
-        g_cursor_drawn = false;
+    // Restore background canvas from draw_buffer before compositing.
+    // This clears any previously composited window pixels that would
+    // otherwise remain as ghost images when windows are moved.
+    if (bg_canvas->draw_buffer) {
+        bg_canvas->draw_buffer->pushSprite(screen_buffer, 0, 0);
     }
 
     // Composite all other visible canvases onto the background canvas
@@ -273,7 +278,11 @@ static void graphics_handler_render_frame_internal() {
 
             // Push render_buffer to screen buffer
             // Since setBuffer configures sprite to active size, pushSprite will only transfer active region
-            canvas->render_buffer->pushSprite(screen_buffer, canvas->push_x, canvas->push_y);
+            if (canvas->use_transparent) {
+                canvas->render_buffer->pushSprite(screen_buffer, canvas->push_x, canvas->push_y, canvas->transparent_color);
+            } else {
+                canvas->render_buffer->pushSprite(screen_buffer, canvas->push_x, canvas->push_y);
+            }
         }
     }
 
@@ -828,6 +837,14 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 // Override z_order with value from Core
                 canvas->z_order = cmd->z_order;
+
+                // Foreground overlay canvas (z=254): enable transparency
+                // Color 0x00 (black) is treated as transparent during composition
+                if (cmd->z_order == 254) {
+                    canvas->use_transparent = true;
+                    canvas->transparent_color = 0x00;
+                    ESP_LOGI(TAG, "Canvas ID=%u: transparency enabled (color=0x00)", canvas_id);
+                }
 
                 ESP_LOGI(TAG, "Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, (int)cmd->width, (int)cmd->height, (int)cmd->z_order);
 

@@ -82,18 +82,20 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
     return 0;
 }
 
-static int process_play_command(const fmrb_audio_play_cmd_t *cmd) {
-    // Find music track
-    for (int i = 0; i < track_count; i++) {
-        if (music_tracks[i].music_id == cmd->music_id) {
-            ESP_LOGI(TAG, "Playing music track %lu (ESP32 stub)", (unsigned long)cmd->music_id);
-            current_status = FMRB_AUDIO_STATUS_PLAYING;
-            return 0;
-        }
+static int process_play_command(const fmrb_audio_play_cmd_t *cmd, size_t total_size) {
+    if (total_size < sizeof(fmrb_audio_play_cmd_t) + cmd->path_len) {
+        ESP_LOGE(TAG, "Play command too short");
+        return -1;
     }
 
-    ESP_LOGE(TAG, "Music track %lu not found", (unsigned long)cmd->music_id);
-    return -1;
+    char path[128];
+    int len = cmd->path_len < sizeof(path) - 1 ? cmd->path_len : sizeof(path) - 1;
+    memcpy(path, cmd->path, len);
+    path[len] = '\0';
+
+    ESP_LOGI(TAG, "Play command: path=%s (ESP32 stub)", path);
+    current_status = FMRB_AUDIO_STATUS_PLAYING;
+    return 0;
 }
 
 static int process_stop_command(void) {
@@ -140,7 +142,7 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
 
         case FMRB_AUDIO_CMD_PLAY:
             if (size >= sizeof(fmrb_audio_play_cmd_t)) {
-                return process_play_command((const fmrb_audio_play_cmd_t*)data);
+                return process_play_command((const fmrb_audio_play_cmd_t*)data, size);
             }
             break;
 
