@@ -842,7 +842,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // Color 0x00 (black) is treated as transparent during composition
                 if (cmd->z_order == 254) {
                     canvas->use_transparent = true;
-                    canvas->transparent_color = 0x00;
+                    canvas->transparent_color = 0x01;
                     ESP_LOGI(TAG, "Canvas ID=%u: transparency enabled (color=0x00)", canvas_id);
                 }
 
