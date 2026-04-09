@@ -202,6 +202,65 @@ int fmsq_player_load(fmsq_player_t *player, const char *filename)
     return 0;
 }
 
+int fmsq_player_load_from_memory(fmsq_player_t *player, const uint8_t *data, uint32_t size)
+{
+    if (!data || size < FMSQ_HEADER_SIZE) {
+        fprintf(stderr, "Error: FMSQ data too small (%u bytes)\n", size);
+        return -1;
+    }
+
+    /* Free previous data if any */
+    if (player->data) {
+        apuemu_free(player->data);
+        player->data = NULL;
+    }
+    memset(player, 0, sizeof(*player));
+
+    /* Parse header */
+    const uint8_t *header = data;
+
+    if (memcmp(header, "FMSQ", 4) != 0) {
+        fprintf(stderr, "Error: Invalid FMSQ magic\n");
+        return -1;
+    }
+
+    uint8_t version = header[4];
+    if (version != 1) {
+        fprintf(stderr, "Error: Unsupported FMSQ version %d\n", version);
+        return -1;
+    }
+
+    player->frame_count = header[6] | (header[7] << 8);
+    uint16_t cmd_size   = header[8] | (header[9] << 8);
+    player->loop_offset = header[10] | (header[11] << 8);
+
+    if (FMSQ_HEADER_SIZE + cmd_size > size) {
+        fprintf(stderr, "Error: FMSQ data truncated (need %d, got %u)\n",
+                FMSQ_HEADER_SIZE + cmd_size, size);
+        return -1;
+    }
+
+    /* Copy command data */
+    player->data = (uint8_t *)apuemu_malloc(cmd_size);
+    if (!player->data) {
+        fprintf(stderr, "Error: Failed to allocate %d bytes\n", cmd_size);
+        return -1;
+    }
+
+    memcpy(player->data, data + FMSQ_HEADER_SIZE, cmd_size);
+    player->data_size = cmd_size;
+    player->pc = 0;
+    player->wait_frames = 0;
+    player->playing = true;
+    player->looped = false;
+    player->frames_played = 0;
+
+    printf("FMSQ loaded from memory: version=%d, frames=%d, data=%d bytes, loop=%d\n",
+           version, player->frame_count, cmd_size, player->loop_offset);
+
+    return 0;
+}
+
 void fmsq_player_free(fmsq_player_t *player)
 {
     if (player->data) {

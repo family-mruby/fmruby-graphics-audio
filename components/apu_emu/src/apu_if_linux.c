@@ -145,6 +145,11 @@ int apuif_ring_read(int16_t* out, int count)
     return read;
 }
 
+void apuif_ring_flush(void)
+{
+    _ring_read = _ring_write;
+}
+
 int apuif_use_external_process(void)
 {
     return _use_external_process;

@@ -63,6 +63,8 @@ void apuif_set_external_process(int flag);
 #ifdef __linux__
 /* Read samples from ring buffer (Linux/SDL2 only) */
 int apuif_ring_read(int16_t* out, int count);
+/* Flush ring buffer to minimize latency */
+void apuif_ring_flush(void);
 #endif
 
 /*

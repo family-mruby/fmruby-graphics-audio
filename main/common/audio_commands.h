@@ -14,7 +14,10 @@ typedef enum {
     FMRB_AUDIO_CMD_PAUSE = 0x04,
     FMRB_AUDIO_CMD_RESUME = 0x05,
     FMRB_AUDIO_CMD_SET_VOLUME = 0x06,
-    FMRB_AUDIO_CMD_GET_STATUS = 0x07
+    FMRB_AUDIO_CMD_GET_STATUS = 0x07,
+    FMRB_AUDIO_CMD_PLAY_SLOT = 0x08,
+    FMRB_AUDIO_CMD_NOTE_ON = 0x09,
+    FMRB_AUDIO_CMD_NOTE_OFF = 0x0A
 } fmrb_audio_cmd_type_t;
 
 // Audio status
@@ -59,6 +62,31 @@ typedef struct {
 typedef struct {
     uint8_t cmd_type;
 } __attribute__((packed)) fmrb_audio_status_cmd_t;
+
+typedef struct {
+    uint8_t cmd_type;
+    uint32_t music_id;
+} __attribute__((packed)) fmrb_audio_play_slot_cmd_t;
+
+// APU channel IDs
+#define FMRB_APU_CH_PULSE1    0
+#define FMRB_APU_CH_PULSE2    1
+#define FMRB_APU_CH_TRIANGLE  2
+#define FMRB_APU_CH_NOISE     3
+
+typedef struct {
+    uint8_t cmd_type;
+    uint8_t channel;    // 0=pulse1, 1=pulse2, 2=triangle, 3=noise
+    uint16_t freq;      // frequency in Hz
+    uint8_t volume;     // 0-15
+    uint8_t duty;       // duty cycle 0-3 (pulse only, ignored for triangle/noise)
+    uint8_t sweep;      // sweep register value (pulse only): bit7=enable, bit6-4=period, bit3=negate, bit2-0=shift
+} __attribute__((packed)) fmrb_audio_note_on_cmd_t;
+
+typedef struct {
+    uint8_t cmd_type;
+    uint8_t channel;
+} __attribute__((packed)) fmrb_audio_note_off_cmd_t;
 
 // Audio configuration
 #define FMRB_AUDIO_SAMPLE_RATE 44100

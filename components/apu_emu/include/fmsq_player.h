@@ -35,6 +35,9 @@ typedef struct {
 /* Load FMSQ file. Returns 0 on success. */
 int fmsq_player_load(fmsq_player_t *player, const char *filename);
 
+/* Load FMSQ from memory buffer. Returns 0 on success. */
+int fmsq_player_load_from_memory(fmsq_player_t *player, const uint8_t *data, uint32_t size);
+
 /* Free loaded data. */
 void fmsq_player_free(fmsq_player_t *player);
 

@@ -42,6 +42,15 @@ void audio_handler_set_volume(uint8_t volume);
 void audio_check_impl(void);
 
 /**
+ * @brief Find loaded music track by ID
+ * @param music_id Track ID to find
+ * @param out_data Pointer to receive data pointer (not owned by caller)
+ * @param out_size Pointer to receive data size
+ * @return 0 on success, -1 if not found
+ */
+int audio_handler_get_track(uint32_t music_id, const uint8_t **out_data, uint32_t *out_size);
+
+/**
  * @brief Start NSF playback from file path (called from audio command handler)
  * @param path NSF file path (relative to flash, e.g. "/data/test.nsf")
  * @return 0 on success, -1 on error
@@ -52,6 +61,30 @@ int audio_task_nsf_play(const char *path);
  * @brief Stop NSF playback
  */
 void audio_task_nsf_stop(void);
+
+/**
+ * @brief Play FMSQ from a loaded slot
+ * @param music_id Slot ID to play
+ * @return 0 on success, -1 on error
+ */
+int audio_task_fmsq_play_slot(uint32_t music_id);
+
+/**
+ * @brief Start a note on an APU channel
+ * @param channel Channel (0=pulse1, 1=pulse2, 2=triangle, 3=noise)
+ * @param freq Frequency in Hz
+ * @param volume Volume (0-15)
+ * @param duty Duty cycle (0-3, pulse only)
+ * @return 0 on success, -1 on error
+ */
+int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t duty, uint8_t sweep);
+
+/**
+ * @brief Stop a note on an APU channel
+ * @param channel Channel (0=pulse1, 1=pulse2, 2=triangle, 3=noise)
+ * @return 0 on success, -1 on error
+ */
+int audio_task_note_off(uint8_t channel);
 
 #ifdef __cplusplus
 }

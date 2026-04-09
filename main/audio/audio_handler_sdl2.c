@@ -228,6 +228,28 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
             }
             break;
 
+        case FMRB_AUDIO_CMD_PLAY_SLOT:
+            if (size >= sizeof(fmrb_audio_play_slot_cmd_t)) {
+                const fmrb_audio_play_slot_cmd_t *cmd = (const fmrb_audio_play_slot_cmd_t*)data;
+                ESP_LOGI(TAG, "Play slot command: music_id=%lu", (unsigned long)cmd->music_id);
+                return audio_task_fmsq_play_slot(cmd->music_id);
+            }
+            break;
+
+        case FMRB_AUDIO_CMD_NOTE_ON:
+            if (size >= sizeof(fmrb_audio_note_on_cmd_t)) {
+                const fmrb_audio_note_on_cmd_t *cmd = (const fmrb_audio_note_on_cmd_t*)data;
+                return audio_task_note_on(cmd->channel, cmd->freq, cmd->volume, cmd->duty, cmd->sweep);
+            }
+            break;
+
+        case FMRB_AUDIO_CMD_NOTE_OFF:
+            if (size >= sizeof(fmrb_audio_note_off_cmd_t)) {
+                const fmrb_audio_note_off_cmd_t *cmd = (const fmrb_audio_note_off_cmd_t*)data;
+                return audio_task_note_off(cmd->channel);
+            }
+            break;
+
         default:
             ESP_LOGE(TAG, "Unknown audio command: 0x%02x", cmd_type);
             return -1;
@@ -243,4 +265,15 @@ fmrb_audio_status_t audio_handler_get_status(void) {
 
 void audio_handler_set_volume(uint8_t volume) {
     current_volume = volume;
+}
+
+int audio_handler_get_track(uint32_t music_id, const uint8_t **out_data, uint32_t *out_size) {
+    for (int i = 0; i < track_count; i++) {
+        if (music_tracks[i].music_id == music_id && music_tracks[i].data) {
+            *out_data = music_tracks[i].data;
+            *out_size = music_tracks[i].size;
+            return 0;
+        }
+    }
+    return -1;
 }

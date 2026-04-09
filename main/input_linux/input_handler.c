@@ -21,6 +21,9 @@ static volatile bool g_quit_requested = false;
 static uint_fast8_t g_scaling_x = 1;
 static uint_fast8_t g_scaling_y = 1;
 
+// Throttle interval for mouse motion events (ms)
+#define MOUSE_MOTION_THROTTLE_MS 66
+
 // Event watch callback - called before SDL_PollEvent consumes events
 static int event_watch_callback(void* userdata, SDL_Event* event) {
     (void)userdata;  // Unused
@@ -87,19 +90,17 @@ static int event_watch_callback(void* userdata, SDL_Event* event) {
             g_last_mouse_x = event->motion.x / g_scaling_x;
             g_last_mouse_y = event->motion.y / g_scaling_y;
 
-            // Mouse motion events are very frequent (100+ events/sec when moving)
-            // Only log occasionally for debugging
-            static int motion_count = 0;
-            if (++motion_count % 60 == 0) {  // Log every 60th event
-                // INPUT_LOG_D("Mouse moved to (%d, %d)", event->motion.x, event->motion.y);
-            }
-            // Send to Core with throttling (every 10th event to reduce bandwidth)
-            if (motion_count % 10 == 0) {
-                hid_mouse_motion_event_t motion_event;
-                // Transform window coordinates to logical coordinates by dividing by scaling
-                motion_event.x = (uint16_t)(event->motion.x / g_scaling_x);
-                motion_event.y = (uint16_t)(event->motion.y / g_scaling_y);
-                input_socket_send_event(HID_EVENT_MOUSE_MOTION, &motion_event, sizeof(motion_event));
+            // Send to Core with time-based throttling to limit SPI bandwidth
+            {
+                static uint32_t last_motion_send_ms = 0;
+                uint32_t now = SDL_GetTicks();
+                if (now - last_motion_send_ms >= MOUSE_MOTION_THROTTLE_MS) {
+                    last_motion_send_ms = now;
+                    hid_mouse_motion_event_t motion_event;
+                    motion_event.x = (uint16_t)g_last_mouse_x;
+                    motion_event.y = (uint16_t)g_last_mouse_y;
+                    input_socket_send_event(HID_EVENT_MOUSE_MOTION, &motion_event, sizeof(motion_event));
+                }
             }
             break;
 

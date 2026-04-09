@@ -730,6 +730,54 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             }
             break;
 
+        case FMRB_LINK_GFX_DRAW_ARC:
+            if (size >= sizeof(fmrb_link_graphics_arc_t)) {
+                const fmrb_link_graphics_arc_t *cmd = (const fmrb_link_graphics_arc_t*)data;
+                LovyanGFX* target;
+                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
+                    target = g_lgfx;
+                } else {
+                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+                    if (!canvas) return -1;
+                    target = canvas->draw_buffer;
+                    canvas->dirty = true;
+                }
+                target->drawArc(cmd->x, cmd->y, cmd->r1, cmd->r0, (float)cmd->angle0, (float)cmd->angle1, cmd->color);
+                return 0;
+            }
+            break;
+
+        case FMRB_LINK_GFX_FILL_ARC:
+            if (size >= sizeof(fmrb_link_graphics_arc_t)) {
+                const fmrb_link_graphics_arc_t *cmd = (const fmrb_link_graphics_arc_t*)data;
+                LovyanGFX* target;
+                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
+                    target = g_lgfx;
+                } else {
+                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+                    if (!canvas) return -1;
+                    target = canvas->draw_buffer;
+                    canvas->dirty = true;
+                }
+                target->fillArc(cmd->x, cmd->y, cmd->r1, cmd->r0, (float)cmd->angle0, (float)cmd->angle1, cmd->color);
+                return 0;
+            }
+            break;
+
+        case FMRB_LINK_GFX_SET_TEXT_SIZE:
+            if (size >= sizeof(fmrb_link_graphics_text_size_t)) {
+                const fmrb_link_graphics_text_size_t *cmd = (const fmrb_link_graphics_text_size_t*)data;
+                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
+                    g_lgfx->setTextSize((float)cmd->size);
+                } else {
+                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+                    if (!canvas) return -1;
+                    canvas->draw_buffer->setTextSize((float)cmd->size);
+                }
+                return 0;
+            }
+            break;
+
         case FMRB_LINK_GFX_DRAW_STRING:
             // Use structure from fmrb_link_protocol.h (no cmd_type in data)
             if (size < sizeof(fmrb_link_graphics_text_t)) {

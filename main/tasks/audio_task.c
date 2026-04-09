@@ -157,6 +157,136 @@ void audio_task_nsf_stop(void) {
     }
 }
 
+int audio_task_fmsq_play_slot(uint32_t music_id) {
+    const uint8_t *data = NULL;
+    uint32_t size = 0;
+
+    if (audio_handler_get_track(music_id, &data, &size) != 0) {
+        ESP_LOGE(TAG, "FMSQ play_slot: track %lu not found", (unsigned long)music_id);
+        return -1;
+    }
+
+    if (!g_fmsq_player) {
+        g_fmsq_player = (fmsq_player_t *)apuemu_malloc(sizeof(fmsq_player_t));
+        if (!g_fmsq_player) {
+            ESP_LOGE(TAG, "FMSQ play_slot: malloc failed");
+            return -1;
+        }
+        memset(g_fmsq_player, 0, sizeof(fmsq_player_t));
+    }
+
+    /* Stop current playback */
+    g_fmsq_player->playing = 0;
+
+    apuif_select(APUIF_INSTANCE_SUB);
+
+    /* Flush ring buffer to minimize playback latency */
+    apuif_ring_flush();
+
+    if (fmsq_player_load_from_memory(g_fmsq_player, data, size) != 0) {
+        ESP_LOGE(TAG, "FMSQ play_slot: load failed for track %lu", (unsigned long)music_id);
+        return -1;
+    }
+
+    fmsq_player_reset(g_fmsq_player);
+    ESP_LOGI(TAG, "FMSQ play_slot: playing track %lu", (unsigned long)music_id);
+    return 0;
+}
+
+/* NES APU CPU clock (NTSC) */
+#define APU_CPU_CLOCK 1789773
+
+int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t duty, uint8_t sweep) {
+    if (freq == 0) return -1;
+
+    apuif_select(APUIF_INSTANCE_SUB);
+
+    /* Flush ring buffer to minimize latency */
+    apuif_ring_flush();
+
+    /* Stop FMSQ playback if running (avoid conflicts on SUB instance) */
+    if (g_fmsq_player && g_fmsq_player->playing) {
+        g_fmsq_player->playing = 0;
+    }
+
+    uint8_t vol = volume & 0x0F;
+
+    switch (channel) {
+    case FMRB_APU_CH_PULSE1:
+    case FMRB_APU_CH_PULSE2: {
+        uint16_t timer = APU_CPU_CLOCK / (16 * freq) - 1;
+        uint16_t base = (channel == FMRB_APU_CH_PULSE1) ? 0x4000 : 0x4004;
+        /* Enable channel in status register */
+        uint8_t status_bit = (channel == FMRB_APU_CH_PULSE1) ? 0x01 : 0x02;
+        apuif_write_reg(0x4015, apuif_read_reg(0x4015) | status_bit);
+        /* VOL: duty(2) + length halt(1) + constant vol(1) + vol(4) */
+        apuif_write_reg(base + 0, ((duty & 0x03) << 6) | 0x30 | vol);
+        /* SWEEP */
+        apuif_write_reg(base + 1, sweep);
+        /* TIMER_LO */
+        apuif_write_reg(base + 2, timer & 0xFF);
+        /* TIMER_HI + length counter load */
+        apuif_write_reg(base + 3, 0xF8 | ((timer >> 8) & 0x07));
+        break;
+    }
+    case FMRB_APU_CH_TRIANGLE: {
+        uint16_t timer = APU_CPU_CLOCK / (32 * freq) - 1;
+        /* Enable triangle */
+        apuif_write_reg(0x4015, apuif_read_reg(0x4015) | 0x04);
+        /* LINEAR: halt(1) + counter(7) = 0xFF for sustained */
+        apuif_write_reg(0x4008, 0xFF);
+        /* TIMER_LO */
+        apuif_write_reg(0x400A, timer & 0xFF);
+        /* TIMER_HI + length counter load */
+        apuif_write_reg(0x400B, 0xF8 | ((timer >> 8) & 0x07));
+        break;
+    }
+    case FMRB_APU_CH_NOISE: {
+        /* Enable noise */
+        apuif_write_reg(0x4015, apuif_read_reg(0x4015) | 0x08);
+        /* VOL: length halt + constant vol + volume */
+        apuif_write_reg(0x400C, 0x30 | vol);
+        /* PERIOD: low byte = period(0-15), bit7 = short mode */
+        uint8_t mode = (freq & 0x80);   /* short-cycle noise flag */
+        uint8_t period = freq & 0x0F;
+        apuif_write_reg(0x400E, mode | period);
+        /* LENGTH */
+        apuif_write_reg(0x400F, 0xF8);
+        break;
+    }
+    default:
+        return -1;
+    }
+
+    ESP_LOGD(TAG, "note_on: ch=%d freq=%d vol=%d duty=%d", channel, freq, vol, duty);
+    return 0;
+}
+
+int audio_task_note_off(uint8_t channel) {
+    apuif_select(APUIF_INSTANCE_SUB);
+
+    switch (channel) {
+    case FMRB_APU_CH_PULSE1:
+        apuif_write_reg(0x4000, 0x30); /* vol=0 */
+        break;
+    case FMRB_APU_CH_PULSE2:
+        apuif_write_reg(0x4004, 0x30); /* vol=0 */
+        break;
+    case FMRB_APU_CH_TRIANGLE:
+        /* Disable triangle channel */
+        apuif_write_reg(0x4015, apuif_read_reg(0x4015) & ~0x04);
+        break;
+    case FMRB_APU_CH_NOISE:
+        apuif_write_reg(0x400C, 0x30); /* vol=0 */
+        break;
+    default:
+        return -1;
+    }
+
+    ESP_LOGD(TAG, "note_off: ch=%d", channel);
+    return 0;
+}
+
 #else /* ESP32 */
 
 void audio_task(void *pvParameters) {
@@ -171,6 +301,21 @@ int audio_task_nsf_play(const char *path) {
 
 void audio_task_nsf_stop(void) {
     // TODO: Implement for ESP32
+}
+
+int audio_task_fmsq_play_slot(uint32_t music_id) {
+    // TODO: Implement for ESP32
+    return -1;
+}
+
+int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t duty, uint8_t sweep) {
+    // TODO: Implement for ESP32
+    return -1;
+}
+
+int audio_task_note_off(uint8_t channel) {
+    // TODO: Implement for ESP32
+    return -1;
 }
 
 #endif /* CONFIG_IDF_TARGET_LINUX */
