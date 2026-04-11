@@ -21,7 +21,7 @@
 #define COMM_TASK_STACK_SIZE         8192
 #endif
 #define COMM_TASK_PRIORITY           6
-#define COMM_TASK_CORE               0
+#define COMM_TASK_CORE               1
 
 // Message handler task - lower priority for application processing
 #define MESSAGE_HANDLER_TASK_STACK_SIZE  8192
