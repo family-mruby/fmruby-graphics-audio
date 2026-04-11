@@ -42,7 +42,7 @@ typedef struct {
     uint8_t ack_seq;
     uint8_t status;
     uint8_t data[FMRB_LINK_FRAME_MAX_DATA];  // COBS encoded response (optional)
-    uint8_t data_len;
+    uint16_t data_len;
 } ack_queue_item_t;
 
 static QueueHandle_t s_ack_queue = NULL;
@@ -51,7 +51,7 @@ static QueueHandle_t s_ack_queue = NULL;
 static volatile uint8_t s_last_status = STS_BOOT;
 static volatile uint8_t s_last_ack_seq = 0;
 static uint8_t s_resp_data[FMRB_LINK_FRAME_MAX_DATA];
-static volatile uint8_t s_resp_data_len = 0;
+static volatile uint16_t s_resp_data_len = 0;
 
 // Set during COBS parsing when any message has ACK_REQUIRED flag
 static volatile bool s_ack_required_in_frame = false;
@@ -308,7 +308,7 @@ static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data,
             ESP_LOGE(TAG, "Failed to encode ACK");
             return -1;
         }
-        item.data_len = (uint8_t)enc_len;
+        item.data_len = (uint16_t)enc_len;
     }
 
     if (xQueueSend(s_ack_queue, &item, pdMS_TO_TICKS(100)) != pdTRUE) {
