@@ -75,14 +75,14 @@ static void IRAM_ATTR spi_post_setup_cb(spi_slave_transaction_t *trans)
     (void)trans;
 }
 
-// ISR: transaction complete → pending update + READY control + semaphore notify
+// ISR: transaction complete → always READY=LOW, task will set HIGH after response ready
 static void IRAM_ATTR spi_post_trans_cb(spi_slave_transaction_t *trans)
 {
     (void)trans;
     portENTER_CRITICAL_ISR(&s_pending_mux);
     s_pending_trans--;
+    set_spi_busy();  // Always LOW - task sets HIGH after fill_response + re-queue
     if (s_pending_trans <= 0) {
-        set_spi_busy();  // Queue exhausted → block master
         s_queue_empty_count++;
     }
     portEXIT_CRITICAL_ISR(&s_pending_mux);
@@ -121,6 +121,8 @@ static esp_err_t queue_next_transaction(void)
         portENTER_CRITICAL(&s_pending_mux);
         s_pending_trans++;
         portEXIT_CRITICAL(&s_pending_mux);
+    } else {
+        ESP_LOGE(TAG, "queue_next_transaction failed: buf=%d, ret=%d", buf_idx, ret);
     }
     return ret;
 }
@@ -166,11 +168,37 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
 static uint32_t s_trans_count = 0;
 static uint32_t s_data_trans_count = 0;
 static uint32_t s_frame_decoded_count = 0;
+static uint32_t s_crc_error_count = 0;
+#define CRC_ERROR_LOG_LIMIT 10
 
 // Process a single completed transaction using spi_frame_t header
 static int process_single_transaction(spi_slave_transaction_t *completed_trans) {
     s_trans_count++;
     int messages_processed = 0;
+
+    // Check actual transfer length
+    uint32_t trans_bits = completed_trans->trans_len;
+    if (s_trans_count <= 30 || (trans_bits != FMRB_LINK_FRAME_SIZE * 8)) {
+        ESP_LOGI(TAG, "trans #%lu: buf=%d, trans_len=%lu bits (%lu bytes)",
+                 s_trans_count, (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1,
+                 trans_bits, trans_bits / 8);
+    }
+
+    // Discard truncated frames - keep previous status, just re-queue
+    if (trans_bits < FMRB_LINK_FRAME_SIZE * 8) {
+        ESP_LOGW(TAG, "Truncated frame: %lu bits (expected %d)", trans_bits, FMRB_LINK_FRAME_SIZE * 8);
+        int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
+        current_buf = buf_idx;
+        fill_response(tx_buffers[buf_idx]);
+        queue_next_transaction();
+        portENTER_CRITICAL(&s_pending_mux);
+        int pending = s_pending_trans;
+        portEXIT_CRITICAL(&s_pending_mux);
+        if (pending > 0) {
+            set_spi_ready();
+        }
+        return 0;
+    }
 
     int buf_idx = (completed_trans->rx_buffer == rx_buffers[0]) ? 0 : 1;
     spi_frame_t *f = (spi_frame_t *)completed_trans->rx_buffer;
@@ -209,15 +237,27 @@ static int process_single_transaction(spi_slave_transaction_t *completed_trans) 
         s_last_ack_seq = f->seq;
         s_last_status = STS_CRC_ERR;
         s_resp_data_len = 0;
-        ESP_LOGW(TAG, "CRC error on seq=%u", f->seq);
+        s_crc_error_count++;
+        if (s_crc_error_count <= CRC_ERROR_LOG_LIMIT) {
+            uint16_t expected_crc = crc16_ccitt((const uint8_t *)f,
+                                    FMRB_LINK_FRAME_SIZE - FMRB_LINK_FRAME_CRC_SIZE);
+            const uint8_t *raw = (const uint8_t *)f;
+            ESP_LOGW(TAG, "CRC error #%lu seq=%u dlen=%u exp=0x%04X act=0x%04X",
+                     s_crc_error_count, f->seq, f->data_len, expected_crc, f->crc16);
+            ESP_LOGW(TAG, "  head: %02X %02X %02X %02X %02X %02X %02X %02X",
+                     raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
+            ESP_LOGW(TAG, "  tail: %02X %02X %02X %02X",
+                     raw[FMRB_LINK_FRAME_SIZE-4], raw[FMRB_LINK_FRAME_SIZE-3],
+                     raw[FMRB_LINK_FRAME_SIZE-2], raw[FMRB_LINK_FRAME_SIZE-1]);
+        }
     }
     // magic mismatch or data_len==0: dummy polling → no status change
 
-    // Dequeue ACK response from message_handler_task (if available).
-    // Only CONTROL commands (VERSION, INIT_DISPLAY) enqueue here;
-    // GRAPHICS commands do not send per-message ACKs.
+    // Dequeue ACK response from message_handler_task.
+    // If ACK_REQUIRED, wait with timeout for handler to prepare ACK.
     ack_queue_item_t ack_item;
-    if (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
+    TickType_t ack_wait = s_ack_required_in_frame ? pdMS_TO_TICKS(100) : 0;
+    if (xQueueReceive(s_ack_queue, &ack_item, ack_wait) == pdTRUE) {
         s_last_ack_seq = ack_item.ack_seq;
         s_last_status = ack_item.status;
         s_resp_data_len = ack_item.data_len;
@@ -282,9 +322,9 @@ static int spi_process(void) {
 
 // Call periodically to print SPI stats
 void spi_slave_print_stats(void) {
-    ESP_LOGI(TAG, "stats: trans=%lu data=%lu decoded=%lu queue_empty=%lu",
+    ESP_LOGI(TAG, "stats: trans=%lu data=%lu decoded=%lu crc_err=%lu queue_empty=%lu",
            s_trans_count, s_data_trans_count, s_frame_decoded_count,
-           s_queue_empty_count);
+           s_crc_error_count, s_queue_empty_count);
 }
 
 static int spi_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_data, uint16_t response_len) {
@@ -325,6 +365,10 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
     if (spi_running) {
         return 0;
     }
+
+    ESP_LOGI(TAG, "sizeof(spi_frame_t)=%u, FRAME_SIZE=%d, HEADER=%d, MAX_DATA=%d, CRC=%d",
+             (unsigned)sizeof(spi_frame_t), FMRB_LINK_FRAME_SIZE,
+             FMRB_LINK_FRAME_HEADER_SIZE, FMRB_LINK_FRAME_MAX_DATA, FMRB_LINK_FRAME_CRC_SIZE);
 
     s_msg_buffer = msg_buffer;
 
@@ -377,7 +421,7 @@ static int spi_init(MessageBufferHandle_t msg_buffer) {
     };
 
     spi_slave_interface_config_t slvcfg = {
-        .mode = 0,
+        .mode = 0,  // SPI mode 0 (CPOL=0, CPHA=0)
         .spics_io_num = FMRB_PIN_SPI_CS,
         .queue_size = NUM_BUFFERS,
         .flags = 0,
