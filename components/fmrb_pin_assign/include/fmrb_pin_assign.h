@@ -19,6 +19,12 @@
 #define FMRB_PIN_SPI_HANDSHAKE 23  // SPI Handshake (Active LOW: LOW=ACK ready, HIGH=idle)
 
 // ========================================
+// UART Communication Pins (reuses SPI wiring)
+// ========================================
+#define FMRB_PIN_UART_LINK_TX  18  // -> S3 RX (GPIO13)
+#define FMRB_PIN_UART_LINK_RX  21  // <- S3 TX (GPIO11)
+
+// ========================================
 // I2S Audio Output Pins (apu_emu)
 // ========================================
 #define FMRB_PIN_I2S_BCK      GPIO_NUM_32  // I2S Bit Clock

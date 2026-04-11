@@ -24,15 +24,22 @@ if(CONFIG_IDF_TARGET_LINUX)
     )
 else()
     # ESP32 platform implementation
+    set(FMRB_COMM_TRANSPORT "UART" CACHE STRING "Comm transport: SPI, UART")
     list(APPEND SRCS
         "graphics/graphics_handler.cpp"
         "graphics/display_cvbs.cpp"
         "graphics/lgfx_test.cpp"
         "audio/audio_handler_esp32.c"
         "audio/audio_check.c"
-        "communication/comm_spi_slave.c"
         "communication/fmrb_link_msgpack.c"
     )
+    if(FMRB_COMM_TRANSPORT STREQUAL "UART")
+        list(APPEND SRCS "communication/comm_uart_slave.c")
+        message(STATUS "Comm transport: UART")
+    else()
+        list(APPEND SRCS "communication/comm_spi_slave.c")
+        message(STATUS "Comm transport: SPI")
+    endif()
 endif()
 
 set(INCLUDE_DIRS

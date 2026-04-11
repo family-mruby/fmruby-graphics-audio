@@ -42,7 +42,9 @@ void comm_task(void *pvParameters) {
     ESP_LOGI(TAG, "comm initialized OK. Entering main loop.");
 
 #ifndef CONFIG_IDF_TARGET_LINUX
-    extern void spi_slave_print_stats(void);
+    // Stats printing function (provided by active comm backend)
+    extern void spi_slave_print_stats(void) __attribute__((weak));
+    extern void uart_slave_print_stats(void) __attribute__((weak));
     int loop_count = 0;
 #endif
 
@@ -59,7 +61,8 @@ void comm_task(void *pvParameters) {
         // Print stats every 5 seconds
         loop_count++;
         if (loop_count % 5000 == 0) {
-            spi_slave_print_stats();
+            if (spi_slave_print_stats) spi_slave_print_stats();
+            if (uart_slave_print_stats) uart_slave_print_stats();
         }
 #endif
 

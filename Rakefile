@@ -143,11 +143,14 @@ namespace :build do
   end
 
   desc "ESP32 build"
+  # Comm transport: default is UART. To use SPI instead:
+  #   CMAKE_OPTS="-DFMRB_COMM_TRANSPORT=SPI" rake build:esp32
   task :esp32 do
     unless Dir.exist?('build')
       Rake::Task['set_target:esp32'].invoke
     end
-    sh "#{DOCKER_CMD} idf.py build"
+    cmake_opts = ENV['CMAKE_OPTS'].to_s
+    sh "#{DOCKER_CMD} idf.py #{cmake_opts} build".squeeze(' ')
   end
 end
 
