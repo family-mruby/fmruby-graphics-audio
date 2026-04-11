@@ -80,6 +80,11 @@ static void rx_reset(void) {
 
 // Process a COBS frame and send decoded message to MessageBuffer
 static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
+    // Skip COBS-encoded empty frames (0x01 = zero-length payload)
+    if (encoded_len == 1 && encoded_data[0] == 0x01) {
+        return 0;
+    }
+
     message_data_t msg;
     size_t payload_len;
 
@@ -88,7 +93,12 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
                                        msg.payload, sizeof(msg.payload),
                                        &payload_len);
     if (result != 0) {
-        ESP_LOGE(TAG, "Frame decode failed");
+        ESP_LOGE(TAG, "Frame decode failed: len=%zu first=%02X %02X %02X %02X",
+                 encoded_len,
+                 encoded_len > 0 ? encoded_data[0] : 0,
+                 encoded_len > 1 ? encoded_data[1] : 0,
+                 encoded_len > 2 ? encoded_data[2] : 0,
+                 encoded_len > 3 ? encoded_data[3] : 0);
         return -1;
     }
     msg.payload_len = (uint16_t)payload_len;
