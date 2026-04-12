@@ -17,16 +17,16 @@ class LGFX : public lgfx::LGFX_Device
 public:
   lgfx::Panel_CVBS _panel_instance;
 
-  LGFX(uint16_t width, uint16_t height)
+  LGFX(uint16_t width, uint16_t height, uint8_t margin_x = 0, uint8_t margin_y = 0)
   {
     {
       auto cfg = _panel_instance.config();
       cfg.memory_width  = width;
       cfg.memory_height = height;
-      cfg.panel_width  = width - 32;
-      cfg.panel_height = height - 32;
-      cfg.offset_x = 16;
-      cfg.offset_y = 16;
+      cfg.panel_width  = width - margin_x;
+      cfg.panel_height = height - margin_y;
+      cfg.offset_x = margin_x / 2;
+      cfg.offset_y = margin_y / 2;
       _panel_instance.config(cfg);
     }
 
@@ -50,14 +50,16 @@ lgfx::LGFX_Device* g_lgfx = nullptr;
 static void esp32_display_cleanup(void);
 
 // ESP32/CVBS implementation functions
-static int esp32_display_init(uint16_t width, uint16_t height, uint8_t color_depth) {
+static int esp32_display_init(uint16_t width, uint16_t height, uint8_t color_depth,
+                              uint8_t margin_x, uint8_t margin_y) {
     // Guard against double initialization
     if (g_lgfx != nullptr) {
         ESP_LOGW(TAG, "Display already initialized");
         return 0;
     }
 
-    ESP_LOGI(TAG, "Initializing ESP32/CVBS display: %dx%d, %d-bit color", width, height, color_depth);
+    ESP_LOGI(TAG, "Initializing ESP32/CVBS display: %dx%d, %d-bit color, margin=%d,%d",
+             width, height, color_depth, margin_x, margin_y);
 
     // Create LovyanGFX instance with CVBS output in PSRAM (DRAM overflow fix)
     void* lgfx_mem = heap_caps_malloc(sizeof(LGFX), MALLOC_CAP_SPIRAM);
@@ -65,7 +67,7 @@ static int esp32_display_init(uint16_t width, uint16_t height, uint8_t color_dep
         ESP_LOGE(TAG, "Failed to allocate LGFX in PSRAM (%zu bytes)", sizeof(LGFX));
         return -1;
     }
-    LGFX* lgfx_instance = new (lgfx_mem) LGFX(width, height);
+    LGFX* lgfx_instance = new (lgfx_mem) LGFX(width, height, margin_x, margin_y);
 
     // Check init() return value
     if (!lgfx_instance->init()) {

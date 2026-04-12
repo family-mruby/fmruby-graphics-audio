@@ -16,7 +16,8 @@ static const char *TAG = "msg_handler_task";
 static volatile int task_running = 0;
 
 // Forward declaration - implemented in main.cpp
-extern int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth);
+extern int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth,
+                                 uint8_t margin_x, uint8_t margin_y);
 
 /**
  * Handle CONTROL messages
@@ -63,7 +64,8 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                 ESP_LOGI(TAG, "INIT_DISPLAY: %dx%d, %d-bit",
                        init_cmd->width, init_cmd->height, init_cmd->color_depth);
 
-                int result = init_display_callback(init_cmd->width, init_cmd->height, init_cmd->color_depth);
+                int result = init_display_callback(init_cmd->width, init_cmd->height, init_cmd->color_depth,
+                                                  init_cmd->margin_x, init_cmd->margin_y);
 
                 if (result == 0 && (type & FMRB_LINK_FLAG_ACK_REQUIRED)) {
                     comm->send_ack(type, seq, NULL, 0);

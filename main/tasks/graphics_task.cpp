@@ -28,8 +28,10 @@ static uint16_t display_width = 480;   // Default values
 static uint16_t display_height = 320;
 
 // Callback function called by socket_server when display init message is received
-extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth) {
-    ESP_LOGI(TAG, "Initializing display: %dx%d, %d-bit color", width, height, color_depth);
+extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth,
+                                     uint8_t margin_x, uint8_t margin_y) {
+    ESP_LOGI(TAG, "Initializing display: %dx%d, %d-bit color, margin=%d,%d",
+             width, height, color_depth, margin_x, margin_y);
 
     if (display_initialized) {
         ESP_LOGW(TAG, "Display already initialized, ignoring re-init request");
@@ -41,7 +43,7 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
 
     // Initialize display first (Panel_CVBS allocates smaller fragmented blocks)
     // This reduces PSRAM fragmentation when canvas pool allocates large contiguous block
-    if (DISPLAY_INTERFACE->init(width, height, color_depth) < 0) {
+    if (DISPLAY_INTERFACE->init(width, height, color_depth, margin_x, margin_y) < 0) {
         ESP_LOGE(TAG, "Display initialization failed");
         return -1;
     }

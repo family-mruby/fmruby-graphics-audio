@@ -58,7 +58,10 @@ static uint_fast8_t g_scaling_x = 2;
 static uint_fast8_t g_scaling_y = 2;
 
 // Linux/SDL2 implementation functions
-static int linux_display_init(uint16_t width, uint16_t height, uint8_t color_depth) {
+static int linux_display_init(uint16_t width, uint16_t height, uint8_t color_depth,
+                              uint8_t margin_x, uint8_t margin_y) {
+    (void)margin_x;
+    (void)margin_y;
     ESP_LOGI(TAG, "Initializing Linux/SDL2 display: %dx%d, %d-bit color", width, height, color_depth);
 
     // SDL2 must already be initialized by Panel_sdl::main() before this is called

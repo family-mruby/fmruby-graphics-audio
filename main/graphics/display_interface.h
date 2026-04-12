@@ -13,12 +13,15 @@ extern "C" {
 typedef struct {
     /**
      * Initialize display
-     * @param width Display width in pixels
-     * @param height Display height in pixels
-     * @param color_depth Color depth in bits (16, 24, etc.)
+     * @param width Display width in pixels (memory buffer size)
+     * @param height Display height in pixels (memory buffer size)
+     * @param color_depth Color depth in bits (8 for RGB332)
+     * @param margin_x Horizontal margin (left+right) in pixels for overscan
+     * @param margin_y Vertical margin (top+bottom) in pixels for overscan
      * @return 0 on success, -1 on error
      */
-    int (*init)(uint16_t width, uint16_t height, uint8_t color_depth);
+    int (*init)(uint16_t width, uint16_t height, uint8_t color_depth,
+                uint8_t margin_x, uint8_t margin_y);
 
     /**
      * Get LovyanGFX instance pointer
