@@ -18,96 +18,22 @@ void audio_task_stop(void) {
 
 #define NTSC_SAMPLE 262
 
-#ifdef CONFIG_IDF_TARGET_LINUX
+/* NES APU CPU clock (NTSC) */
+#define APU_CPU_CLOCK 1789773
 
-#define NSF_FILE_PATH  "/project/flash/data/test.nsf"
-#define FMSQ_FILE_PATH "/project/flash/data/test.fmsq"
-
+/*
+ * Shared state: NSF and FMSQ players.
+ * These are accessed from audio_task (60Hz tick) and from
+ * audio_handler commands (note_on, nsf_play, etc.) which run
+ * on the message_handler_task. Since commands only set flags
+ * or pointers atomically, no mutex is needed.
+ */
 static nsf_player_t *g_nsf_player = NULL;
 static fmsq_player_t *g_fmsq_player = NULL;
 
-void audio_task(void *pvParameters) {
-    ESP_LOGI(TAG, "Audio task started (Linux)");
-
-    /* Initialize SDL2 audio handler */
-    if (audio_handler_init() < 0) {
-        ESP_LOGE(TAG, "Audio handler initialization failed");
-        return;
-    }
-
-    /* Initialize main APU (instance 0: NSF) */
-    apuif_init();
-
-    /* Load NSF file on main APU instance (playback starts on command) */
-    g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
-    if (g_nsf_player) {
-        if (nsf_player_load(g_nsf_player, NSF_FILE_PATH) == 0) {
-            ESP_LOGI(TAG, "NSF loaded: %d songs (waiting for play command)", g_nsf_player->header.total_songs);
-        } else {
-            ESP_LOGW(TAG, "No NSF file at %s", NSF_FILE_PATH);
-            apuemu_free(g_nsf_player);
-            g_nsf_player = NULL;
-        }
-    }
-
-    /* Initialize sub APU (instance 1: FMSQ) and load FMSQ file */
-    apuif_init_sub();
-
-    g_fmsq_player = (fmsq_player_t *)apuemu_malloc(sizeof(fmsq_player_t));
-    if (g_fmsq_player) {
-        if (fmsq_player_load(g_fmsq_player, FMSQ_FILE_PATH) == 0) {
-            fmsq_player_reset(g_fmsq_player);
-            g_fmsq_player->playing = 0;  /* Wait for play command */
-            ESP_LOGI(TAG, "FMSQ loaded: %d frames (waiting for play command)", g_fmsq_player->frame_count);
-        } else {
-            ESP_LOGW(TAG, "No FMSQ file at %s", FMSQ_FILE_PATH);
-            apuemu_free(g_fmsq_player);
-            g_fmsq_player = NULL;
-        }
-    }
-
-    /* 60Hz audio processing loop */
-    const uint32_t frame_interval_ms = 16;
-
-    while (task_running) {
-        /* Tick NSF player on main APU instance */
-        if (g_nsf_player && g_nsf_player->playing) {
-            apuif_select(APUIF_INSTANCE_MAIN);
-            nsf_player_tick(g_nsf_player);
-        }
-
-        /* Tick FMSQ player on sub APU instance */
-        if (g_fmsq_player && g_fmsq_player->playing) {
-            apuif_select(APUIF_INSTANCE_SUB);
-            fmsq_player_tick(g_fmsq_player);
-        }
-
-        /* Process both APU instances and mix output */
-        int16_t buffer[(NTSC_SAMPLE + 1) * 2];
-        memset(buffer, 0, sizeof(buffer));
-        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
-        if (count > 0) {
-            apuif_audio_write(buffer, count, 1);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(frame_interval_ms));
-    }
-
-    if (g_fmsq_player) {
-        fmsq_player_free(g_fmsq_player);
-        apuemu_free(g_fmsq_player);
-        g_fmsq_player = NULL;
-    }
-    if (g_nsf_player) {
-        nsf_player_free(g_nsf_player);
-        apuemu_free(g_nsf_player);
-        g_nsf_player = NULL;
-    }
-    audio_handler_cleanup();
-
-    ESP_LOGI(TAG, "Audio task stopped");
-    vTaskDelete(NULL);
-}
+/* ------------------------------------------------------------------ */
+/* Common functions (platform-independent APU operations)              */
+/* ------------------------------------------------------------------ */
 
 int audio_task_nsf_play(const char *path) {
     if (!path || path[0] == '\0') {
@@ -115,18 +41,24 @@ int audio_task_nsf_play(const char *path) {
         return -1;
     }
 
-    // Build full path: "flash" + path (path starts with /)
+#ifdef CONFIG_IDF_TARGET_LINUX
+    /* Linux: paths are relative to project root */
     char full_path[256];
     snprintf(full_path, sizeof(full_path), "flash%s", path);
+#else
+    /* ESP32: paths are absolute via LittleFS */
+    char full_path[256];
+    snprintf(full_path, sizeof(full_path), "/flash%s", path);
+#endif
 
     ESP_LOGI(TAG, "NSF play: %s", full_path);
 
-    // Stop current playback
+    /* Stop current playback */
     if (g_nsf_player && g_nsf_player->playing) {
         g_nsf_player->playing = 0;
     }
 
-    // Free existing player if loaded from different file
+    /* Free existing player if loaded from different file */
     if (g_nsf_player) {
         nsf_player_free(g_nsf_player);
     } else {
@@ -137,7 +69,7 @@ int audio_task_nsf_play(const char *path) {
         }
     }
 
-    // Load and start
+    /* Load and start */
     if (nsf_player_load(g_nsf_player, full_path) != 0) {
         ESP_LOGE(TAG, "NSF play: failed to load %s", full_path);
         apuemu_free(g_nsf_player);
@@ -180,8 +112,10 @@ int audio_task_fmsq_play_slot(uint32_t music_id) {
 
     apuif_select(APUIF_INSTANCE_SUB);
 
-    /* Flush ring buffer to minimize playback latency */
+#ifdef __linux__
+    /* Flush ring buffer to minimize playback latency (Linux/SDL2 only) */
     apuif_ring_flush();
+#endif
 
     if (fmsq_player_load_from_memory(g_fmsq_player, data, size) != 0) {
         ESP_LOGE(TAG, "FMSQ play_slot: load failed for track %lu", (unsigned long)music_id);
@@ -193,16 +127,15 @@ int audio_task_fmsq_play_slot(uint32_t music_id) {
     return 0;
 }
 
-/* NES APU CPU clock (NTSC) */
-#define APU_CPU_CLOCK 1789773
-
 int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t duty, uint8_t sweep) {
     if (freq == 0) return -1;
 
     apuif_select(APUIF_INSTANCE_SUB);
 
-    /* Flush ring buffer to minimize latency */
+#ifdef __linux__
+    /* Flush ring buffer to minimize latency (Linux/SDL2 only) */
     apuif_ring_flush();
+#endif
 
     /* Stop FMSQ playback if running (avoid conflicts on SUB instance) */
     if (g_fmsq_player && g_fmsq_player->playing) {
@@ -287,35 +220,176 @@ int audio_task_note_off(uint8_t channel) {
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* Platform-specific audio_task() main loop                           */
+/* ------------------------------------------------------------------ */
+
+#ifdef CONFIG_IDF_TARGET_LINUX
+
+#define NSF_FILE_PATH  "/project/flash/data/test.nsf"
+#define FMSQ_FILE_PATH "/project/flash/data/test.fmsq"
+
+void audio_task(void *pvParameters) {
+    ESP_LOGI(TAG, "Audio task started (Linux)");
+
+    /* Initialize SDL2 audio handler */
+    if (audio_handler_init() < 0) {
+        ESP_LOGE(TAG, "Audio handler initialization failed");
+        return;
+    }
+
+    /* Initialize main APU (instance 0: NSF) */
+    apuif_init();
+
+    /* Load NSF file on main APU instance (playback starts on command) */
+    g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
+    if (g_nsf_player) {
+        if (nsf_player_load(g_nsf_player, NSF_FILE_PATH) == 0) {
+            ESP_LOGI(TAG, "NSF loaded: %d songs (waiting for play command)", g_nsf_player->header.total_songs);
+        } else {
+            ESP_LOGW(TAG, "No NSF file at %s", NSF_FILE_PATH);
+            apuemu_free(g_nsf_player);
+            g_nsf_player = NULL;
+        }
+    }
+
+    /* Initialize sub APU (instance 1: FMSQ + note_on/off) */
+    apuif_init_sub();
+
+    g_fmsq_player = (fmsq_player_t *)apuemu_malloc(sizeof(fmsq_player_t));
+    if (g_fmsq_player) {
+        if (fmsq_player_load(g_fmsq_player, FMSQ_FILE_PATH) == 0) {
+            fmsq_player_reset(g_fmsq_player);
+            g_fmsq_player->playing = 0;  /* Wait for play command */
+            ESP_LOGI(TAG, "FMSQ loaded: %d frames (waiting for play command)", g_fmsq_player->frame_count);
+        } else {
+            ESP_LOGW(TAG, "No FMSQ file at %s", FMSQ_FILE_PATH);
+            apuemu_free(g_fmsq_player);
+            g_fmsq_player = NULL;
+        }
+    }
+
+    /* 60Hz audio processing loop */
+    const uint32_t frame_interval_ms = 16;
+
+    while (task_running) {
+        /* Tick NSF player on main APU instance */
+        if (g_nsf_player && g_nsf_player->playing) {
+            apuif_select(APUIF_INSTANCE_MAIN);
+            nsf_player_tick(g_nsf_player);
+        }
+
+        /* Tick FMSQ player on sub APU instance */
+        if (g_fmsq_player && g_fmsq_player->playing) {
+            apuif_select(APUIF_INSTANCE_SUB);
+            fmsq_player_tick(g_fmsq_player);
+        }
+
+        /* Process both APU instances and mix output */
+        int16_t buffer[(NTSC_SAMPLE + 1) * 2];
+        memset(buffer, 0, sizeof(buffer));
+        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
+        if (count > 0) {
+            apuif_audio_write(buffer, count, 1);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(frame_interval_ms));
+    }
+
+    if (g_fmsq_player) {
+        fmsq_player_free(g_fmsq_player);
+        apuemu_free(g_fmsq_player);
+        g_fmsq_player = NULL;
+    }
+    if (g_nsf_player) {
+        nsf_player_free(g_nsf_player);
+        apuemu_free(g_nsf_player);
+        g_nsf_player = NULL;
+    }
+    audio_handler_cleanup();
+
+    ESP_LOGI(TAG, "Audio task stopped");
+    vTaskDelete(NULL);
+}
+
 #else /* ESP32 */
+
+#include "esp_timer.h"
+
+#define NSF_FILE_PATH "/flash/data/test.nsf"
 
 void audio_task(void *pvParameters) {
     ESP_LOGI(TAG, "Audio task started on core %d", xPortGetCoreID());
-    audio_check_impl();
-}
 
-int audio_task_nsf_play(const char *path) {
-    // TODO: Implement for ESP32
-    return -1;
-}
+    /* Initialize main APU (instance 0: NSF) */
+    apuif_init();
 
-void audio_task_nsf_stop(void) {
-    // TODO: Implement for ESP32
-}
+    /* Initialize sub APU (instance 1: FMSQ + note_on/off) */
+    apuif_init_sub();
 
-int audio_task_fmsq_play_slot(uint32_t music_id) {
-    // TODO: Implement for ESP32
-    return -1;
-}
+    /* Load default NSF file (playback starts on command from Core) */
+    g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
+    if (g_nsf_player) {
+        if (nsf_player_load(g_nsf_player, NSF_FILE_PATH) == 0) {
+            ESP_LOGI(TAG, "NSF loaded: %d songs (waiting for play command)",
+                     g_nsf_player->header.total_songs);
+        } else {
+            ESP_LOGW(TAG, "No NSF file at %s", NSF_FILE_PATH);
+            apuemu_free(g_nsf_player);
+            g_nsf_player = NULL;
+        }
+    }
 
-int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t duty, uint8_t sweep) {
-    // TODO: Implement for ESP32
-    return -1;
-}
+    /* 60Hz timing */
+    const uint64_t target_frame_time_us = 16667;
+    uint64_t next_frame_time = esp_timer_get_time();
 
-int audio_task_note_off(uint8_t channel) {
-    // TODO: Implement for ESP32
-    return -1;
+    while (task_running) {
+        /* Tick NSF player on main APU instance */
+        if (g_nsf_player && g_nsf_player->playing) {
+            apuif_select(APUIF_INSTANCE_MAIN);
+            nsf_player_tick(g_nsf_player);
+        }
+
+        /* Tick FMSQ player on sub APU instance */
+        if (g_fmsq_player && g_fmsq_player->playing) {
+            apuif_select(APUIF_INSTANCE_SUB);
+            fmsq_player_tick(g_fmsq_player);
+        }
+
+        /* Process both APU instances and mix output */
+        int16_t buffer[(NTSC_SAMPLE + 1) * 2];
+        memset(buffer, 0, sizeof(buffer));
+        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
+        if (count > 0) {
+            apuif_audio_write(buffer, count, 1);
+        }
+
+        /* Frame timing */
+        next_frame_time += target_frame_time_us;
+        uint64_t now = esp_timer_get_time();
+        int64_t sleep_time_us = next_frame_time - now;
+
+        if (sleep_time_us > 1000) {
+            vTaskDelay(pdMS_TO_TICKS(sleep_time_us / 1000));
+        } else if (sleep_time_us < 0) {
+            next_frame_time = now;
+        }
+    }
+
+    if (g_fmsq_player) {
+        fmsq_player_free(g_fmsq_player);
+        apuemu_free(g_fmsq_player);
+        g_fmsq_player = NULL;
+    }
+    if (g_nsf_player) {
+        nsf_player_free(g_nsf_player);
+        apuemu_free(g_nsf_player);
+        g_nsf_player = NULL;
+    }
+
+    ESP_LOGI(TAG, "Audio task stopped");
+    vTaskDelete(NULL);
 }
 
 #endif /* CONFIG_IDF_TARGET_LINUX */

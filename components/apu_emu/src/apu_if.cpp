@@ -29,6 +29,12 @@ static int _audio_fraction = 0;
 static int _initialized = 0;
 static volatile int _use_external_process = 0;
 
+/* Dual APU instance support */
+static apu_t* _apu_sub = NULL;
+static int _sub_initialized = 0;
+static int _current_instance = APUIF_INSTANCE_MAIN;
+static int _sub_audio_fraction = 0;
+
 uint8_t _audio_buffer[1024] __attribute__((aligned(4)));
 uint32_t volatile _audio_r = 0;
 uint32_t volatile _audio_w = 0;
@@ -312,11 +318,26 @@ int apuif_process(int16_t* buff, int len)
 
 void apuif_write_reg(uint32_t address, uint8_t value)
 {
-    apu_write(address, value);
+    if (_current_instance == APUIF_INSTANCE_SUB && _sub_initialized) {
+        apu_setcontext(_apu_sub);
+        apu_write(address, value);
+        apu_getcontext(_apu_sub);
+        apu_setcontext(_apu);
+    } else {
+        apu_setcontext(_apu);
+        apu_write(address, value);
+        apu_getcontext(_apu);
+    }
 }
 
 uint8_t apuif_read_reg(uint32_t address)
 {
+    if (_current_instance == APUIF_INSTANCE_SUB && _sub_initialized) {
+        apu_setcontext(_apu_sub);
+        uint8_t val = apu_read(address);
+        apu_setcontext(_apu);
+        return val;
+    }
     return apu_read(address);
 }
 
@@ -510,6 +531,82 @@ int apuif_parse_apu_log(const char* filename) {
     
     free(entries);
     return true;
+}
+
+/* --- Dual APU instance support --- */
+
+void apuif_init_sub(void)
+{
+    if (_sub_initialized) return;
+    if (!_initialized) {
+        printf("Error: main APU must be initialized before sub\n");
+        return;
+    }
+
+    _apu_sub = apu_create(0, _audio_frequency, 60, 8);
+    apu_getcontext(_apu_sub);
+
+    /* Restore main context */
+    apu_setcontext(_apu);
+
+    _sub_audio_fraction = 0;
+    _sub_initialized = 1;
+    printf("Sub APU initialized for ESP32\n");
+}
+
+void apuif_select(int instance)
+{
+    if (instance >= 0 && instance < APUIF_INSTANCE_MAX) {
+        _current_instance = instance;
+    }
+}
+
+int apuif_process_mix(int16_t* buff, int len)
+{
+    /* Process main APU */
+    apu_setcontext(_apu);
+    int n = apuif_frame_sample_count();
+    if (n > len) {
+        printf("bad buffer size %d > %d\n", n, len);
+        return -1;
+    }
+
+    int16_t main_buf[528];
+    apu_process(main_buf, n);
+    uint8_t* b8 = (uint8_t*)main_buf;
+    for (int i = n - 1; i >= 0; i--) {
+        main_buf[i] = (b8[i] ^ 0x80) << 8;
+    }
+    apu_getcontext(_apu);
+
+    if (_sub_initialized) {
+        /* Process sub APU */
+        apu_setcontext(_apu_sub);
+
+        int16_t sub_buf[528];
+        apu_process(sub_buf, n);
+        uint8_t* b8s = (uint8_t*)sub_buf;
+        for (int i = n - 1; i >= 0; i--) {
+            sub_buf[i] = (b8s[i] ^ 0x80) << 8;
+        }
+        apu_getcontext(_apu_sub);
+
+        /* Restore main context */
+        apu_setcontext(_apu);
+
+        /* Mix: sum of both channels, clamp to int16 range */
+        for (int i = 0; i < n; i++) {
+            int32_t mixed = (int32_t)main_buf[i] + (int32_t)sub_buf[i];
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            buff[i] = (int16_t)mixed;
+        }
+    } else {
+        /* No sub APU, just copy main */
+        memcpy(buff, main_buf, n * sizeof(int16_t));
+    }
+
+    return n;
 }
 
 /* Memory allocation proxy - ESP32: use PSRAM */
