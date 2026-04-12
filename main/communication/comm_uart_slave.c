@@ -180,9 +180,10 @@ static int process_complete_frame(void) {
         }
     }
 
-    // Dequeue ACK response from message_handler_task
+    // Dequeue ACK response from message_handler_task (non-blocking).
+    // ACKs that are not ready yet will be drained by uart_process() loop.
     ack_queue_item_t ack_item;
-    TickType_t ack_wait = s_ack_required_in_frame ? pdMS_TO_TICKS(100) : 0;
+    TickType_t ack_wait = 0;
     if (xQueueReceive(s_ack_queue, &ack_item, ack_wait) == pdTRUE) {
         s_last_ack_seq = ack_item.ack_seq;
         s_last_status = ack_item.status;
@@ -302,6 +303,16 @@ static void stats_update_and_print(void) {
 static int uart_process(void) {
     if (!uart_running) {
         return 0;
+    }
+
+    // Drain pending app ACKs independent of frame reception.
+    // This prevents deadlock where Core waits for ACK but no new frame
+    // arrives to trigger dequeue in process_complete_frame().
+    ack_queue_item_t ack_item;
+    while (xQueueReceive(s_ack_queue, &ack_item, 0) == pdTRUE) {
+        send_response(ack_item.ack_seq, ack_item.status,
+                      ack_item.data_len > 0 ? ack_item.data : NULL,
+                      ack_item.data_len);
     }
 
     uint8_t buf[128];
