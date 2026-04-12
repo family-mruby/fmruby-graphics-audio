@@ -274,7 +274,7 @@ static bool rx_feed_byte(uint8_t byte) {
 
 // Throughput statistics (reset every STATS_INTERVAL_MS)
 // Note: s_stats_tx_bytes declared earlier (before send_response)
-#define STATS_INTERVAL_MS  3000
+#define STATS_INTERVAL_MS  5000
 static uint32_t s_stats_rx_bytes = 0;
 static uint32_t s_stats_frames = 0;
 static uint32_t s_stats_last_ms = 0;

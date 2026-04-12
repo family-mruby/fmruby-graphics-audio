@@ -96,7 +96,7 @@ extern "C" void app_main(void)
   while (1) {
     count++;
     if (count % 10 == 0) {
-        ESP_LOGI(TAG, "running... count=%d (core %d)", count, xPortGetCoreID());
+        ESP_LOGD(TAG, "running... count=%d (core %d)", count, xPortGetCoreID());
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
