@@ -19,6 +19,8 @@
 #include "fmrb_pin_assign.h"
 #include "uart_link_frame.h"
 
+extern uint32_t graphics_handler_get_and_reset_present_count(void);
+
 static const char *TAG = "uart_slave";
 
 #define UART_PORT_NUM       UART_NUM_1
@@ -291,8 +293,10 @@ static void stats_update_and_print(void) {
         uint32_t rx_bps = (s_stats_rx_bytes * 1000) / elapsed;
         uint32_t tx_bps = (s_stats_tx_bytes * 1000) / elapsed;
         uint32_t fps = (s_stats_frames * 1000) / elapsed;
-        ESP_LOGI(TAG, "stats: rx=%lu B/s tx=%lu B/s frames=%lu/s crc_err=%lu",
-                 rx_bps, tx_bps, fps, s_crc_error_count);
+        uint32_t presents = graphics_handler_get_and_reset_present_count();
+        uint32_t pps = (presents * 1000) / elapsed;
+        ESP_LOGI(TAG, "stats: rx=%lu B/s tx=%lu B/s frames=%lu/s presents=%lu/s crc_err=%lu",
+                 rx_bps, tx_bps, fps, pps, s_crc_error_count);
         s_stats_rx_bytes = 0;
         s_stats_tx_bytes = 0;
         s_stats_frames = 0;
@@ -395,7 +399,8 @@ static int uart_init(MessageBufferHandle_t msg_buffer) {
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .flow_ctrl = UART_HW_FLOWCTRL_CTS_RTS,
+        .rx_flow_ctrl_thresh = 120,
         .source_clk = UART_SCLK_DEFAULT,
     };
 
@@ -407,7 +412,7 @@ static int uart_init(MessageBufferHandle_t msg_buffer) {
 
     err = uart_set_pin(UART_PORT_NUM,
                        FMRB_PIN_UART_LINK_TX, FMRB_PIN_UART_LINK_RX,
-                       UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+                       FMRB_PIN_UART_LINK_RTS, FMRB_PIN_UART_LINK_CTS);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "UART set pin failed: %d", err);
         goto cleanup;

@@ -25,6 +25,15 @@ extern "C" {
 
 static const char *TAG = "graphics_handler";
 
+// Present counter for stats
+static uint32_t s_present_count = 0;
+
+extern "C" uint32_t graphics_handler_get_and_reset_present_count(void) {
+    uint32_t count = s_present_count;
+    s_present_count = 0;
+    return count;
+}
+
 // Mutex to protect canvas state (render_buffer, push_x/y, is_visible, etc.)
 // between graphics_task (render) and message_handler_task (command processing)
 static SemaphoreHandle_t g_canvas_mutex = nullptr;
@@ -265,6 +274,7 @@ static void graphics_handler_render_frame_internal() {
     if (bg_canvas->draw_buffer) {
         bg_canvas->draw_buffer->pushSprite(screen_buffer, 0, 0);
     }
+    taskYIELD();  // Yield after heavy background copy to avoid WDT
 
     // Composite all other visible canvases onto the background canvas
     for (size_t i = 0; i < g_canvas_count; i++) {
@@ -283,6 +293,7 @@ static void graphics_handler_render_frame_internal() {
             } else {
                 canvas->render_buffer->pushSprite(screen_buffer, canvas->push_x, canvas->push_y);
             }
+            taskYIELD();  // Yield after each canvas composite to avoid WDT
         }
     }
 
@@ -309,6 +320,7 @@ static void graphics_handler_render_frame_internal() {
 
     // Push the complete screen buffer (with cursor) to g_lgfx in a single transfer
     screen_buffer->pushSprite(g_lgfx, 0, 0);
+    taskYIELD();  // Yield after final screen push to avoid WDT
     ESP_LOGD(TAG, "Screen buffer pushed to display");
 }
 
@@ -944,6 +956,24 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             }
             break;
 
+        case FMRB_LINK_GFX_SET_CANVAS_VISIBLE:
+            if (size >= sizeof(fmrb_link_graphics_set_canvas_visible_t)) {
+                const fmrb_link_graphics_set_canvas_visible_t *cmd = (const fmrb_link_graphics_set_canvas_visible_t*)data;
+
+                canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+                if (!canvas) {
+                    ESP_LOGE(TAG, "Canvas %u not found for SET_CANVAS_VISIBLE", cmd->canvas_id);
+                    return -1;
+                }
+
+                xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
+                canvas->is_visible = (cmd->visible != 0);
+                xSemaphoreGive(g_canvas_mutex);
+                ESP_LOGI(TAG, "Canvas %u visibility set to %d", cmd->canvas_id, cmd->visible);
+                return 0;
+            }
+            break;
+
         case FMRB_LINK_GFX_UPDATE_WINDOW:
             if (size >= sizeof(fmrb_link_graphics_update_window_t)) {
                 const fmrb_link_graphics_update_window_t *cmd = (const fmrb_link_graphics_update_window_t*)data;
@@ -1031,6 +1061,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                     src_canvas->push_x = cmd->x;
                     src_canvas->push_y = cmd->y;
                     src_canvas->is_visible = true;  // Make visible on first present()
+                    s_present_count++;
                     push_x = 0;
                     push_y = 0;
                 } else if(cmd->dest_canvas_id == 0) {

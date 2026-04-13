@@ -72,6 +72,8 @@ int input_socket_start(void) {
     socklen_t client_len = sizeof(client_addr);
     g_client_fd = accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len);
     if (g_client_fd >= 0) {
+        int cflags = fcntl(g_client_fd, F_GETFL, 0);
+        fcntl(g_client_fd, F_SETFL, cflags | O_NONBLOCK);
         ESP_LOGI(TAG, "Client connected");
     }
 
@@ -99,6 +101,8 @@ int input_socket_send_event(uint8_t type, const void* data, uint16_t len) {
         socklen_t client_len = sizeof(client_addr);
         g_client_fd = accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len);
         if (g_client_fd >= 0) {
+            int cflags = fcntl(g_client_fd, F_GETFL, 0);
+            fcntl(g_client_fd, F_SETFL, cflags | O_NONBLOCK);
             ESP_LOGI(TAG, "Client connected");
         }
     }
@@ -126,6 +130,10 @@ int input_socket_send_event(uint8_t type, const void* data, uint16_t len) {
     do {
         sent = send(g_client_fd, packet, 3 + len, MSG_NOSIGNAL);
     } while (sent < 0 && errno == EINTR);
+    if (sent < 0 && errno == EAGAIN) {
+        ESP_LOGW(TAG, "Socket send would block (type=%u, len=%u)", type, len);
+        return -1;
+    }
     if (sent < 0) {
         if (errno == EPIPE || errno == ECONNRESET) {
             ESP_LOGI(TAG, "Client disconnected");

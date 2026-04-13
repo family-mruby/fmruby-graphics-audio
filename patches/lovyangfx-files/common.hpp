@@ -26,6 +26,10 @@ Contributors:
 
 #include "opencv/common.hpp"
 
+#elif defined (__linux__) && defined(LGFX_LINUX_FB)
+
+#include "framebuffer/common.hpp"
+
 #elif defined (ESP_PLATFORM)
 
 #include "esp32/common.hpp"
@@ -57,10 +61,6 @@ Contributors:
 #elif defined (ARDUINO)
 
 #include "arduino_default/common.hpp"
-
-#elif defined (__linux__) && defined(LGFX_LINUX_FB)
-
-#include "framebuffer/common.hpp"
 
 #else
 

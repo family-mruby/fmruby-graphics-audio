@@ -118,10 +118,14 @@ void graphics_task(void *pvParameters) {
     }
     ESP_LOGI(TAG, "Host server running. Ready to receive commands.");
 
+    // Main loop timing stats
+    uint32_t loop_count = 0;
+    uint32_t total_render_ms = 0;
+    uint32_t max_render_ms = 0;
+    uint32_t stats_last_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
     // Main loop
     while (task_running) {
-        //printf("--main loop------------------------------------.\n");
-
         // Process display events (e.g., SDL2 window close)
         int display_result = DISPLAY_INTERFACE->process_events();
         if (display_result == 1) {
@@ -141,10 +145,28 @@ void graphics_task(void *pvParameters) {
 #endif
 
         // Render all canvases to screen in Z-order
+        uint32_t render_start = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         graphics_handler_render_frame();
+        uint32_t render_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS) - render_start;
 
         // Update display
         DISPLAY_INTERFACE->display();
+
+        loop_count++;
+        total_render_ms += render_ms;
+        if (render_ms > max_render_ms) max_render_ms = render_ms;
+
+        // Print stats every 5 seconds
+        uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        if (now - stats_last_ms >= 5000) {
+            uint32_t avg_ms = loop_count > 0 ? total_render_ms / loop_count : 0;
+            ESP_LOGI(TAG, "loop: count=%lu render_avg=%lums render_max=%lums",
+                     loop_count, avg_ms, max_render_ms);
+            loop_count = 0;
+            total_render_ms = 0;
+            max_render_ms = 0;
+            stats_last_ms = now;
+        }
 
         // Small delay to prevent busy waiting
         lgfx::delay(16); // ~60 FPS

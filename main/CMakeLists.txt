@@ -12,12 +12,12 @@ set(SRCS
 
 # Add platform-specific sources
 if(CONFIG_IDF_TARGET_LINUX)
-    # Linux/SDL platform implementation
+    # Linux headless platform (SDL2 is in a separate process)
     list(APPEND SRCS
         "graphics/graphics_handler.cpp"
-        "graphics/display_sdl2.cpp"
-        "audio/audio_handler_sdl2.c"
-        "input_linux/input_handler.c"
+        "graphics/display_shm.cpp"
+        "audio/audio_handler_shm.c"
+        "input_linux/input_handler_ipc.c"
         "input_linux/input_socket.c"
         "communication/comm_socket_server.c"
         "communication/fmrb_link_msgpack.c"
@@ -48,6 +48,7 @@ set(INCLUDE_DIRS
     "common"
     "communication"
     "graphics"
+    "include"
     "input_linux"
     "mempool"
     "tasks"
@@ -90,9 +91,8 @@ if(ENABLE_GRAPHICS_TEST)
     message(STATUS "Graphics test enabled")
 endif()
 
-# Linux-specific: Link SDL2 library and define LGFX_USE_SDL
+# Linux-specific: Link shared memory and realtime libraries (no SDL2)
 if(CONFIG_IDF_TARGET_LINUX)
-    target_link_libraries(${COMPONENT_LIB} INTERFACE SDL2)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE LGFX_USE_SDL)
-    target_include_directories(${COMPONENT_LIB} PRIVATE /usr/include/SDL2)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE rt pthread)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE LGFX_LINUX_FB)
 endif()

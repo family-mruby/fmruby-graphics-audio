@@ -210,3 +210,11 @@ int audio_handler_get_track(uint32_t music_id, const uint8_t **out_data, uint32_
     }
     return -1;
 }
+
+void audio_handler_push_samples(void) {
+    /* No-op on ESP32: I2S DMA handles audio output */
+}
+
+void audio_handler_flush(void) {
+    /* No-op on ESP32 */
+}

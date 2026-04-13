@@ -2,6 +2,7 @@
 if (IDF_TARGET STREQUAL "linux")
     idf_component_register(
         SRCS "src/apu_if_linux.c"
+             "src/apu_helper.c"
              "src/nofrendo/nes_apu.c"
              "src/nes_cpu.c"
              "src/nsf_player.c"
@@ -34,6 +35,7 @@ else()
 
     idf_component_register(
         SRCS "src/apu_if.cpp"
+             "src/apu_helper.c"
              "src/nofrendo/nes_apu.c"
              "src/nes_cpu.c"
              "src/nsf_player.c"

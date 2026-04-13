@@ -187,23 +187,34 @@ void message_handler_task(void *pvParameters) {
     message_data_t msg;
     size_t bytes_recv;
     
+    uint32_t consecutive_msgs = 0;
+
     while (task_running) {
         // Wait for a message from the comm_task
         // pdMS_TO_TICKS(100) = 100ms timeout to allow task_running check
         bytes_recv = xMessageBufferReceive(msg_buffer, &msg, sizeof(message_data_t), pdMS_TO_TICKS(1000));
-        
+
         if (bytes_recv > 0) {
             // Process the message
             ESP_LOGD(TAG, "Received message: type=%u seq=%u sub_cmd=0x%02x len=%u",
                    msg.type, msg.seq, msg.sub_cmd, msg.payload_len);
-            
+
             int result = process_message(msg.type, msg.seq, msg.sub_cmd,
                                         msg.payload, msg.payload_len);
-            
+
             if (result < 0) {
                 ESP_LOGW(TAG, "Handler failed: type=%u seq=%u sub_cmd=0x%02x (result=%d)",
                        msg.type, msg.seq, msg.sub_cmd, result);
             }
+
+            // Yield periodically to prevent WDT when processing burst traffic
+            consecutive_msgs++;
+            if (consecutive_msgs >= 16) {
+                consecutive_msgs = 0;
+                vTaskDelay(1);
+            }
+        } else {
+            consecutive_msgs = 0;
         }
         // If timeout (bytes_recv == 0), loop continues to check task_running
     }

@@ -1,6 +1,10 @@
-#include "lgfx_linux.h"  // Must be first - defines LGFX class for Linux/SDL
-
-#include <SDL2/SDL.h>
+/**
+ * @file main_linux.cpp
+ * @brief Linux headless entry point for fmruby-graphics-audio.
+ *        SDL2 display is handled by a separate process.
+ *        This process runs only FreeRTOS tasks for graphics composition,
+ *        audio emulation, and communication.
+ */
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
@@ -23,49 +27,22 @@ static const char *TAG = "main_linux";
 static volatile int running = 1;
 
 extern "C" void signal_handler(int sig) {
-    printf("\n\n\n+++++++++++++++++++++++++++++++++++++++");
-    printf("\n+++++++++++++++++++++++++++++++++++++++\n");
-    printf("Received signal %d, shutting down...\n", sig);
+    printf("\nReceived signal %d, shutting down...\n", sig);
 
-    // Set global running flag
     running = 0;
 
-    // Stop all tasks (sets task_running flags)
     comm_task_stop();
     message_handler_task_stop();
     audio_task_stop();
     graphics_task_stop();
 
-    // Post SDL_QUIT event to stop LovyanGFX event loop immediately
-    SDL_Event quit_event;
-    quit_event.type = SDL_QUIT;
-    SDL_PushEvent(&quit_event);
-
-    // Give tasks a short time to detect shutdown flags
-    // This helps ensure clean shutdown before docker SIGKILL
     usleep(50000);  // 50ms wait for tasks to start cleanup
-
     printf("Signal handler completed, tasks stopping...\n");
-}
-
-// User function that runs in a separate thread
-int user_func(bool* thread_running) {
-    ESP_LOGI(TAG,"Family mruby Host (SDL2 + LovyanGFX) starting...\n");
-
-    graphics_task(NULL);
-
-    return 0;
 }
 
 extern "C" int app_main(void)
 {
-    // Initialize SDL core before creating any tasks that use SDL subsystems.
-    // LovyanGFX will add SDL_INIT_VIDEO later in Panel_sdl::setup(),
-    // and audio_task will add SDL_INIT_AUDIO via SDL_InitSubSystem().
-    SDL_Init(0);
-
-    // Disable SDL2 hardware cursor (we'll draw our own)
-    SDL_ShowCursor(SDL_DISABLE);
+    ESP_LOGI(TAG, "Family mruby Host (headless, SDL2 in separate process) starting...\n");
 
     // Setup signal handlers
     signal(SIGINT, signal_handler);
@@ -112,6 +89,22 @@ extern "C" int app_main(void)
         MESSAGE_HANDLER_TASK_CORE
     );
 
-    printf("Creating LGFX user_func for SDL2...\n");
-    return lgfx::Panel_sdl::main(user_func);
+    // Graphics task - now runs as a regular FreeRTOS task (no SDL2 main loop)
+    xTaskCreatePinnedToCore(
+        graphics_task,
+        "graphics_task",
+        GRAPHICS_TASK_STACK_SIZE,
+        NULL,
+        GRAPHICS_TASK_PRIORITY,
+        NULL,
+        GRAPHICS_TASK_CORE
+    );
+
+    // Main thread waits for shutdown signal
+    while (running) {
+        sleep(1);
+    }
+
+    ESP_LOGI(TAG, "Main thread exiting");
+    return 0;
 }

@@ -42,6 +42,20 @@ void audio_handler_set_volume(uint8_t volume);
 void audio_check_impl(void);
 
 /**
+ * @brief Push APU samples to shared memory ring buffer (Linux SHM mode only).
+ *        Called from audio_task's 60Hz loop to transfer samples to SDL2 process.
+ *        No-op on ESP32 (SDL2 audio callback handles this directly).
+ */
+void audio_handler_push_samples(void);
+
+/**
+ * @brief Flush audio output buffer to minimize latency.
+ *        Called on note_on/play to discard buffered silence so new sounds
+ *        are heard immediately. No-op on ESP32.
+ */
+void audio_handler_flush(void);
+
+/**
  * @brief Find loaded music track by ID
  * @param music_id Track ID to find
  * @param out_data Pointer to receive data pointer (not owned by caller)

@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "audio_handler.h"
 #include "apu_if.h"
+#include "apu_helper.h"
 #include "nsf_player.h"
 #include "fmsq_player.h"
 
@@ -113,8 +114,9 @@ int audio_task_fmsq_play_slot(uint32_t music_id) {
     apuif_select(APUIF_INSTANCE_SUB);
 
 #ifdef __linux__
-    /* Flush ring buffer to minimize playback latency (Linux/SDL2 only) */
+    /* Flush ring buffers to minimize playback latency (Linux only) */
     apuif_ring_flush();
+    audio_handler_flush();
 #endif
 
     if (fmsq_player_load_from_memory(g_fmsq_player, data, size) != 0) {
@@ -124,6 +126,20 @@ int audio_task_fmsq_play_slot(uint32_t music_id) {
 
     fmsq_player_reset(g_fmsq_player);
     ESP_LOGI(TAG, "FMSQ play_slot: playing track %lu", (unsigned long)music_id);
+
+#ifdef __linux__
+    /* Immediately generate and push first frame to minimize latency */
+    {
+        int16_t buf[(NTSC_SAMPLE + 1) * 2];
+        memset(buf, 0, sizeof(buf));
+        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]));
+        if (count > 0) {
+            apuif_audio_write(buf, count, 1);
+        }
+        audio_handler_push_samples();
+    }
+#endif
+
     return 0;
 }
 
@@ -133,8 +149,8 @@ int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t d
     apuif_select(APUIF_INSTANCE_SUB);
 
 #ifdef __linux__
-    /* Flush ring buffer to minimize latency (Linux/SDL2 only) */
     apuif_ring_flush();
+    audio_handler_flush();  /* Also flush SHM ring buffer */
 #endif
 
     /* Stop FMSQ playback if running (avoid conflicts on SUB instance) */
@@ -142,56 +158,37 @@ int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t d
         g_fmsq_player->playing = 0;
     }
 
-    uint8_t vol = volume & 0x0F;
-
     switch (channel) {
     case FMRB_APU_CH_PULSE1:
-    case FMRB_APU_CH_PULSE2: {
-        uint16_t timer = APU_CPU_CLOCK / (16 * freq) - 1;
-        uint16_t base = (channel == FMRB_APU_CH_PULSE1) ? 0x4000 : 0x4004;
-        /* Enable channel in status register */
-        uint8_t status_bit = (channel == FMRB_APU_CH_PULSE1) ? 0x01 : 0x02;
-        apuif_write_reg(0x4015, apuif_read_reg(0x4015) | status_bit);
-        /* VOL: duty(2) + length halt(1) + constant vol(1) + vol(4) */
-        apuif_write_reg(base + 0, ((duty & 0x03) << 6) | 0x30 | vol);
-        /* SWEEP */
-        apuif_write_reg(base + 1, sweep);
-        /* TIMER_LO */
-        apuif_write_reg(base + 2, timer & 0xFF);
-        /* TIMER_HI + length counter load */
-        apuif_write_reg(base + 3, 0xF8 | ((timer >> 8) & 0x07));
+    case FMRB_APU_CH_PULSE2:
+        apu_pulse_note_on(channel, freq, volume, duty, sweep);
         break;
-    }
-    case FMRB_APU_CH_TRIANGLE: {
-        uint16_t timer = APU_CPU_CLOCK / (32 * freq) - 1;
-        /* Enable triangle */
-        apuif_write_reg(0x4015, apuif_read_reg(0x4015) | 0x04);
-        /* LINEAR: halt(1) + counter(7) = 0xFF for sustained */
-        apuif_write_reg(0x4008, 0xFF);
-        /* TIMER_LO */
-        apuif_write_reg(0x400A, timer & 0xFF);
-        /* TIMER_HI + length counter load */
-        apuif_write_reg(0x400B, 0xF8 | ((timer >> 8) & 0x07));
+    case FMRB_APU_CH_TRIANGLE:
+        apu_triangle_note_on(freq);
         break;
-    }
-    case FMRB_APU_CH_NOISE: {
-        /* Enable noise */
-        apuif_write_reg(0x4015, apuif_read_reg(0x4015) | 0x08);
-        /* VOL: length halt + constant vol + volume */
-        apuif_write_reg(0x400C, 0x30 | vol);
-        /* PERIOD: low byte = period(0-15), bit7 = short mode */
-        uint8_t mode = (freq & 0x80);   /* short-cycle noise flag */
-        uint8_t period = freq & 0x0F;
-        apuif_write_reg(0x400E, mode | period);
-        /* LENGTH */
-        apuif_write_reg(0x400F, 0xF8);
+    case FMRB_APU_CH_NOISE:
+        apu_noise_note_on(freq & 0x0F, (freq & 0x80) ? 1 : 0, volume);
         break;
-    }
     default:
         return -1;
     }
 
-    ESP_LOGD(TAG, "note_on: ch=%d freq=%d vol=%d duty=%d", channel, freq, vol, duty);
+    ESP_LOGD(TAG, "note_on: ch=%d freq=%d vol=%d duty=%d", channel, freq, volume & 0x0F, duty);
+
+#ifdef __linux__
+    /* Generate one frame of samples and push immediately to SHM
+     * to avoid waiting up to 16ms for the next 60Hz push cycle */
+    {
+        int16_t buf[(NTSC_SAMPLE + 1) * 2];
+        memset(buf, 0, sizeof(buf));
+        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]));
+        if (count > 0) {
+            apuif_audio_write(buf, count, 1);
+        }
+        audio_handler_push_samples();
+    }
+#endif
+
     return 0;
 }
 
@@ -200,17 +197,14 @@ int audio_task_note_off(uint8_t channel) {
 
     switch (channel) {
     case FMRB_APU_CH_PULSE1:
-        apuif_write_reg(0x4000, 0x30); /* vol=0 */
-        break;
     case FMRB_APU_CH_PULSE2:
-        apuif_write_reg(0x4004, 0x30); /* vol=0 */
+        apu_pulse_note_off(channel);
         break;
     case FMRB_APU_CH_TRIANGLE:
-        /* Disable triangle channel */
-        apuif_write_reg(0x4015, apuif_read_reg(0x4015) & ~0x04);
+        apu_triangle_note_off();
         break;
     case FMRB_APU_CH_NOISE:
-        apuif_write_reg(0x400C, 0x30); /* vol=0 */
+        apu_noise_note_off();
         break;
     default:
         return -1;
@@ -292,6 +286,11 @@ void audio_task(void *pvParameters) {
         if (count > 0) {
             apuif_audio_write(buffer, count, 1);
         }
+
+#ifdef CONFIG_IDF_TARGET_LINUX
+        /* Transfer APU ring buffer samples to SHM for SDL2 process */
+        audio_handler_push_samples();
+#endif
 
         vTaskDelay(pdMS_TO_TICKS(frame_interval_ms));
     }

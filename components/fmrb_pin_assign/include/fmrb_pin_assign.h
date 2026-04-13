@@ -21,8 +21,10 @@
 // ========================================
 // UART Communication Pins (reuses SPI wiring)
 // ========================================
-#define FMRB_PIN_UART_LINK_TX  18  // -> S3 RX (GPIO13)
-#define FMRB_PIN_UART_LINK_RX  21  // <- S3 TX (GPIO11)
+#define FMRB_PIN_UART_LINK_TX   18  // -> S3 RX (GPIO13)
+#define FMRB_PIN_UART_LINK_RX   21  // <- S3 TX (GPIO11)
+#define FMRB_PIN_UART_LINK_RTS  22  // -> S3 CTS (GPIO10)
+#define FMRB_PIN_UART_LINK_CTS  19  // <- S3 RTS (GPIO12)
 
 // ========================================
 // I2S Audio Output Pins (apu_emu)

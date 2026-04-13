@@ -23,6 +23,10 @@ Contributors:
 #include "sdl/Bus_I2C.hpp"
 #include "sdl/Panel_sdl.hpp"
 
+#elif defined (__linux__) && defined(LGFX_LINUX_FB)
+
+#include "framebuffer/Panel_fb.hpp"
+
 #elif defined (ESP_PLATFORM)
 
  #include <sdkconfig.h>
