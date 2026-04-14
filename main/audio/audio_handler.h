@@ -69,7 +69,7 @@ int audio_handler_get_track(uint32_t music_id, const uint8_t **out_data, uint32_
  * @param path NSF file path (relative to flash, e.g. "/data/test.nsf")
  * @return 0 on success, -1 on error
  */
-int audio_task_nsf_play(const char *path);
+int audio_task_nsf_play(const char *path, int track);
 
 /**
  * @brief Stop NSF playback

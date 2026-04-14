@@ -572,6 +572,47 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             }
             break;
 
+        case FMRB_LINK_GFX_BLEND_RECT:
+            if (size >= sizeof(fmrb_link_graphics_blend_rect_t)) {
+                const fmrb_link_graphics_blend_rect_t *cmd = (const fmrb_link_graphics_blend_rect_t*)data;
+                canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+                if (!canvas) {
+                    ESP_LOGE(TAG, "Canvas %u not found for BLEND_RECT", cmd->canvas_id);
+                    return -1;
+                }
+                LGFX_Sprite* sprite = canvas->draw_buffer;
+                int16_t x_end = cmd->x + cmd->width;
+                int16_t y_end = cmd->y + cmd->height;
+                if (cmd->mode == FMRB_BLEND_MODE_XOR) {
+                    for (int16_t py = cmd->y; py < y_end; py++) {
+                        for (int16_t px = cmd->x; px < x_end; px++) {
+                            uint8_t pixel = (uint8_t)sprite->readPixel(px, py);
+                            sprite->drawPixel(px, py, pixel ^ cmd->color);
+                        }
+                    }
+                } else {
+                    // FMRB_BLEND_MODE_ADD (default)
+                    uint8_t add_r = (cmd->color >> 5) & 0x07;
+                    uint8_t add_g = (cmd->color >> 2) & 0x07;
+                    uint8_t add_b = cmd->color & 0x03;
+                    for (int16_t py = cmd->y; py < y_end; py++) {
+                        for (int16_t px = cmd->x; px < x_end; px++) {
+                            uint8_t pixel = (uint8_t)sprite->readPixel(px, py);
+                            uint8_t r = (pixel >> 5) & 0x07;
+                            uint8_t g = (pixel >> 2) & 0x07;
+                            uint8_t b = pixel & 0x03;
+                            r = (r + add_r > 7) ? 7 : r + add_r;
+                            g = (g + add_g > 7) ? 7 : g + add_g;
+                            b = (b + add_b > 3) ? 3 : b + add_b;
+                            sprite->drawPixel(px, py, (r << 5) | (g << 2) | b);
+                        }
+                    }
+                }
+                canvas->dirty = true;
+                return 0;
+            }
+            break;
+
         case FMRB_LINK_GFX_DRAW_ROUND_RECT:
             if (size >= sizeof(fmrb_link_graphics_round_rect_t)) {
                 const fmrb_link_graphics_round_rect_t *cmd = (const fmrb_link_graphics_round_rect_t*)data;
@@ -1265,19 +1306,25 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 return -1;
             }
 
+            // Decode fixed-point scale (x256) to float
+            float scale_x = (cmd->scale_x_fp8 != 0) ? cmd->scale_x_fp8 / 256.0f : 1.0f;
+            float scale_y = (cmd->scale_y_fp8 != 0) ? cmd->scale_y_fp8 / 256.0f : scale_x;
+
             // Draw PNG directly onto target (correct color/alpha handling)
             if (entry->png_data && entry->png_data_len > 0) {
                 if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    g_lgfx->drawPng(entry->png_data, entry->png_data_len, cmd->x, cmd->y);
-                    ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) on screen",
-                            cmd->image_id, cmd->x, cmd->y);
+                    g_lgfx->drawPng(entry->png_data, entry->png_data_len,
+                                    cmd->x, cmd->y, 0, 0, 0, 0, scale_x, scale_y);
+                    ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) scale=%.2fx%.2f on screen",
+                            cmd->image_id, cmd->x, cmd->y, scale_x, scale_y);
                 } else {
                     canvas_state_t *canvas = canvas_state_find(cmd->canvas_id);
                     if (canvas && canvas->draw_buffer) {
-                        canvas->draw_buffer->drawPng(entry->png_data, entry->png_data_len, cmd->x, cmd->y);
+                        canvas->draw_buffer->drawPng(entry->png_data, entry->png_data_len,
+                                                     cmd->x, cmd->y, 0, 0, 0, 0, scale_x, scale_y);
                         canvas->dirty = true;
-                        ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) on canvas %u",
-                                cmd->image_id, cmd->x, cmd->y, cmd->canvas_id);
+                        ESP_LOGD(TAG, "DRAW_IMAGE: id=%u at (%d,%d) scale=%.2fx%.2f on canvas %u",
+                                cmd->image_id, cmd->x, cmd->y, scale_x, scale_y, cmd->canvas_id);
                     } else {
                         ESP_LOGE(TAG, "DRAW_IMAGE: canvas %u not found", cmd->canvas_id);
                         return -1;
@@ -1316,6 +1363,40 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 }
             }
             ESP_LOGW(TAG, "DELETE_IMAGE: id=%u not found", cmd->image_id);
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_SET_OUTPUT_LEVEL: {
+            if (size < 1) return -1;
+            uint8_t level = data[0];
+#ifndef CONFIG_IDF_TARGET_LINUX
+            if (g_lgfx) {
+                auto panel = (lgfx::Panel_CVBS*)((lgfx::LGFX_Device*)g_lgfx)->getPanel();
+                if (panel) {
+                    panel->setOutputLevel(level);
+                    ESP_LOGI(TAG, "SET_OUTPUT_LEVEL: %u", level);
+                }
+            }
+#else
+            ESP_LOGI(TAG, "SET_OUTPUT_LEVEL: %u (no-op on Linux)", level);
+#endif
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_SET_CHROMA_LEVEL: {
+            if (size < 1) return -1;
+            uint8_t level = data[0];
+#ifndef CONFIG_IDF_TARGET_LINUX
+            if (g_lgfx) {
+                auto panel = (lgfx::Panel_CVBS*)((lgfx::LGFX_Device*)g_lgfx)->getPanel();
+                if (panel) {
+                    panel->setChromaLevel(level);
+                    ESP_LOGI(TAG, "SET_CHROMA_LEVEL: %u", level);
+                }
+            }
+#else
+            ESP_LOGI(TAG, "SET_CHROMA_LEVEL: %u (no-op on Linux)", level);
+#endif
             return 0;
         }
 

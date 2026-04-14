@@ -36,7 +36,7 @@ static fmsq_player_t *g_fmsq_player = NULL;
 /* Common functions (platform-independent APU operations)              */
 /* ------------------------------------------------------------------ */
 
-int audio_task_nsf_play(const char *path) {
+int audio_task_nsf_play(const char *path, int track) {
     if (!path || path[0] == '\0') {
         ESP_LOGW(TAG, "NSF play: empty path");
         return -1;
@@ -79,7 +79,7 @@ int audio_task_nsf_play(const char *path) {
     }
 
     apuif_select(APUIF_INSTANCE_MAIN);
-    nsf_player_start(g_nsf_player, 0);
+    nsf_player_start(g_nsf_player, track);
     return 0;
 }
 
@@ -87,6 +87,9 @@ void audio_task_nsf_stop(void) {
     if (g_nsf_player) {
         ESP_LOGI(TAG, "NSF stop");
         g_nsf_player->playing = 0;
+        // Silence all APU channels
+        apuif_select(APUIF_INSTANCE_MAIN);
+        apuif_write_reg(0x4015, 0x00);
     }
 }
 

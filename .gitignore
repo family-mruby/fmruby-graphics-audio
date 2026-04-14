@@ -8,3 +8,4 @@ storage/*
 ws/
 .rake_tasks~
 .serial_port
+flash/cache/*

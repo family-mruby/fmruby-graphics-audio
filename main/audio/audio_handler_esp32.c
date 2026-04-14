@@ -93,9 +93,18 @@ static int process_play_command(const fmrb_audio_play_cmd_t *cmd, size_t total_s
     memcpy(path, cmd->path, len);
     path[len] = '\0';
 
-    ESP_LOGI(TAG, "Play command: path=%s (ESP32 stub)", path);
-    current_status = FMRB_AUDIO_STATUS_PLAYING;
-    return 0;
+    int track = 0;
+    if (total_size > sizeof(fmrb_audio_play_cmd_t) + cmd->path_len) {
+        track = (int)((uint8_t)cmd->path[cmd->path_len]);
+    }
+
+    ESP_LOGI(TAG, "Play command: path=%s track=%d", path, track);
+
+    int ret = audio_task_nsf_play(path, track);
+    if (ret == 0) {
+        current_status = FMRB_AUDIO_STATUS_PLAYING;
+    }
+    return ret;
 }
 
 static int process_stop_command(void) {
