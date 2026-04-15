@@ -43,12 +43,18 @@ static volatile int deferred_ack_pending = 0;
 static uint8_t deferred_ack_type = 0;
 static uint8_t deferred_ack_seq = 0;
 
-// Default display config (matches Core ESP32 settings)
+// Default display config
 #define BOOT_DEFAULT_WIDTH     320
 #define BOOT_DEFAULT_HEIGHT    240
 #define BOOT_DEFAULT_DEPTH     8
+#ifdef CONFIG_IDF_TARGET_LINUX
+#define BOOT_DEFAULT_MARGIN_X  0
+#define BOOT_DEFAULT_MARGIN_Y  0
+#else
+// ESP32: margins for NTSC overscan
 #define BOOT_DEFAULT_MARGIN_X  2
 #define BOOT_DEFAULT_MARGIN_Y  16
+#endif
 
 // Display config file path (platform-specific)
 #ifdef CONFIG_IDF_TARGET_LINUX
