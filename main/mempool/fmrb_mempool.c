@@ -266,3 +266,118 @@ void fmrb_mempool_canvas_get_stats(size_t *used_buffers, size_t *free_buffers) {
 
     mempool_stats(&g_canvas_pool, used_buffers, free_buffers);
 }
+
+//---------------------------
+// TLSF-based variable-size pool implementation
+//---------------------------
+
+int mempool_tlsf_init(mempool_tlsf_t *pool, size_t pool_size, bool use_psram) {
+    if (!pool || pool_size == 0) {
+        ESP_LOGE(TAG, "Invalid TLSF pool parameters");
+        return -1;
+    }
+
+#ifdef CONFIG_IDF_TARGET_ESP32
+    if (use_psram) {
+        pool->base_ptr = heap_caps_malloc(pool_size, MALLOC_CAP_SPIRAM);
+        if (pool->base_ptr) {
+            ESP_LOGI(TAG, "TLSF pool: allocated %zu bytes from PSRAM", pool_size);
+        } else {
+            ESP_LOGW(TAG, "PSRAM alloc failed, falling back to internal RAM");
+            pool->base_ptr = malloc(pool_size);
+        }
+    } else {
+        pool->base_ptr = malloc(pool_size);
+    }
+#else
+    pool->base_ptr = malloc(pool_size);
+#endif
+
+    if (!pool->base_ptr) {
+        ESP_LOGE(TAG, "Failed to allocate %zu bytes for TLSF pool", pool_size);
+        return -1;
+    }
+
+    pool->tlsf = tlsf_create_with_pool(pool->base_ptr, pool_size);
+    if (!pool->tlsf) {
+        ESP_LOGE(TAG, "Failed to create TLSF allocator");
+        free(pool->base_ptr);
+        pool->base_ptr = NULL;
+        return -1;
+    }
+
+    pool->pool = tlsf_get_pool(pool->tlsf);
+    pool->pool_size = pool_size;
+
+    ESP_LOGI(TAG, "TLSF pool initialized: %zu bytes (%.1f KB)",
+             pool_size, (float)pool_size / 1024.0f);
+    return 0;
+}
+
+void mempool_tlsf_deinit(mempool_tlsf_t *pool) {
+    if (!pool || !pool->base_ptr) return;
+
+    tlsf_destroy(pool->tlsf);
+
+#ifdef CONFIG_IDF_TARGET_ESP32
+    heap_caps_free(pool->base_ptr);
+#else
+    free(pool->base_ptr);
+#endif
+
+    pool->base_ptr = NULL;
+    pool->tlsf = NULL;
+    pool->pool = NULL;
+    pool->pool_size = 0;
+
+    ESP_LOGI(TAG, "TLSF pool deinitialized");
+}
+
+void* mempool_tlsf_alloc(mempool_tlsf_t *pool, size_t size) {
+    if (!pool || !pool->tlsf) return NULL;
+
+    void *ptr = tlsf_malloc(pool->tlsf, size);
+    if (!ptr) {
+        ESP_LOGE(TAG, "TLSF alloc failed: requested=%zu", size);
+    }
+    return ptr;
+}
+
+void mempool_tlsf_free(mempool_tlsf_t *pool, void *ptr) {
+    if (!pool || !pool->tlsf || !ptr) return;
+    tlsf_free(pool->tlsf, ptr);
+}
+
+// Walker callback for stats
+typedef struct {
+    size_t used;
+    size_t free_bytes;
+} tlsf_walk_stats_t;
+
+static void tlsf_stats_walker(void *ptr, size_t size, int used, void *user) {
+    tlsf_walk_stats_t *stats = (tlsf_walk_stats_t *)user;
+    if (used) {
+        stats->used += size;
+    } else {
+        stats->free_bytes += size;
+    }
+}
+
+void mempool_tlsf_stats(const mempool_tlsf_t *pool,
+                         size_t *total_bytes, size_t *used_bytes, size_t *free_bytes) {
+    if (!pool || !pool->tlsf) {
+        if (total_bytes) *total_bytes = 0;
+        if (used_bytes) *used_bytes = 0;
+        if (free_bytes) *free_bytes = 0;
+        return;
+    }
+
+    if (total_bytes) *total_bytes = pool->pool_size;
+
+    if (used_bytes || free_bytes) {
+        tlsf_walk_stats_t ws = { .used = 0, .free_bytes = 0 };
+        tlsf_walk_pool(pool->pool, tlsf_stats_walker, &ws);
+        if (used_bytes) *used_bytes = ws.used;
+        if (free_bytes) *free_bytes = ws.free_bytes;
+    }
+}

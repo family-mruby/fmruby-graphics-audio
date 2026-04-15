@@ -15,62 +15,258 @@ extern "C" {
 #include "fmrb_link_protocol.h"
 #include "fmrb_gfx.h"
 #include "../mempool/fmrb_mempool.h"
+#include "audio_handler.h"
+#include "comm_interface.h"
+#ifndef CONFIG_IDF_TARGET_LINUX
+#include "esp_chip_info.h"
+#include "esp_flash.h"
+#include "esp_heap_caps.h"
+#endif
 }
 
-// LGFX test drawing (lgfx_test.cpp)
+// LGFX test drawing (lgfx_test.cpp) - kept for future use
 extern void lgfx_test(void);
 
 static const char *TAG = "graphics_task";
 static volatile int task_running = 0;
 
 static volatile int display_initialized = 0;
-static uint16_t display_width = 480;   // Default values
-static uint16_t display_height = 320;
+static uint16_t display_width = 320;
+static uint16_t display_height = 240;
 
-// Callback function called by socket_server when display init message is received
-extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth,
-                                     uint8_t margin_x, uint8_t margin_y) {
-    ESP_LOGI(TAG, "Initializing display: %dx%d, %d-bit color, margin=%d,%d",
-             width, height, color_depth, margin_x, margin_y);
+// Boot config: received INIT_DISPLAY params (set by message_handler_task)
+static volatile int init_display_received = 0;
+static fmrb_control_init_display_t received_display_config;
 
-    if (display_initialized) {
-        ESP_LOGW(TAG, "Display already initialized, ignoring re-init request");
-        return 0;
+// Deferred ACK: saved from INIT_DISPLAY message, sent after full_display_init
+static volatile int deferred_ack_pending = 0;
+static uint8_t deferred_ack_type = 0;
+static uint8_t deferred_ack_seq = 0;
+
+// Default display config (matches Core ESP32 settings)
+#define BOOT_DEFAULT_WIDTH     320
+#define BOOT_DEFAULT_HEIGHT    240
+#define BOOT_DEFAULT_DEPTH     8
+#define BOOT_DEFAULT_MARGIN_X  2
+#define BOOT_DEFAULT_MARGIN_Y  16
+
+// Display config file path (platform-specific)
+#ifdef CONFIG_IDF_TARGET_LINUX
+#define DISPLAY_CONF_PATH "flash/etc/display_conf_linux.txt"
+#else
+#define DISPLAY_CONF_PATH "/flash/etc/display_conf_esp32.txt"
+#endif
+
+// ---- Display config file I/O ----
+
+static void set_default_config(fmrb_control_init_display_t *cfg) {
+    cfg->width = BOOT_DEFAULT_WIDTH;
+    cfg->height = BOOT_DEFAULT_HEIGHT;
+    cfg->color_depth = BOOT_DEFAULT_DEPTH;
+    cfg->margin_x = BOOT_DEFAULT_MARGIN_X;
+    cfg->margin_y = BOOT_DEFAULT_MARGIN_Y;
+}
+
+static bool save_display_config(const fmrb_control_init_display_t *cfg) {
+    FILE *f = fopen(DISPLAY_CONF_PATH, "w");
+    if (!f) {
+        ESP_LOGE(TAG, "Failed to open config file for writing: %s", DISPLAY_CONF_PATH);
+        return false;
     }
+
+    fprintf(f, "width=%d\n", cfg->width);
+    fprintf(f, "height=%d\n", cfg->height);
+    fprintf(f, "color_depth=%d\n", cfg->color_depth);
+    fprintf(f, "margin_x=%d\n", cfg->margin_x);
+    fprintf(f, "margin_y=%d\n", cfg->margin_y);
+    fclose(f);
+
+    ESP_LOGI(TAG, "Saved display config: %dx%d, depth=%d, margin=%d,%d",
+             cfg->width, cfg->height, cfg->color_depth, cfg->margin_x, cfg->margin_y);
+    return true;
+}
+
+static bool read_config_file(const char *path, fmrb_control_init_display_t *cfg) {
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+
+    char line[64];
+    while (fgets(line, sizeof(line), f)) {
+        int val;
+        if (sscanf(line, "width=%d", &val) == 1) cfg->width = (uint16_t)val;
+        else if (sscanf(line, "height=%d", &val) == 1) cfg->height = (uint16_t)val;
+        else if (sscanf(line, "color_depth=%d", &val) == 1) cfg->color_depth = (uint8_t)val;
+        else if (sscanf(line, "margin_x=%d", &val) == 1) cfg->margin_x = (uint8_t)val;
+        else if (sscanf(line, "margin_y=%d", &val) == 1) cfg->margin_y = (uint8_t)val;
+    }
+    fclose(f);
+    return true;
+}
+
+static bool load_display_config(fmrb_control_init_display_t *cfg) {
+    set_default_config(cfg);
+
+    if (read_config_file(DISPLAY_CONF_PATH, cfg)) {
+        ESP_LOGI(TAG, "Loaded display config from %s: %dx%d, depth=%d, margin=%d,%d",
+                 DISPLAY_CONF_PATH, cfg->width, cfg->height, cfg->color_depth,
+                 cfg->margin_x, cfg->margin_y);
+        return true;
+    }
+
+    // No config file: create from defaults
+    ESP_LOGI(TAG, "No config file found, creating default at %s", DISPLAY_CONF_PATH);
+    save_display_config(cfg);
+    return true;
+}
+
+static bool config_matches(const fmrb_control_init_display_t *a, const fmrb_control_init_display_t *b) {
+    return a->width == b->width &&
+           a->height == b->height &&
+           a->color_depth == b->color_depth &&
+           a->margin_x == b->margin_x &&
+           a->margin_y == b->margin_y;
+}
+
+// ---- Boot beep ----
+
+static void play_boot_beep(void) {
+    // PC-98 style "piko!" - short high-pitched pulse
+    // channel 0 = PULSE1, freq ~880Hz, volume 8, duty 2 (25%), no sweep
+    audio_task_note_on(0, 880, 8, 2, 0);
+    lgfx::delay(80);
+    audio_task_note_off(0);
+    lgfx::delay(30);
+    // Second higher tone
+    audio_task_note_on(0, 1760, 6, 2, 0);
+    lgfx::delay(60);
+    audio_task_note_off(0);
+}
+
+// ---- Boot screen drawing (PC-98 style) ----
+
+#define BOOT_CHAR_W 6
+#define BOOT_CHAR_H 8
+#define BOOT_LINE_H 10
+#define BOOT_MARGIN_X 4
+#define BOOT_MARGIN_Y 4
+
+static int boot_line_y = 0;  // Current line position
+
+static void boot_screen_init(lgfx::LGFX_Device *gfx) {
+    gfx->fillScreen(0x00);  // Black
+    gfx->setTextColor(0xFFFFFFU, 0x000000U);  // White on black (RGB888)
+    boot_line_y = BOOT_MARGIN_Y;
+}
+
+static void boot_print_line(lgfx::LGFX_Device *gfx, const char *text) {
+    gfx->setCursor(BOOT_MARGIN_X, boot_line_y);
+    gfx->print(text);
+    boot_line_y += BOOT_LINE_H;
+    DISPLAY_INTERFACE->display();
+}
+
+static void boot_print_blank(lgfx::LGFX_Device *gfx) {
+    boot_line_y += BOOT_LINE_H;
+}
+
+static void draw_boot_info(lgfx::LGFX_Device *gfx, const fmrb_control_init_display_t *cfg) {
+    char buf[64];
+
+    boot_screen_init(gfx);
+
+    boot_print_line(gfx, "Family mruby Graphics-Audio System");
+    boot_print_line(gfx, "==================================");
+    boot_print_blank(gfx);
+
+#ifndef CONFIG_IDF_TARGET_LINUX
+    // Chip info
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    const char *chip_name = "ESP32";
+    if (chip.model == CHIP_ESP32) chip_name = "ESP32";
+    else if (chip.model == CHIP_ESP32S3) chip_name = "ESP32-S3";
+    else if (chip.model == CHIP_ESP32C3) chip_name = "ESP32-C3";
+
+    snprintf(buf, sizeof(buf), "CPU: %s rev%d %d cores",
+             chip_name, chip.revision, chip.cores);
+    boot_print_line(gfx, buf);
+
+    // Flash size
+    uint32_t flash_size = 0;
+    esp_flash_get_size(NULL, &flash_size);
+    snprintf(buf, sizeof(buf), "Flash: %lu MB", (unsigned long)(flash_size / (1024 * 1024)));
+    boot_print_line(gfx, buf);
+
+    // Memory
+    snprintf(buf, sizeof(buf), "Free heap:  %lu bytes",
+             (unsigned long)esp_get_free_heap_size());
+    boot_print_line(gfx, buf);
+
+    snprintf(buf, sizeof(buf), "Free PSRAM: %zu bytes",
+             heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    boot_print_line(gfx, buf);
+#else
+    boot_print_line(gfx, "Platform: Linux (simulation)");
+#endif
+
+    boot_print_blank(gfx);
+
+    snprintf(buf, sizeof(buf), "Display: %dx%d %dbit margin(%d,%d)",
+             cfg->width, cfg->height, cfg->color_depth, cfg->margin_x, cfg->margin_y);
+    boot_print_line(gfx, buf);
+
+    boot_print_line(gfx, "Audio: APU initialized");
+    boot_print_blank(gfx);
+    boot_print_line(gfx, "Waiting for Core...");
+}
+
+static void draw_boot_cursor(lgfx::LGFX_Device *gfx, bool visible) {
+    // Blinking cursor after "Waiting for Core..."
+    int cursor_x = BOOT_MARGIN_X + 19 * BOOT_CHAR_W + 2;
+    int cursor_y = boot_line_y - BOOT_LINE_H;
+    if (visible) {
+        gfx->fillRect(cursor_x, cursor_y, BOOT_CHAR_W, BOOT_CHAR_H, 0xFFFFFFU);
+    } else {
+        gfx->fillRect(cursor_x, cursor_y, BOOT_CHAR_W, BOOT_CHAR_H, 0x00);
+    }
+    DISPLAY_INTERFACE->display();
+}
+
+static void draw_reboot_screen(lgfx::LGFX_Device *gfx, uint16_t w, uint16_t h) {
+    boot_print_blank(gfx);
+    gfx->setTextColor(0xFFFF00U, 0x000000U);  // Yellow on black (RGB888)
+    boot_print_line(gfx, "** Config updated. Please reboot. **");
+
+    DISPLAY_INTERFACE->display();
+}
+
+// ---- Full display initialization (creates canvas pool, graphics handler, etc.) ----
+
+static int full_display_init(uint16_t width, uint16_t height, uint8_t color_depth,
+                             uint8_t margin_x, uint8_t margin_y) {
+    // Display hardware is already initialized during boot screen phase.
+    // Now initialize the canvas memory pool and graphics handler.
 
     display_width = width;
     display_height = height;
 
-    // Initialize display first (Panel_CVBS allocates smaller fragmented blocks)
-    // This reduces PSRAM fragmentation when canvas pool allocates large contiguous block
-    if (DISPLAY_INTERFACE->init(width, height, color_depth, margin_x, margin_y) < 0) {
-        ESP_LOGE(TAG, "Display initialization failed");
-        return -1;
-    }
-
-    // Initialize canvas memory pool with display dimensions (large contiguous block)
     if (fmrb_mempool_canvas_init(width, height, color_depth) != 0) {
         ESP_LOGE(TAG, "Failed to initialize canvas memory pool");
-        DISPLAY_INTERFACE->cleanup();
         return -1;
     }
 
     ESP_LOGI(TAG, "Graphics initialized with LovyanGFX (%dx%d, %d-bit RGB)", width, height, color_depth);
 
-    // Initialize graphics handler (creates back buffer)
     if (graphics_handler_init() < 0) {
         ESP_LOGE(TAG, "Graphics handler initialization failed");
         fmrb_mempool_canvas_deinit();
-        DISPLAY_INTERFACE->cleanup();
         return -1;
     }
 
-    // Initialize input handler (Linux/SDL2 only)
 #ifdef CONFIG_IDF_TARGET_LINUX
     if (input_handler_init() < 0) {
         ESP_LOGE(TAG, "Input handler initialization failed");
         graphics_handler_cleanup();
-        DISPLAY_INTERFACE->cleanup();
         return -1;
     }
 #endif
@@ -78,6 +274,36 @@ extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t co
     display_initialized = 1;
     ESP_LOGI(TAG, "Display initialization complete");
     return 0;
+}
+
+// Callback function called by message_handler_task when INIT_DISPLAY is received
+// ACK is NOT sent here - it is deferred until full_display_init completes
+extern "C" int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth,
+                                     uint8_t margin_x, uint8_t margin_y,
+                                     uint8_t msg_type, uint8_t msg_seq) {
+    ESP_LOGI(TAG, "INIT_DISPLAY received: %dx%d, %d-bit color, margin=%d,%d",
+             width, height, color_depth, margin_x, margin_y);
+
+    if (display_initialized) {
+        ESP_LOGW(TAG, "Display already initialized, ignoring re-init request");
+        return 1;  // Return 1 = already initialized, caller should ACK immediately
+    }
+
+    // Store received params for comparison by graphics_task
+    received_display_config.width = width;
+    received_display_config.height = height;
+    received_display_config.color_depth = color_depth;
+    received_display_config.margin_x = margin_x;
+    received_display_config.margin_y = margin_y;
+
+    // Save ACK info for deferred sending
+    deferred_ack_type = msg_type;
+    deferred_ack_seq = msg_seq;
+    deferred_ack_pending = 1;
+
+    init_display_received = 1;
+
+    return 0;  // Return 0 = deferred, caller should NOT ACK
 }
 
 
@@ -90,32 +316,135 @@ void graphics_task(void *pvParameters) {
     ESP_LOGI(TAG, "Graphics task started on core %d", xPortGetCoreID());
 
 #ifdef CONFIG_IDF_TARGET_LINUX
-    // Start input socket server (separate from GFX socket)
     if (input_socket_start() < 0) {
         ESP_LOGE(TAG, "Input socket server start failed");
         return;
     }
 #endif
 
-    // Wait for display initialization message from comm_task
-    // The init_display_callback() will be called by comm_task when the message arrives
-    int timeout_count = 0;
-    while (!display_initialized && task_running) {
-        lgfx::delay(100);
-        // comm_task handles communication processing
+    // ---- Phase 1: Load config and initialize display for boot screen ----
 
-        timeout_count++;
-        if (timeout_count > 60) {  // 6 second timeout
-            ESP_LOGE(TAG, "Timeout waiting for display initialization");
-#ifndef CONFIG_IDF_TARGET_LINUX
-            ESP_LOGI(TAG, "Starting LGFX test drawing...");
-            lgfx_test();
-            // lgfx_test() runs an infinite loop, so we won't reach here
-#endif
-            vTaskDelete(NULL);
-            return;
+    fmrb_control_init_display_t boot_config;
+    load_display_config(&boot_config);
+
+    // Initialize display hardware (but not canvas pool / graphics handler yet)
+    if (DISPLAY_INTERFACE->init(boot_config.width, boot_config.height,
+                                boot_config.color_depth,
+                                boot_config.margin_x, boot_config.margin_y) < 0) {
+        ESP_LOGE(TAG, "Display initialization failed");
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "Display initialized suuccessfully");
+
+    lgfx::LGFX_Device *gfx = (lgfx::LGFX_Device *)DISPLAY_INTERFACE->get_lgfx();
+    if (!gfx) {
+        ESP_LOGE(TAG, "Failed to get LGFX instance");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // ---- Phase 2: Boot beep + boot screen (PC-98 style) ----
+
+    ESP_LOGI(TAG, "Play boot beep and show boot screen");
+    play_boot_beep();
+
+    // Draw boot info lines (appears line by line)
+    draw_boot_info(gfx, &boot_config);
+
+    ESP_LOGI(TAG, "Showing boot screen, waiting for Core...");
+
+    bool cursor_on = true;
+    int blink_counter = 0;
+
+    while (!init_display_received && task_running) {
+        // Blink cursor
+        draw_boot_cursor(gfx, cursor_on);
+
+        int ev = DISPLAY_INTERFACE->process_events();
+        if (ev == 1) {
+            task_running = 0;
+            break;
+        }
+
+        lgfx::delay(100);
+        blink_counter++;
+        if (blink_counter >= 5) {  // Toggle every 500ms
+            cursor_on = !cursor_on;
+            blink_counter = 0;
         }
     }
+
+    ESP_LOGI(TAG, "init_display_received");
+
+
+    if (!task_running) {
+        DISPLAY_INTERFACE->cleanup();
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // ---- Phase 3: Compare INIT_DISPLAY with boot config ----
+
+    if (!config_matches(&boot_config, &received_display_config)) {
+        ESP_LOGW(TAG, "Display config mismatch! Saved: %dx%d margin=%d,%d, Received: %dx%d margin=%d,%d",
+                 boot_config.width, boot_config.height, boot_config.margin_x, boot_config.margin_y,
+                 received_display_config.width, received_display_config.height,
+                 received_display_config.margin_x, received_display_config.margin_y);
+
+        // Save new config
+        save_display_config(&received_display_config);
+
+        // Show reboot message
+        draw_reboot_screen(gfx, boot_config.width, boot_config.height);
+
+        // Wait indefinitely (user must reboot)
+        while (task_running) {
+            int ev = DISPLAY_INTERFACE->process_events();
+            if (ev == 1) break;
+            lgfx::delay(500);
+        }
+
+        DISPLAY_INTERFACE->cleanup();
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Display config matches, proceeding to main loop");
+
+    // ---- Phase 4: Full initialization ----
+
+    if (full_display_init(boot_config.width, boot_config.height,
+                          boot_config.color_depth,
+                          boot_config.margin_x, boot_config.margin_y) < 0) {
+        ESP_LOGE(TAG, "Full display initialization failed");
+        DISPLAY_INTERFACE->cleanup();
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // Keep boot screen visible for 1 second before Core takes over
+    ESP_LOGI(TAG, "Holding boot screen for 1 second...");
+    lgfx::delay(1000);
+
+    // Clear boot screen and reset LGFX state before canvas system takes over
+    gfx->fillScreen(0x00);
+    gfx->setTextColor(0xFFFFFFU);
+    gfx->setCursor(0, 0);
+    DISPLAY_INTERFACE->display();
+
+    // Send deferred ACK for INIT_DISPLAY now that everything is ready
+    // Must include response data (like VERSION does) for transport layer ACK matching
+    if (deferred_ack_pending) {
+        const comm_interface_t *comm = comm_get_interface();
+        if (comm && (deferred_ack_type & FMRB_LINK_FLAG_ACK_REQUIRED)) {
+            uint8_t ack_status = 0;  // 0 = success
+            comm->send_ack(deferred_ack_type, deferred_ack_seq, &ack_status, sizeof(ack_status));
+            ESP_LOGI(TAG, "Deferred INIT_DISPLAY ACK sent (seq=%d)", deferred_ack_seq);
+        }
+        deferred_ack_pending = 0;
+    }
+
     ESP_LOGI(TAG, "Host server running. Ready to receive commands.");
 
     // Main loop timing stats
@@ -126,37 +455,30 @@ void graphics_task(void *pvParameters) {
 
     // Main loop
     while (task_running) {
-        // Process display events (e.g., SDL2 window close)
         int display_result = DISPLAY_INTERFACE->process_events();
         if (display_result == 1) {
-            // Quit requested
             task_running = 0;
             break;
         }
 
 #ifdef CONFIG_IDF_TARGET_LINUX
-        // Process input events (keyboard, mouse)
         int input_result = input_handler_process_events();
         if (input_result == 1) {
-            // Quit requested
             task_running = 0;
             break;
         }
 #endif
 
-        // Render all canvases to screen in Z-order
         uint32_t render_start = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         graphics_handler_render_frame();
         uint32_t render_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS) - render_start;
 
-        // Update display
         DISPLAY_INTERFACE->display();
 
         loop_count++;
         total_render_ms += render_ms;
         if (render_ms > max_render_ms) max_render_ms = render_ms;
 
-        // Print stats every 5 seconds
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         if (now - stats_last_ms >= 5000) {
             uint32_t avg_ms = loop_count > 0 ? total_render_ms / loop_count : 0;
@@ -168,13 +490,11 @@ void graphics_task(void *pvParameters) {
             stats_last_ms = now;
         }
 
-        // Small delay to prevent busy waiting
         lgfx::delay(16); // ~60 FPS
     }
 
     ESP_LOGI(TAG, "Shutting down...");
 
-    // Cleanup (reverse order of initialization)
 #ifdef CONFIG_IDF_TARGET_LINUX
     input_handler_cleanup();
 #endif

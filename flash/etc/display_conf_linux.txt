@@ -1,0 +1,5 @@
+width=320
+height=240
+color_depth=8
+margin_x=0
+margin_y=0

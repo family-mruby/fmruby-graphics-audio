@@ -6,7 +6,11 @@ set(SRCS
     "tasks/graphics_task.cpp"
     "common/fmrb_link_cobs.c"
     "common/fmrb_link_fragment.c"
+    "common/fmrb_bmp332.c"
     "mempool/fmrb_mempool.c"
+    "mempool/fmrb_sprite_pool.c"
+    "mempool/tlsf/tlsf.c"
+    "graphics/sprite_manager.cpp"
     "file_transfer/file_transfer_handler.c"
 )
 
@@ -51,6 +55,7 @@ set(INCLUDE_DIRS
     "include"
     "input_linux"
     "mempool"
+    "mempool/tlsf"
     "tasks"
     "file_transfer"
 )

@@ -10,9 +10,12 @@ extern "C" {
 #include "graphics_handler.h"
 #include "fmrb_link_protocol.h"
 #include "fmrb_gfx.h"
+#include "fmrb_bmp332.h"
 #include "esp_log.h"
 #include "display_interface.h"
 #include "../mempool/fmrb_mempool.h"
+#include "../mempool/fmrb_sprite_pool.h"
+#include "sprite_manager.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
@@ -102,6 +105,7 @@ static const uint8_t cursor_pattern[16][16] = {
 
 // Screen double buffer for compositing all canvases
 static uint16_t g_current_target = FMRB_CANVAS_SCREEN;  // 0=screen, other=canvas
+static sprite_image_id_t g_sprite_image_target = 0;      // 0=none, other=sprite image ID
 static volatile bool g_graphics_initialized = false;  // Flag to prevent multiple initializations (volatile for cross-task access)
 
 // Image store for CREATE_IMAGE_FROM_FILE / DRAW_IMAGE / DELETE_IMAGE
@@ -324,8 +328,15 @@ static void graphics_handler_render_frame_internal() {
     ESP_LOGD(TAG, "Screen buffer pushed to display");
 }
 
-// Get current drawing target (screen or canvas)
+// Get current drawing target (screen, canvas, or sprite image)
 static LovyanGFX* get_current_target() {
+    // Check sprite image target first
+    if (g_sprite_image_target != 0) {
+        LGFX_Sprite *spr = (LGFX_Sprite*)sprite_manager_get_image_sprite(g_sprite_image_target);
+        if (spr) return spr;
+        ESP_LOGE(TAG, "Sprite image %u not found, falling back", g_sprite_image_target);
+        g_sprite_image_target = 0;
+    }
     if (g_current_target == FMRB_CANVAS_SCREEN) {
         // Draw directly to screen
         return g_lgfx;
@@ -336,6 +347,27 @@ static LovyanGFX* get_current_target() {
     }
     ESP_LOGE(TAG, "Canvas %u not found, using screen", g_current_target);
     return g_lgfx;  // Fallback to screen
+}
+
+// Resolve drawing target from canvas_id, with sprite image override
+// When g_sprite_image_target is set, all drawing goes to the sprite image.
+static LovyanGFX* resolve_draw_target(uint16_t canvas_id) {
+    if (g_sprite_image_target != 0) {
+        LGFX_Sprite *spr = (LGFX_Sprite*)sprite_manager_get_image_sprite(g_sprite_image_target);
+        if (spr) return spr;
+        ESP_LOGE(TAG, "Sprite image %u not found", g_sprite_image_target);
+        g_sprite_image_target = 0;
+    }
+    if (canvas_id == FMRB_CANVAS_SCREEN) {
+        return g_lgfx;
+    }
+    canvas_state_t* canvas = canvas_state_find(canvas_id);
+    if (canvas) {
+        canvas->dirty = true;
+        return canvas->draw_buffer;
+    }
+    ESP_LOGE(TAG, "Canvas %u not found", canvas_id);
+    return nullptr;
 }
 
 extern "C" int graphics_handler_init(void) {
@@ -388,6 +420,12 @@ extern "C" int graphics_handler_init(void) {
         }
     }
 
+    // Initialize sprite system
+    if (fmrb_sprite_pool_init(0) != 0) {
+        ESP_LOGW(TAG, "Sprite pool init failed (non-fatal)");
+    }
+    sprite_manager_init();
+
     g_graphics_initialized = true;  // Mark as initialized
     ESP_LOGI(TAG, "Graphics handler initialized with screen buffer (%dx%d)",
               (int)g_lgfx->width(), (int)g_lgfx->height());
@@ -399,6 +437,11 @@ extern "C" void graphics_handler_cleanup(void) {
     // Disable rendering first (checked by render_frame)
     g_graphics_initialized = false;
     g_lgfx = nullptr;  // Invalidate pointer to prevent stale access from render loop
+
+    // Clean up sprite system
+    sprite_manager_cleanup();
+    fmrb_sprite_pool_deinit();
+    g_sprite_image_target = 0;
 
     // Delete all canvases
     while (g_canvas_count > 0) {
@@ -460,25 +503,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_SCREEN:
             if (size >= sizeof(fmrb_link_graphics_clear_t)) {
                 const fmrb_link_graphics_clear_t *cmd = (const fmrb_link_graphics_clear_t*)data;
-                ESP_LOGD(TAG, "CLEAR/FILL_SCREEN: canvas_id=%u, color=0x%02x", cmd->canvas_id, cmd->color);
-
-                // Get target from command (thread-safe)
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                    ESP_LOGD(TAG, "CLEAR: Using screen");
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                    ESP_LOGD(TAG, "CLEAR: Using canvas %u", cmd->canvas_id);
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->fillScreen(cmd->color);
-                ESP_LOGD(TAG, "CLEAR: fillScreen executed");
                 return 0;
             }
             break;
@@ -486,19 +513,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_PIXEL:
             if (size >= sizeof(fmrb_link_graphics_pixel_t)) {
                 const fmrb_link_graphics_pixel_t *cmd = (const fmrb_link_graphics_pixel_t*)data;
-                // Get target from command (thread-safe)
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->drawPixel(cmd->x, cmd->y, cmd->color);
                 return 0;
             }
@@ -507,19 +523,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_LINE:
             if (size >= sizeof(fmrb_link_graphics_line_t)) {
                 const fmrb_link_graphics_line_t *cmd = (const fmrb_link_graphics_line_t*)data;
-                // Get target from command (thread-safe)
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->drawLine(cmd->x1, cmd->y1, cmd->x2, cmd->y2, cmd->color);
                 return 0;
             }
@@ -528,19 +533,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_RECT:
             if (size >= sizeof(fmrb_link_graphics_rect_t)) {
                 const fmrb_link_graphics_rect_t *cmd = (const fmrb_link_graphics_rect_t*)data;
-                // Get target from command (thread-safe)
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->drawRect(cmd->x, cmd->y, cmd->width, cmd->height, cmd->color);
                 return 0;
             }
@@ -549,25 +543,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_RECT:
             if (size >= sizeof(fmrb_link_graphics_rect_t)) {
                 const fmrb_link_graphics_rect_t *cmd = (const fmrb_link_graphics_rect_t*)data;
-                ESP_LOGD(TAG, "FILL_RECT: canvas_id=%u, x=%d, y=%d, w=%d, h=%d, color=0x%02x",
-                       cmd->canvas_id, cmd->x, cmd->y, cmd->width, cmd->height, cmd->color);
-                // Get target from command (thread-safe)
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                    ESP_LOGD(TAG, "FILL_RECT: Using screen");
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                    ESP_LOGD(TAG, "FILL_RECT: Using canvas %u", cmd->canvas_id);
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->fillRect(cmd->x, cmd->y, cmd->width, cmd->height, cmd->color);
-                ESP_LOGD(TAG, "FILL_RECT: fillRect executed");
                 return 0;
             }
             break;
@@ -575,12 +553,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_BLEND_RECT:
             if (size >= sizeof(fmrb_link_graphics_blend_rect_t)) {
                 const fmrb_link_graphics_blend_rect_t *cmd = (const fmrb_link_graphics_blend_rect_t*)data;
-                canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                if (!canvas) {
-                    ESP_LOGE(TAG, "Canvas %u not found for BLEND_RECT", cmd->canvas_id);
-                    return -1;
-                }
-                LGFX_Sprite* sprite = canvas->draw_buffer;
+                LovyanGFX* blend_target = resolve_draw_target(cmd->canvas_id);
+                if (!blend_target) return -1;
+                LGFX_Sprite* sprite = static_cast<LGFX_Sprite*>(blend_target);
                 int16_t x_end = cmd->x + cmd->width;
                 int16_t y_end = cmd->y + cmd->height;
                 if (cmd->mode == FMRB_BLEND_MODE_XOR) {
@@ -608,7 +583,6 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                         }
                     }
                 }
-                canvas->dirty = true;
                 return 0;
             }
             break;
@@ -616,18 +590,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_ROUND_RECT:
             if (size >= sizeof(fmrb_link_graphics_round_rect_t)) {
                 const fmrb_link_graphics_round_rect_t *cmd = (const fmrb_link_graphics_round_rect_t*)data;
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->drawRoundRect(cmd->x, cmd->y, cmd->width, cmd->height, cmd->radius, cmd->color);
                 return 0;
             }
@@ -636,18 +600,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_ROUND_RECT:
             if (size >= sizeof(fmrb_link_graphics_round_rect_t)) {
                 const fmrb_link_graphics_round_rect_t *cmd = (const fmrb_link_graphics_round_rect_t*)data;
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->fillRoundRect(cmd->x, cmd->y, cmd->width, cmd->height, cmd->radius, cmd->color);
                 return 0;
             }
@@ -656,24 +610,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_CIRCLE:
             if (size >= sizeof(fmrb_link_graphics_circle_t)) {
                 const fmrb_link_graphics_circle_t *cmd = (const fmrb_link_graphics_circle_t*)data;
-                ESP_LOGD(TAG, "DRAW_CIRCLE: canvas_id=%u, x=%d, y=%d, r=%d, color=0x%02x",
-                       cmd->canvas_id, cmd->x, cmd->y, cmd->radius, cmd->color);
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                    ESP_LOGD(TAG, "DRAW_CIRCLE: Using screen");
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                    ESP_LOGD(TAG, "DRAW_CIRCLE: Using canvas %u", cmd->canvas_id);
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->drawCircle(cmd->x, cmd->y, cmd->radius, cmd->color);
-                ESP_LOGD(TAG, "DRAW_CIRCLE: drawCircle executed");
                 return 0;
             }
             break;
@@ -681,24 +620,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_CIRCLE:
             if (size >= sizeof(fmrb_link_graphics_circle_t)) {
                 const fmrb_link_graphics_circle_t *cmd = (const fmrb_link_graphics_circle_t*)data;
-                ESP_LOGD(TAG, "FILL_CIRCLE: canvas_id=%u, x=%d, y=%d, r=%d, color=0x%02x",
-                       cmd->canvas_id, cmd->x, cmd->y, cmd->radius, cmd->color);
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                    ESP_LOGD(TAG, "FILL_CIRCLE: Using screen");
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                    ESP_LOGD(TAG, "FILL_CIRCLE: Using canvas %u", cmd->canvas_id);
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->fillCircle(cmd->x, cmd->y, cmd->radius, cmd->color);
-                ESP_LOGD(TAG, "FILL_CIRCLE: fillCircle executed");
                 return 0;
             }
             break;
@@ -706,18 +630,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_ELLIPSE:
             if (size >= sizeof(fmrb_link_graphics_ellipse_t)) {
                 const fmrb_link_graphics_ellipse_t *cmd = (const fmrb_link_graphics_ellipse_t*)data;
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->drawEllipse(cmd->x, cmd->y, cmd->rx, cmd->ry, cmd->color);
                 return 0;
             }
@@ -726,18 +640,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_ELLIPSE:
             if (size >= sizeof(fmrb_link_graphics_ellipse_t)) {
                 const fmrb_link_graphics_ellipse_t *cmd = (const fmrb_link_graphics_ellipse_t*)data;
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->fillEllipse(cmd->x, cmd->y, cmd->rx, cmd->ry, cmd->color);
                 return 0;
             }
@@ -746,18 +650,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_TRIANGLE:
             if (size >= sizeof(fmrb_link_graphics_triangle_t)) {
                 const fmrb_link_graphics_triangle_t *cmd = (const fmrb_link_graphics_triangle_t*)data;
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->drawTriangle(cmd->x0, cmd->y0, cmd->x1, cmd->y1, cmd->x2, cmd->y2, cmd->color);
                 return 0;
             }
@@ -766,18 +660,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_TRIANGLE:
             if (size >= sizeof(fmrb_link_graphics_triangle_t)) {
                 const fmrb_link_graphics_triangle_t *cmd = (const fmrb_link_graphics_triangle_t*)data;
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->fillTriangle(cmd->x0, cmd->y0, cmd->x1, cmd->y1, cmd->x2, cmd->y2, cmd->color);
                 return 0;
             }
@@ -786,15 +670,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_DRAW_ARC:
             if (size >= sizeof(fmrb_link_graphics_arc_t)) {
                 const fmrb_link_graphics_arc_t *cmd = (const fmrb_link_graphics_arc_t*)data;
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) return -1;
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->drawArc(cmd->x, cmd->y, cmd->r1, cmd->r0, (float)cmd->angle0, (float)cmd->angle1, cmd->color);
                 return 0;
             }
@@ -803,15 +680,8 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_FILL_ARC:
             if (size >= sizeof(fmrb_link_graphics_arc_t)) {
                 const fmrb_link_graphics_arc_t *cmd = (const fmrb_link_graphics_arc_t*)data;
-                LovyanGFX* target;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) return -1;
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
                 target->fillArc(cmd->x, cmd->y, cmd->r1, cmd->r0, (float)cmd->angle0, (float)cmd->angle1, cmd->color);
                 return 0;
             }
@@ -820,13 +690,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
         case FMRB_LINK_GFX_SET_TEXT_SIZE:
             if (size >= sizeof(fmrb_link_graphics_text_size_t)) {
                 const fmrb_link_graphics_text_size_t *cmd = (const fmrb_link_graphics_text_size_t*)data;
-                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    g_lgfx->setTextSize((float)cmd->size);
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
-                    if (!canvas) return -1;
-                    canvas->draw_buffer->setTextSize((float)cmd->size);
-                }
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
+                target->setTextSize((float)cmd->size);
                 return 0;
             }
             break;
@@ -858,21 +724,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                        text_cmd->canvas_id, (int)text_cmd->x, (int)text_cmd->y, text_cmd->color,
                        text_cmd->bg_color, text_cmd->bg_transparent, text_buf);
 
-                // Get target from command
-                LovyanGFX* target;
-                if (text_cmd->canvas_id == FMRB_CANVAS_SCREEN) {
-                    target = g_lgfx;
-                    ESP_LOGD(TAG, "DRAW_STRING: Using screen");
-                } else {
-                    canvas_state_t* canvas = canvas_state_find(text_cmd->canvas_id);
-                    if (!canvas) {
-                        ESP_LOGE(TAG, "Canvas %u not found", text_cmd->canvas_id);
-                        return -1;
-                    }
-                    target = canvas->draw_buffer;
-                    canvas->dirty = true;
-                    ESP_LOGD(TAG, "DRAW_STRING: Using canvas %u", text_cmd->canvas_id);
-                }
+                // Get target from command (with sprite override)
+                LovyanGFX* target = resolve_draw_target(text_cmd->canvas_id);
+                if (!target) return -1;
 
                 // Set text color with optional background
                 if (text_cmd->bg_transparent) {
@@ -973,6 +827,10 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 if (g_current_target == cmd->canvas_id) {
                     g_current_target = FMRB_CANVAS_SCREEN;
                 }
+
+                // Auto-cleanup all sprites belonging to this canvas
+                sprite_manager_delete_all_for_canvas(cmd->canvas_id);
+                g_sprite_image_target = 0;
 
                 canvas_state_free(canvas);
                 ESP_LOGI(TAG, "Canvas deleted: ID=%u", cmd->canvas_id);
@@ -1135,6 +993,11 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 } else {
                     src_sprite->pushSprite(dst, push_x, push_y);
                     ESP_LOGD(TAG, "Canvas pushed: ID=%u to %s at (%d,%d)", cmd->canvas_id, dst_name, push_x, push_y);
+                }
+
+                // Composite sprites onto render buffer after draw_buffer copy
+                if (cmd->dest_canvas_id == FMRB_CANVAS_RENDER && src_canvas->render_buffer) {
+                    sprite_manager_composite(cmd->canvas_id, src_canvas->render_buffer);
                 }
 
                 // Release mutex if we locked for render_buffer path
@@ -1397,6 +1260,192 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 #else
             ESP_LOGI(TAG, "SET_CHROMA_LEVEL: %u (no-op on Linux)", level);
 #endif
+            return 0;
+        }
+
+        // --- Sprite commands ---
+
+        case FMRB_LINK_GFX_CREATE_SPRITE_IMAGE: {
+            if (size < sizeof(fmrb_link_graphics_create_sprite_image_t)) break;
+            const fmrb_link_graphics_create_sprite_image_t *cmd =
+                (const fmrb_link_graphics_create_sprite_image_t*)data;
+            sprite_image_id_t id = sprite_manager_create_image(
+                cmd->canvas_id, cmd->width, cmd->height,
+                cmd->transparent_color, cmd->use_transparent != 0);
+            ESP_LOGI(TAG, "CREATE_SPRITE_IMAGE: canvas=%u, %ux%u -> id=%u",
+                     cmd->canvas_id, cmd->width, cmd->height, id);
+            // Send ACK with image_id (same pattern as CREATE_CANVAS)
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+            socket_server_send_ack(msg_type, seq, (const uint8_t*)&id, sizeof(id));
+#else
+            COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&id, sizeof(id));
+#endif
+            return 1;  // ACK already sent
+        }
+
+        case FMRB_LINK_GFX_DELETE_SPRITE_IMAGE: {
+            if (size < sizeof(fmrb_link_graphics_delete_sprite_image_t)) break;
+            const fmrb_link_graphics_delete_sprite_image_t *cmd =
+                (const fmrb_link_graphics_delete_sprite_image_t*)data;
+            sprite_manager_delete_image(cmd->image_id);
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_SET_SPRITE_IMAGE_TARGET: {
+            if (size < sizeof(fmrb_link_graphics_set_sprite_image_target_t)) break;
+            const fmrb_link_graphics_set_sprite_image_target_t *cmd =
+                (const fmrb_link_graphics_set_sprite_image_target_t*)data;
+            g_sprite_image_target = cmd->image_id;  // 0 = reset to canvas
+            ESP_LOGD(TAG, "Sprite image target: %u", cmd->image_id);
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_LOAD_SPRITE_IMAGE_BMP: {
+            if (size < sizeof(fmrb_link_graphics_load_sprite_image_bmp_t)) break;
+            const fmrb_link_graphics_load_sprite_image_bmp_t *cmd =
+                (const fmrb_link_graphics_load_sprite_image_bmp_t*)data;
+            const char *path_data = (const char *)(data + sizeof(*cmd));
+            uint16_t path_len = cmd->path_len;
+
+            if (sizeof(*cmd) + path_len > size) {
+                ESP_LOGE(TAG, "LOAD_SPRITE_BMP: path extends beyond payload");
+                return -1;
+            }
+
+            // Build full path
+            const char *p = path_data;
+            int plen = (int)path_len;
+            if (plen > 0 && p[0] == '/') { p++; plen--; }
+
+            char full_path[256];
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+            snprintf(full_path, sizeof(full_path), "flash/%.*s", plen, p);
+#else
+            snprintf(full_path, sizeof(full_path), "/flash/%.*s", plen, p);
+#endif
+
+            // Get sprite image buffer
+            LGFX_Sprite *spr = (LGFX_Sprite*)sprite_manager_get_image_sprite(cmd->image_id);
+            if (!spr) {
+                ESP_LOGE(TAG, "LOAD_SPRITE_BMP: image %u not found", cmd->image_id);
+                return -1;
+            }
+
+            uint16_t img_w, img_h;
+            sprite_manager_get_image_size(cmd->image_id, &img_w, &img_h);
+
+            // Read BMP file
+            FILE *fp = fopen(full_path, "rb");
+            if (!fp) {
+                ESP_LOGE(TAG, "LOAD_SPRITE_BMP: cannot open %s", full_path);
+                return -1;
+            }
+
+            fseek(fp, 0, SEEK_END);
+            long file_size = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+
+            if (file_size <= 0 || file_size > 65536) {
+                ESP_LOGE(TAG, "LOAD_SPRITE_BMP: invalid size %ld", file_size);
+                fclose(fp);
+                return -1;
+            }
+
+            uint8_t *bmp_buf = (uint8_t *)malloc(file_size);
+            if (!bmp_buf) {
+                ESP_LOGE(TAG, "LOAD_SPRITE_BMP: alloc failed");
+                fclose(fp);
+                return -1;
+            }
+
+            size_t bytes_read = fread(bmp_buf, 1, file_size, fp);
+            fclose(fp);
+
+            if ((long)bytes_read != file_size) {
+                free(bmp_buf);
+                return -1;
+            }
+
+            // Parse BMP
+            fmrb_bmp332_t bmp;
+            if (fmrb_bmp332_parse(bmp_buf, (size_t)file_size, &bmp) != 0) {
+                ESP_LOGE(TAG, "LOAD_SPRITE_BMP: parse failed for %s", full_path);
+                free(bmp_buf);
+                return -1;
+            }
+
+            // Copy pixels to sprite buffer (clamp to sprite size)
+            uint16_t copy_w = (bmp.width < img_w) ? bmp.width : img_w;
+            uint16_t copy_h = (bmp.height < img_h) ? bmp.height : img_h;
+            for (uint16_t y = 0; y < copy_h; y++) {
+                for (uint16_t x = 0; x < copy_w; x++) {
+                    spr->drawPixel(x, y, bmp.pixels[y * bmp.width + x]);
+                }
+            }
+
+            free(bmp_buf);
+            ESP_LOGI(TAG, "LOAD_SPRITE_BMP: loaded %s (%ux%u) into image %u",
+                     full_path, bmp.width, bmp.height, cmd->image_id);
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_CREATE_SPRITE_INSTANCE: {
+            if (size < sizeof(fmrb_link_graphics_create_sprite_instance_t)) break;
+            const fmrb_link_graphics_create_sprite_instance_t *cmd =
+                (const fmrb_link_graphics_create_sprite_instance_t*)data;
+            // Copy image_ids to avoid unaligned access on packed struct
+            uint16_t image_ids_copy[FMRB_SPRITE_MAX_FRAMES];
+            memcpy(image_ids_copy, cmd->image_ids, sizeof(uint16_t) * cmd->frame_count);
+            sprite_instance_id_t id = sprite_manager_create_instance(
+                cmd->canvas_id, image_ids_copy, cmd->frame_count,
+                cmd->x, cmd->y, cmd->z_order);
+            ESP_LOGD(TAG, "CREATE_SPRITE_INSTANCE: canvas=%u, frames=%u -> id=%u",
+                     cmd->canvas_id, cmd->frame_count, id);
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+            socket_server_send_ack(msg_type, seq, (const uint8_t*)&id, sizeof(id));
+#else
+            COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&id, sizeof(id));
+#endif
+            return 1;  // ACK already sent
+        }
+
+        case FMRB_LINK_GFX_DELETE_SPRITE_INSTANCE: {
+            if (size < sizeof(fmrb_link_graphics_delete_sprite_instance_t)) break;
+            const fmrb_link_graphics_delete_sprite_instance_t *cmd =
+                (const fmrb_link_graphics_delete_sprite_instance_t*)data;
+            sprite_manager_delete_instance(cmd->instance_id);
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_SPRITE_INSTANCE_MOVE: {
+            if (size < sizeof(fmrb_link_graphics_sprite_instance_move_t)) break;
+            const fmrb_link_graphics_sprite_instance_move_t *cmd =
+                (const fmrb_link_graphics_sprite_instance_move_t*)data;
+            sprite_manager_move_instance(cmd->instance_id, cmd->x, cmd->y);
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_SPRITE_INSTANCE_SET_VISIBLE: {
+            if (size < sizeof(fmrb_link_graphics_sprite_instance_set_visible_t)) break;
+            const fmrb_link_graphics_sprite_instance_set_visible_t *cmd =
+                (const fmrb_link_graphics_sprite_instance_set_visible_t*)data;
+            sprite_manager_set_instance_visible(cmd->instance_id, cmd->visible != 0);
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_SPRITE_INSTANCE_SET_FRAME: {
+            if (size < sizeof(fmrb_link_graphics_sprite_instance_set_frame_t)) break;
+            const fmrb_link_graphics_sprite_instance_set_frame_t *cmd =
+                (const fmrb_link_graphics_sprite_instance_set_frame_t*)data;
+            sprite_manager_set_instance_frame(cmd->instance_id, cmd->frame_index);
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_DELETE_ALL_SPRITES: {
+            if (size < sizeof(fmrb_link_graphics_delete_all_sprites_t)) break;
+            const fmrb_link_graphics_delete_all_sprites_t *cmd =
+                (const fmrb_link_graphics_delete_all_sprites_t*)data;
+            sprite_manager_delete_all_for_canvas(cmd->canvas_id);
             return 0;
         }
 

@@ -15,9 +15,11 @@
 static const char *TAG = "msg_handler_task";
 static volatile int task_running = 0;
 
-// Forward declaration - implemented in main.cpp
+// Forward declaration - implemented in graphics_task.cpp
+// Returns: 0 = deferred (ACK will be sent later), 1 = already initialized (ACK now)
 extern int init_display_callback(uint16_t width, uint16_t height, uint8_t color_depth,
-                                 uint8_t margin_x, uint8_t margin_y);
+                                 uint8_t margin_x, uint8_t margin_y,
+                                 uint8_t msg_type, uint8_t msg_seq);
 
 /**
  * Handle CONTROL messages
@@ -61,16 +63,23 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
         case FMRB_LINK_CONTROL_INIT_DISPLAY:
             if (payload_len >= sizeof(fmrb_control_init_display_t)) {
                 const fmrb_control_init_display_t *init_cmd = (const fmrb_control_init_display_t*)payload;
-                ESP_LOGI(TAG, "INIT_DISPLAY: %dx%d, %d-bit",
-                       init_cmd->width, init_cmd->height, init_cmd->color_depth);
+                ESP_LOGI(TAG, "INIT_DISPLAY: %dx%d, %d-bit, margin=%d,%d",
+                       init_cmd->width, init_cmd->height, init_cmd->color_depth,
+                       init_cmd->margin_x, init_cmd->margin_y);
 
+                // init_display_callback stores params for graphics_task to compare
+                // Returns 0 = deferred (ACK sent later by graphics_task)
+                // Returns 1 = already initialized (ACK now)
                 int result = init_display_callback(init_cmd->width, init_cmd->height, init_cmd->color_depth,
-                                                  init_cmd->margin_x, init_cmd->margin_y);
+                                                  init_cmd->margin_x, init_cmd->margin_y,
+                                                  type, seq);
 
-                if (result == 0 && (type & FMRB_LINK_FLAG_ACK_REQUIRED)) {
+                if (result == 1 && (type & FMRB_LINK_FLAG_ACK_REQUIRED)) {
+                    // Already initialized - ACK immediately
                     comm->send_ack(type, seq, NULL, 0);
                 }
-                return result;
+                // result == 0: ACK deferred to graphics_task after full_display_init
+                return 0;
             }
             break;
 
