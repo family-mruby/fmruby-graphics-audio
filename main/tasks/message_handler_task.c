@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include <string.h>
 #include <stddef.h>
+#include <sys/time.h>
 
 static const char *TAG = "msg_handler_task";
 static volatile int task_running = 0;
@@ -79,6 +80,19 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                     comm->send_ack(type, seq, NULL, 0);
                 }
                 // result == 0: ACK deferred to graphics_task after full_display_init
+                return 0;
+            }
+            break;
+
+        case FMRB_LINK_CONTROL_SET_TIME:
+            if (payload_len >= sizeof(fmrb_control_set_time_t)) {
+                const fmrb_control_set_time_t *time_cmd = (const fmrb_control_set_time_t*)payload;
+                struct timeval tv = {
+                    .tv_sec = (time_t)time_cmd->tv_sec,
+                    .tv_usec = (suseconds_t)time_cmd->tv_usec
+                };
+                settimeofday(&tv, NULL);
+                ESP_LOGI(TAG, "SET_TIME: system clock updated (tv_sec=%lld)", (long long)time_cmd->tv_sec);
                 return 0;
             }
             break;
@@ -160,7 +174,7 @@ static int handle_audio_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
 static int process_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                            const uint8_t *payload, size_t payload_len) {
     // Strip flag bits (ACK_REQUIRED=0x20, CHUNKED=0x40) for type matching
-    uint8_t base_type = type & ~(FMRB_LINK_FLAG_ACK_REQUIRED | FMRB_LINK_FLAG_CHUNKED);
+    uint8_t base_type = type & FMRB_LINK_TYPE_MASK;
 
     switch (base_type) {
         case FMRB_LINK_TYPE_CONTROL:

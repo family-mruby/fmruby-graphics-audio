@@ -328,27 +328,6 @@ static void graphics_handler_render_frame_internal() {
     ESP_LOGD(TAG, "Screen buffer pushed to display");
 }
 
-// Get current drawing target (screen, canvas, or sprite image)
-static LovyanGFX* get_current_target() {
-    // Check sprite image target first
-    if (g_sprite_image_target != 0) {
-        LGFX_Sprite *spr = (LGFX_Sprite*)sprite_manager_get_image_sprite(g_sprite_image_target);
-        if (spr) return spr;
-        ESP_LOGE(TAG, "Sprite image %u not found, falling back", g_sprite_image_target);
-        g_sprite_image_target = 0;
-    }
-    if (g_current_target == FMRB_CANVAS_SCREEN) {
-        // Draw directly to screen
-        return g_lgfx;
-    }
-    canvas_state_t* canvas = canvas_state_find(g_current_target);
-    if (canvas) {
-        return canvas->draw_buffer;  // Draw to draw_buffer
-    }
-    ESP_LOGE(TAG, "Canvas %u not found, using screen", g_current_target);
-    return g_lgfx;  // Fallback to screen
-}
-
 // Resolve drawing target from canvas_id, with sprite image override
 // When g_sprite_image_target is set, all drawing goes to the sprite image.
 static LovyanGFX* resolve_draw_target(uint16_t canvas_id) {
