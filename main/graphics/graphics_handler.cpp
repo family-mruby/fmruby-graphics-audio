@@ -772,12 +772,16 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // Override z_order with value from Core
                 canvas->z_order = cmd->z_order;
 
-                // Foreground overlay canvas (z=254): enable transparency
-                // Color 0x00 (black) is treated as transparent during composition
-                if (cmd->z_order == 254) {
-                    canvas->use_transparent = true;
-                    canvas->transparent_color = 0x01;
-                    ESP_LOGI(TAG, "Canvas ID=%u: transparency enabled (color=0x00)", canvas_id);
+                // Apply transparency settings from protocol
+                canvas->use_transparent = (cmd->use_transparent != 0);
+                canvas->transparent_color = cmd->transparent_color;
+                if (canvas->use_transparent) {
+                    // Pre-fill both buffers with the transparent color so uninitialized
+                    // pixels composite as transparent instead of leaking buffer contents.
+                    canvas->draw_buffer->fillScreen(canvas->transparent_color);
+                    canvas->render_buffer->fillScreen(canvas->transparent_color);
+                    ESP_LOGI(TAG, "Canvas ID=%u: transparency enabled (color=0x%02X)",
+                             canvas_id, canvas->transparent_color);
                 }
 
                 ESP_LOGI(TAG, "Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, (int)cmd->width, (int)cmd->height, (int)cmd->z_order);
