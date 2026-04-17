@@ -11,6 +11,7 @@ set(SRCS
     "mempool/fmrb_sprite_pool.c"
     "mempool/tlsf/tlsf.c"
     "graphics/sprite_manager.cpp"
+    "graphics/gfx_vm.cpp"
     "file_transfer/file_transfer_handler.c"
 )
 

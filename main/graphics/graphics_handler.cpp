@@ -16,6 +16,7 @@ extern "C" {
 #include "../mempool/fmrb_mempool.h"
 #include "../mempool/fmrb_sprite_pool.h"
 #include "sprite_manager.h"
+#include "gfx_vm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
@@ -404,6 +405,7 @@ extern "C" int graphics_handler_init(void) {
         ESP_LOGW(TAG, "Sprite pool init failed (non-fatal)");
     }
     sprite_manager_init();
+    gfx_vm_init();
 
     g_graphics_initialized = true;  // Mark as initialized
     ESP_LOGI(TAG, "Graphics handler initialized with screen buffer (%dx%d)",
@@ -814,6 +816,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // Auto-cleanup all sprites belonging to this canvas
                 sprite_manager_delete_all_for_canvas(cmd->canvas_id);
                 g_sprite_image_target = 0;
+
+                // Auto-cleanup all GfxBlock programs belonging to this canvas
+                gfx_vm_delete_progs_by_canvas(cmd->canvas_id);
 
                 canvas_state_free(canvas);
                 ESP_LOGI(TAG, "Canvas deleted: ID=%u", cmd->canvas_id);
@@ -1429,6 +1434,64 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             const fmrb_link_graphics_delete_all_sprites_t *cmd =
                 (const fmrb_link_graphics_delete_all_sprites_t*)data;
             sprite_manager_delete_all_for_canvas(cmd->canvas_id);
+            return 0;
+        }
+
+        // ---------- GfxBlock VM ----------
+        case FMRB_LINK_GFX_DEFINE_PROG: {
+            if (size < sizeof(fmrb_link_graphics_define_prog_t)) break;
+            const fmrb_link_graphics_define_prog_t *cmd =
+                (const fmrb_link_graphics_define_prog_t*)data;
+            size_t expected = sizeof(*cmd) + cmd->bytecode_len + cmd->strtable_len;
+            if (size < expected) {
+                ESP_LOGE(TAG, "DEFINE_PROG: truncated payload (got=%zu expected=%zu)",
+                         size, expected);
+                return -1;
+            }
+            const uint8_t *bytecode = data + sizeof(*cmd);
+            const uint8_t *strtable = bytecode + cmd->bytecode_len;
+
+            uint8_t prog_id = gfx_vm_define_prog(cmd->canvas_id,
+                                                 bytecode, cmd->bytecode_len,
+                                                 strtable, cmd->strtable_len);
+            // Sync reply: single byte prog_id
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+            socket_server_send_ack(msg_type, seq, &prog_id, sizeof(prog_id));
+#else
+            COMM_INTERFACE->send_ack(msg_type, seq, &prog_id, sizeof(prog_id));
+#endif
+            return 1;  // ACK already sent
+        }
+
+        case FMRB_LINK_GFX_EXEC_PROG: {
+            if (size < sizeof(fmrb_link_graphics_exec_prog_t)) break;
+            const fmrb_link_graphics_exec_prog_t *cmd =
+                (const fmrb_link_graphics_exec_prog_t*)data;
+            size_t expected = sizeof(*cmd) + (size_t)cmd->reg_count * 3;
+            if (size < expected) {
+                ESP_LOGE(TAG, "EXEC_PROG: truncated payload (got=%zu expected=%zu)",
+                         size, expected);
+                return -1;
+            }
+            const uint8_t *reg_updates = data + sizeof(*cmd);
+
+            canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+            if (!canvas || !canvas->draw_buffer) {
+                ESP_LOGE(TAG, "EXEC_PROG: canvas %u not found", cmd->canvas_id);
+                return -1;
+            }
+            gfx_vm_exec_prog(cmd->canvas_id, cmd->prog_id,
+                             reg_updates, cmd->reg_count,
+                             (void *)canvas->draw_buffer);
+            canvas->dirty = true;
+            return 0;
+        }
+
+        case FMRB_LINK_GFX_DELETE_PROG: {
+            if (size < sizeof(fmrb_link_graphics_delete_prog_t)) break;
+            const fmrb_link_graphics_delete_prog_t *cmd =
+                (const fmrb_link_graphics_delete_prog_t*)data;
+            gfx_vm_delete_prog(cmd->prog_id);
             return 0;
         }
 
