@@ -75,7 +75,9 @@ static size_t g_canvas_count = 0;
 // Cursor management
 static LGFX_Sprite* g_cursor_sprite = nullptr;
 static LGFX_Sprite* g_cursor_save = nullptr;   // Saved pixels under cursor
-static bool g_cursor_visible = true;
+// Default false: cursor stays hidden until Core sends CURSOR_SET_VISIBLE(true)
+// (system_desktop triggers it after the boot animation finishes).
+static bool g_cursor_visible = false;
 static bool g_cursor_drawn = false;             // Whether cursor is currently baked into screen_buffer
 static int g_cursor_x = 240;  // Default: screen center
 static int g_cursor_y = 135;

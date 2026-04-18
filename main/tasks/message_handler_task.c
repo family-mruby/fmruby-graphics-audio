@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <time.h>
 
 static const char *TAG = "msg_handler_task";
 static volatile int task_running = 0;
