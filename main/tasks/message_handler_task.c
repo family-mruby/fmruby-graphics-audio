@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include <string.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <sys/time.h>
 
 static const char *TAG = "msg_handler_task";
@@ -93,6 +94,11 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                 };
                 settimeofday(&tv, NULL);
                 ESP_LOGI(TAG, "SET_TIME: system clock updated (tv_sec=%lld)", (long long)time_cmd->tv_sec);
+                if (time_cmd->tz[0] != '\0') {
+                    setenv("TZ", time_cmd->tz, 1);
+                    tzset();
+                    ESP_LOGI(TAG, "SET_TIME: TZ=%s applied", time_cmd->tz);
+                }
                 return 0;
             }
             break;

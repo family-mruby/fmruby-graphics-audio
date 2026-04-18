@@ -68,6 +68,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     int64_t tv_sec;
     int32_t tv_usec;
+    char    tz[32];          // POSIX TZ string (NUL-terminated; empty = leave TZ unchanged)
 } fmrb_control_set_time_t;
 
 // Protocol response codes
