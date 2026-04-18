@@ -108,7 +108,8 @@ static int process_play_command(const fmrb_audio_play_cmd_t *cmd, size_t total_s
 }
 
 static int process_stop_command(void) {
-    ESP_LOGI(TAG, "Stopping audio playback (ESP32 stub)");
+    ESP_LOGI(TAG, "Stopping audio playback");
+    audio_task_nsf_stop();
     current_status = FMRB_AUDIO_STATUS_STOPPED;
     return 0;
 }
