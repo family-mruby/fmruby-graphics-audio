@@ -1,4 +1,5 @@
 #include "message_handler_task.h"
+#include "fmrb_ga_version.h"
 #include "fmrb_link_protocol.h"
 #include "graphics_handler.h"
 #include "audio_handler.h"
@@ -39,7 +40,7 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
         case FMRB_LINK_CONTROL_VERSION:
             if (payload_len >= 1) {
                 uint8_t remote_version = payload[0];
-                uint8_t local_version = FMRB_LINK_PROTOCOL_VERSION;
+                uint8_t local_version = FMRB_LINK_VERSION;
 
                 ESP_LOGI(TAG, "VERSION check: remote=%d, local=%d, seq=%u",
                        remote_version, local_version, seq);
@@ -62,6 +63,22 @@ static int handle_control_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                 return result;
             }
             break;
+
+        case FMRB_LINK_CONTROL_GA_VERSION: {
+            fmrb_control_ga_version_resp_t resp;
+            memset(&resp, 0, sizeof(resp));
+            strncpy(resp.version, FMRB_GA_FW_VERSION, sizeof(resp.version) - 1);
+            ESP_LOGI(TAG, "GA_VERSION query: reporting %s (seq=%u)", resp.version, seq);
+
+            int result = (type & FMRB_LINK_FLAG_ACK_REQUIRED)
+                ? comm->send_ack(type, seq, (const uint8_t*)&resp, sizeof(resp))
+                : 0;
+
+            if (result != 0) {
+                ESP_LOGE(TAG, "GA_VERSION ACK send failed: %d", result);
+            }
+            return result;
+        }
 
         case FMRB_LINK_CONTROL_INIT_DISPLAY:
             if (payload_len >= sizeof(fmrb_control_init_display_t)) {
