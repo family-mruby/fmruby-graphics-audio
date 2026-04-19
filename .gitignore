@@ -9,3 +9,4 @@ ws/
 .rake_tasks~
 .serial_port
 flash/cache/*
+flash/data/rubykaigi/
