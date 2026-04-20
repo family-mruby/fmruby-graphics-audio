@@ -76,3 +76,5 @@ rake clean_all   # also remove sdkconfig (forces target reconfigure)
 This project is licensed under the GNU General Public License v3.0 — see the [LICENSE](LICENSE) file for details.
 
 For third-party software licenses, see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+Creative assets bundled with this repository ship under their own licenses (CC0 / CC BY) — see [ASSETS.md](ASSETS.md).
