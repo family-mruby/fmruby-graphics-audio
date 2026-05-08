@@ -500,9 +500,13 @@ void graphics_task(void *pvParameters) {
 
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         if (now - stats_last_ms >= 5000) {
+            uint32_t elapsed_ms = now - stats_last_ms;
             uint32_t avg_ms = loop_count > 0 ? total_render_ms / loop_count : 0;
-            ESP_LOGI(TAG, "loop: count=%lu render_avg=%lums render_max=%lums late=%lu",
-                     loop_count, avg_ms, max_render_ms, late_frames);
+            // fps with one decimal place using fixed-point arithmetic.
+            uint32_t fps_x10 = elapsed_ms > 0 ? (loop_count * 10000UL) / elapsed_ms : 0;
+            ESP_LOGI(TAG, "loop: fps=%lu.%lu render_avg=%lums render_max=%lums late=%lu (count=%lu/%lums)",
+                     fps_x10 / 10, fps_x10 % 10, avg_ms, max_render_ms,
+                     late_frames, loop_count, elapsed_ms);
             loop_count = 0;
             total_render_ms = 0;
             max_render_ms = 0;
