@@ -453,11 +453,24 @@ void graphics_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "Host server running. Ready to receive commands.");
 
+    // Target frame period: 30 FPS (33ms). Frame deadline tracked across
+    // iterations so jitter in render time does not accumulate.
+    const uint32_t TARGET_FRAME_PERIOD_MS = 33;
+    // Minimum sleep per loop, even when behind schedule. Without this, a
+    // render time >= TARGET_FRAME_PERIOD_MS (e.g. heavy composite scenes)
+    // would leave zero time for other tasks on this core (msg_handler_task,
+    // audio_task) and the uart_slave MessageBuffer would back up. 10ms is
+    // chosen so that at any reasonable FreeRTOS tick rate the delay actually
+    // yields at least one full tick.
+    const uint32_t MIN_YIELD_MS = 10;
+
     // Main loop timing stats
     uint32_t loop_count = 0;
     uint32_t total_render_ms = 0;
     uint32_t max_render_ms = 0;
+    uint32_t late_frames = 0;
     uint32_t stats_last_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    uint32_t next_frame_ms = stats_last_ms + TARGET_FRAME_PERIOD_MS;
 
     // Main loop
     while (task_running) {
@@ -488,15 +501,30 @@ void graphics_task(void *pvParameters) {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         if (now - stats_last_ms >= 5000) {
             uint32_t avg_ms = loop_count > 0 ? total_render_ms / loop_count : 0;
-            ESP_LOGI(TAG, "loop: count=%lu render_avg=%lums render_max=%lums",
-                     loop_count, avg_ms, max_render_ms);
+            ESP_LOGI(TAG, "loop: count=%lu render_avg=%lums render_max=%lums late=%lu",
+                     loop_count, avg_ms, max_render_ms, late_frames);
             loop_count = 0;
             total_render_ms = 0;
             max_render_ms = 0;
+            late_frames = 0;
             stats_last_ms = now;
         }
 
-        lgfx::delay(16); // ~60 FPS
+        // Elapsed-time-based 30fps pacing with cooperative yield floor.
+        // - When render is light, sleep the remainder of the 33ms window.
+        // - When render is heavy (sleep_ms < MIN_YIELD_MS), still sleep the
+        //   minimum so msg_handler_task / audio_task on this core can run.
+        //   The deadline is resynced from the post-sleep moment so we do not
+        //   accumulate an ever-growing backlog.
+        int32_t sleep_ms = (int32_t)(next_frame_ms - now);
+        if (sleep_ms < (int32_t)MIN_YIELD_MS) {
+            if (sleep_ms <= 0) late_frames++;
+            sleep_ms = (int32_t)MIN_YIELD_MS;
+            next_frame_ms = now + MIN_YIELD_MS + TARGET_FRAME_PERIOD_MS;
+        } else {
+            next_frame_ms += TARGET_FRAME_PERIOD_MS;
+        }
+        lgfx::delay((uint32_t)sleep_ms);
     }
 
     ESP_LOGI(TAG, "Shutting down...");
