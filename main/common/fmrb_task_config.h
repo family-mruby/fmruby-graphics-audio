@@ -28,9 +28,12 @@
 #define MESSAGE_HANDLER_TASK_PRIORITY    5
 #define MESSAGE_HANDLER_TASK_CORE        0
 
-// MessageBuffer: number of messages buffered between comm and handler tasks
+// MessageBuffer: number of messages buffered between comm and handler tasks.
+// Sprite image draw bursts hundreds of small per-pixel commands; with only a
+// few slots the comm task hits xMessageBufferSend timeout and drops the tail,
+// which manifests as bottom-right clipping of launcher icons.
 #ifdef CONFIG_IDF_TARGET_LINUX
 #define MSG_BUFFER_NUM_MESSAGES      1024
 #else
-#define MSG_BUFFER_NUM_MESSAGES      8
+#define MSG_BUFFER_NUM_MESSAGES      64
 #endif

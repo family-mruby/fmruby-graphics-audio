@@ -117,10 +117,13 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
     ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
                msg.type, msg.seq, msg.sub_cmd, payload_len);
 
+    // Block indefinitely on full buffer: UART HW flow control (RTS/CTS) will
+    // backpressure the master, which is the correct response. Dropping here
+    // silently lost trailing pixels of icon sprite uploads.
     size_t send_size = offsetof(message_data_t, payload) + payload_len;
-    size_t bytes_sent = xMessageBufferSend(s_msg_buffer, &msg, send_size, pdMS_TO_TICKS(100));
+    size_t bytes_sent = xMessageBufferSend(s_msg_buffer, &msg, send_size, portMAX_DELAY);
     if (bytes_sent == 0) {
-        ESP_LOGE(TAG, "Failed to send to MessageBuffer (full?)");
+        ESP_LOGE(TAG, "Failed to send to MessageBuffer");
         return -1;
     }
 
