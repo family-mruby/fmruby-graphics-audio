@@ -5,6 +5,7 @@
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
+#include "lgfx/Fonts/misaki/lgfx_misaki_fonts.hpp"
 
 extern "C" {
 #include "graphics_handler.h"
@@ -680,6 +681,32 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             }
             break;
 
+        case FMRB_LINK_GFX_SET_FONT:
+            if (size >= sizeof(fmrb_link_graphics_set_font_t)) {
+                const fmrb_link_graphics_set_font_t *cmd = (const fmrb_link_graphics_set_font_t*)data;
+                LovyanGFX* target = resolve_draw_target(cmd->canvas_id);
+                if (!target) return -1;
+                switch (cmd->family) {
+                    case FMRB_LINK_GFX_FONT_FAMILY_DEFAULT:
+                        target->setFont(&lgfx::fonts::Font0);
+                        break;
+                    case FMRB_LINK_GFX_FONT_FAMILY_JA:
+                        // size=8 -> misaki (matches the system 8px UI height),
+                        // size=12 -> efontJA_12 (readability over compactness).
+                        if (cmd->size == 8) {
+                            target->setFont(&lgfx::fonts::misaki_8);
+                        } else {
+                            target->setFont(&lgfx::fonts::efontJA_12);
+                        }
+                        break;
+                    default:
+                        ESP_LOGW(TAG, "SET_FONT: unknown family=%u", cmd->family);
+                        return -1;
+                }
+                return 0;
+            }
+            break;
+
         case FMRB_LINK_GFX_DRAW_STRING:
             // Use structure from fmrb_link_protocol.h (no cmd_type in data)
             if (size < sizeof(fmrb_link_graphics_text_t)) {
@@ -721,7 +748,37 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 }
 
                 target->setCursor(text_cmd->x, text_cmd->y);
-                target->print(text_buf);
+
+                if (text_cmd->hybrid_mode == 1) {
+                    // Hybrid mode: render ASCII runs with Font0 and UTF-8
+                    // multi-byte runs with misaki_8. LovyanGFX print() keeps the
+                    // cursor between calls so runs stitch together naturally.
+                    const lgfx::IFont* saved_font = target->getFont();
+                    const uint8_t* p = (const uint8_t*)text_buf;
+                    const uint8_t* end = p + len;
+                    char run_buf[256];
+                    while (p < end) {
+                        const uint8_t* run_start = p;
+                        bool is_ascii = (*p < 0x80);
+                        if (is_ascii) {
+                            while (p < end && *p < 0x80) p++;
+                            target->setFont(&lgfx::fonts::Font0);
+                        } else {
+                            while (p < end && *p >= 0x80) p++;
+                            target->setFont(&lgfx::fonts::misaki_8);
+                        }
+                        size_t run_len = p - run_start;
+                        if (run_len >= sizeof(run_buf)) run_len = sizeof(run_buf) - 1;
+                        memcpy(run_buf, run_start, run_len);
+                        run_buf[run_len] = '\0';
+                        target->print(run_buf);
+                    }
+                    // Restore the caller's font selection so subsequent draws
+                    // (and the Ruby-side @current_font cache) stay consistent.
+                    target->setFont(saved_font);
+                } else {
+                    target->print(text_buf);
+                }
                 ESP_LOGD(TAG, "DRAW_STRING: Text drawn");
                 return 0;
             }

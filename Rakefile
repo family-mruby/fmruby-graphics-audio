@@ -83,7 +83,13 @@ task :apply_patches do
     "#{lovyangfx_patch_dir}/esp-idf.cmake" => "#{lovyangfx_dir}/boards.cmake/esp-idf.cmake",
     "#{lovyangfx_patch_dir}/common.hpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/common.hpp",
     "#{lovyangfx_patch_dir}/device.hpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/device.hpp",
-    "#{lovyangfx_patch_dir}/Panel_sdl.cpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/sdl/Panel_sdl.cpp"
+    "#{lovyangfx_patch_dir}/Panel_sdl.cpp" => "#{lovyangfx_dir}/src/lgfx/v1/platforms/sdl/Panel_sdl.cpp",
+    # Misaki 8x8 Japanese bitmap font (license: see Fonts/misaki/COPYRIGHT.txt).
+    "#{lovyangfx_patch_dir}/Fonts/misaki/lgfx_misaki.h"   => "#{lovyangfx_dir}/src/lgfx/Fonts/misaki/lgfx_misaki.h",
+    "#{lovyangfx_patch_dir}/Fonts/misaki/lgfx_misaki.c"   => "#{lovyangfx_dir}/src/lgfx/Fonts/misaki/lgfx_misaki.c",
+    "#{lovyangfx_patch_dir}/Fonts/misaki/lgfx_misaki.cpp" => "#{lovyangfx_dir}/src/lgfx/Fonts/misaki/lgfx_misaki.cpp",
+    "#{lovyangfx_patch_dir}/Fonts/misaki/lgfx_misaki_fonts.hpp" => "#{lovyangfx_dir}/src/lgfx/Fonts/misaki/lgfx_misaki_fonts.hpp",
+    "#{lovyangfx_patch_dir}/Fonts/misaki/COPYRIGHT.txt"   => "#{lovyangfx_dir}/src/lgfx/Fonts/misaki/COPYRIGHT.txt",
   }
 
   # esp_littlefs patches
@@ -100,6 +106,7 @@ task :apply_patches do
   puts "  LovyanGFX patches:"
   lovyangfx_mappings.each do |src, dst|
     if File.exist?(src)
+      mkdir_p File.dirname(dst)
       sh "cp #{src} #{dst}"
       puts "    OK #{File.basename(src)} -> #{dst}"
     else

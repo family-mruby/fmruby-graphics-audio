@@ -11,6 +11,8 @@ if (IDF_TARGET STREQUAL "linux")
     file(GLOB LGFX_SRCS
          ${LGFX_ROOT}/src/lgfx/Fonts/efont/*.c
          ${LGFX_ROOT}/src/lgfx/Fonts/IPA/*.c
+         ${LGFX_ROOT}/src/lgfx/Fonts/misaki/*.c
+         ${LGFX_ROOT}/src/lgfx/Fonts/misaki/*.cpp
          ${LGFX_ROOT}/src/lgfx/utility/*.c
          ${LGFX_ROOT}/src/lgfx/v1/*.cpp
          ${LGFX_ROOT}/src/lgfx/v1/misc/*.cpp
@@ -25,6 +27,8 @@ else()
     file(GLOB LGFX_SRCS
          ${LGFX_ROOT}/src/lgfx/Fonts/efont/*.c
          ${LGFX_ROOT}/src/lgfx/Fonts/IPA/*.c
+         ${LGFX_ROOT}/src/lgfx/Fonts/misaki/*.c
+         ${LGFX_ROOT}/src/lgfx/Fonts/misaki/*.cpp
          ${LGFX_ROOT}/src/lgfx/utility/*.c
          ${LGFX_ROOT}/src/lgfx/v1/*.cpp
          ${LGFX_ROOT}/src/lgfx/v1/misc/*.cpp
