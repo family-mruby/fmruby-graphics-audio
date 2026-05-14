@@ -128,6 +128,56 @@ typedef struct {
 static image_store_entry_t g_image_store[MAX_IMAGE_STORE];
 static uint16_t g_next_image_id = 1;
 
+// Mask store for CREATE_MASK / DELETE_MASK / DRAW_IMAGE_MASKED.
+// Each entry holds a 1bpp bitmap allocated in PSRAM (heap on linux).
+#define MAX_MASK_STORE 16
+
+typedef struct {
+    bool in_use;
+    uint16_t mask_id;
+    uint16_t canvas_id;  // 0 = unbound; freed on DELETE_CANVAS otherwise
+    uint16_t width, height;
+    uint8_t *data;       // ceil(width/8) * height bytes, MSB-first per byte
+} mask_store_entry_t;
+
+static mask_store_entry_t g_mask_store[MAX_MASK_STORE];
+static uint16_t g_next_mask_id = 1;
+
+static mask_store_entry_t* mask_store_find(uint16_t mask_id) {
+    if (mask_id == 0) return nullptr;
+    for (int i = 0; i < MAX_MASK_STORE; i++) {
+        if (g_mask_store[i].in_use && g_mask_store[i].mask_id == mask_id) {
+            return &g_mask_store[i];
+        }
+    }
+    return nullptr;
+}
+
+static void mask_store_free_entry(mask_store_entry_t *entry) {
+    if (!entry) return;
+    if (entry->data) {
+        free(entry->data);
+        entry->data = nullptr;
+    }
+    entry->in_use = false;
+    entry->mask_id = 0;
+    entry->canvas_id = 0;
+    entry->width = entry->height = 0;
+}
+
+// Free all masks bound to the given canvas. Called when the canvas is
+// deleted so the mask pool doesn't leak across app sessions.
+static int mask_store_free_for_canvas(uint16_t canvas_id) {
+    int freed = 0;
+    for (int i = 0; i < MAX_MASK_STORE; i++) {
+        if (g_mask_store[i].in_use && g_mask_store[i].canvas_id == canvas_id) {
+            mask_store_free_entry(&g_mask_store[i]);
+            freed++;
+        }
+    }
+    return freed;
+}
+
 // Transparent color key for image sprites (RGB332)
 // Used as background fill before drawPng; transparent pixels remain this color.
 // pushSprite skips pixels matching this color.
@@ -426,6 +476,13 @@ extern "C" void graphics_handler_cleanup(void) {
     sprite_manager_cleanup();
     fmrb_sprite_pool_deinit();
     g_sprite_image_target = 0;
+
+    // Free any uploaded 1bpp masks.
+    for (int i = 0; i < MAX_MASK_STORE; i++) {
+        if (g_mask_store[i].in_use) {
+            mask_store_free_entry(&g_mask_store[i]);
+        }
+    }
 
     // Delete all canvases
     while (g_canvas_count > 0) {
@@ -876,6 +933,13 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 sprite_manager_delete_all_for_canvas(cmd->canvas_id);
                 g_sprite_image_target = 0;
 
+                // Auto-cleanup all 1bpp masks belonging to this canvas
+                int mask_freed = mask_store_free_for_canvas(cmd->canvas_id);
+                if (mask_freed > 0) {
+                    ESP_LOGI(TAG, "Auto-freed %d masks for canvas %u",
+                             mask_freed, cmd->canvas_id);
+                }
+
                 // Auto-cleanup all GfxBlock programs belonging to this canvas
                 gfx_vm_delete_progs_by_canvas(cmd->canvas_id);
 
@@ -962,6 +1026,159 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&resp, sizeof(resp));
 #endif
                 return 1;  // ACK already sent
+            }
+            break;
+
+        case FMRB_LINK_GFX_CREATE_MASK: {
+            // BEGIN: reserve a zero-filled mask buffer of size width*height
+            // bits. Data is streamed in subsequently via MASK_DATA chunks.
+            fmrb_link_graphics_mask_created_t resp = { .mask_id = 0 };
+
+            do {
+                if (size < sizeof(fmrb_link_graphics_create_mask_t)) {
+                    ESP_LOGE(TAG, "CREATE_MASK: payload too small (%zu)", size);
+                    break;
+                }
+                const fmrb_link_graphics_create_mask_t *cmd =
+                    (const fmrb_link_graphics_create_mask_t *)data;
+                if (cmd->width == 0 || cmd->height == 0) {
+                    ESP_LOGE(TAG, "CREATE_MASK: invalid dimensions %ux%u",
+                             cmd->width, cmd->height);
+                    break;
+                }
+                uint32_t row_bytes = (uint32_t)((cmd->width + 7) / 8);
+                uint32_t mask_bytes = row_bytes * cmd->height;
+                int slot = -1;
+                for (int i = 0; i < MAX_MASK_STORE; i++) {
+                    if (!g_mask_store[i].in_use) { slot = i; break; }
+                }
+                if (slot < 0) {
+                    ESP_LOGE(TAG, "CREATE_MASK: mask store full");
+                    break;
+                }
+                uint8_t *buf;
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+                buf = (uint8_t *)calloc(1, mask_bytes);
+#else
+                buf = (uint8_t *)heap_caps_calloc(1, mask_bytes, MALLOC_CAP_SPIRAM);
+#endif
+                if (!buf) {
+                    ESP_LOGE(TAG, "CREATE_MASK: alloc failed (%u bytes)", (unsigned)mask_bytes);
+                    break;
+                }
+                uint16_t new_id = g_next_mask_id++;
+                if (new_id == 0) new_id = g_next_mask_id++;  // skip 0 (reserved as error)
+                g_mask_store[slot].in_use = true;
+                g_mask_store[slot].mask_id = new_id;
+                g_mask_store[slot].canvas_id = cmd->canvas_id;
+                g_mask_store[slot].width = cmd->width;
+                g_mask_store[slot].height = cmd->height;
+                g_mask_store[slot].data = buf;
+                resp.mask_id = new_id;
+                ESP_LOGD(TAG, "CREATE_MASK: id=%u canvas=%u reserved %ux%u (%u bytes)",
+                         new_id, cmd->canvas_id,
+                         cmd->width, cmd->height, (unsigned)mask_bytes);
+            } while (0);
+
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+            socket_server_send_ack(msg_type, seq, (const uint8_t*)&resp, sizeof(resp));
+#else
+            COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&resp, sizeof(resp));
+#endif
+            return 1;
+        }
+
+        case FMRB_LINK_GFX_MASK_DATA:
+            if (size >= sizeof(fmrb_link_graphics_mask_data_t)) {
+                const fmrb_link_graphics_mask_data_t *cmd =
+                    (const fmrb_link_graphics_mask_data_t *)data;
+                if (sizeof(*cmd) + cmd->chunk_len > size) {
+                    ESP_LOGE(TAG, "MASK_DATA: chunk_len %u extends past payload (%zu)",
+                             cmd->chunk_len, size);
+                    return -1;
+                }
+                mask_store_entry_t *m = mask_store_find(cmd->mask_id);
+                if (!m) {
+                    ESP_LOGE(TAG, "MASK_DATA: mask %u not found", cmd->mask_id);
+                    return -1;
+                }
+                uint32_t total = (uint32_t)((m->width + 7) / 8) * m->height;
+                if ((uint64_t)cmd->offset + cmd->chunk_len > total) {
+                    ESP_LOGE(TAG, "MASK_DATA: chunk %u..%u exceeds mask size %u",
+                             (unsigned)cmd->offset,
+                             (unsigned)(cmd->offset + cmd->chunk_len),
+                             (unsigned)total);
+                    return -1;
+                }
+                memcpy(m->data + cmd->offset, data + sizeof(*cmd), cmd->chunk_len);
+                return 0;
+            }
+            break;
+
+        case FMRB_LINK_GFX_DELETE_MASK:
+            if (size >= sizeof(fmrb_link_graphics_delete_mask_t)) {
+                const fmrb_link_graphics_delete_mask_t *cmd =
+                    (const fmrb_link_graphics_delete_mask_t *)data;
+                mask_store_entry_t *m = mask_store_find(cmd->mask_id);
+                if (m) {
+                    mask_store_free_entry(m);
+                    ESP_LOGD(TAG, "DELETE_MASK: id=%u", cmd->mask_id);
+                } else {
+                    ESP_LOGW(TAG, "DELETE_MASK: id=%u not found", cmd->mask_id);
+                }
+                return 0;
+            }
+            break;
+
+        case FMRB_LINK_GFX_DRAW_IMAGE_MASKED:
+            if (size >= sizeof(fmrb_link_graphics_draw_image_masked_t)) {
+                const fmrb_link_graphics_draw_image_masked_t *cmd =
+                    (const fmrb_link_graphics_draw_image_masked_t *)data;
+
+                LGFX_Sprite *src = (LGFX_Sprite *)sprite_manager_get_image_sprite(cmd->image_id);
+                if (!src) {
+                    ESP_LOGE(TAG, "DRAW_IMAGE_MASKED: image %u not found", cmd->image_id);
+                    return -1;
+                }
+                mask_store_entry_t *mask = mask_store_find(cmd->mask_id);
+                if (!mask) {
+                    ESP_LOGE(TAG, "DRAW_IMAGE_MASKED: mask %u not found", cmd->mask_id);
+                    return -1;
+                }
+                LGFX_Sprite *dst = nullptr;
+                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
+                    ESP_LOGE(TAG, "DRAW_IMAGE_MASKED: screen target not supported");
+                    return -1;
+                } else {
+                    canvas_state_t *canvas = canvas_state_find(cmd->canvas_id);
+                    if (!canvas || !canvas->draw_buffer) {
+                        ESP_LOGE(TAG, "DRAW_IMAGE_MASKED: canvas %u not found", cmd->canvas_id);
+                        return -1;
+                    }
+                    dst = canvas->draw_buffer;
+                    canvas->dirty = true;
+                }
+
+                int mw = mask->width;
+                int mh = mask->height;
+                int sw = src->width();
+                int sh = src->height();
+                int row_bytes = (mw + 7) / 8;
+                const uint8_t *mdata = mask->data;
+
+                for (int yy = 0; yy < mh; yy++) {
+                    // Skip rows entirely outside the source sprite.
+                    if (yy >= sh) break;
+                    const uint8_t *row = mdata + yy * row_bytes;
+                    for (int xx = 0; xx < mw; xx++) {
+                        if (xx >= sw) break;
+                        uint8_t bit = (row[xx >> 3] >> (7 - (xx & 7))) & 1;
+                        if (!bit) continue;
+                        uint8_t pixel = (uint8_t)src->readPixelValue(xx, yy);
+                        dst->drawPixel(cmd->x + xx, cmd->y + yy, pixel);
+                    }
+                }
+                return 0;
             }
             break;
 
