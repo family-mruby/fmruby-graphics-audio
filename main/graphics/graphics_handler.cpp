@@ -920,6 +920,51 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             }
             break;
 
+        case FMRB_LINK_GFX_GET_PIXEL:
+            if (size >= sizeof(fmrb_link_graphics_get_pixel_t)) {
+                const fmrb_link_graphics_get_pixel_t *cmd = (const fmrb_link_graphics_get_pixel_t*)data;
+                fmrb_link_graphics_pixel_value_t resp = { .color = 0, .status = 0xFF };
+
+                // Use readPixelValue on the sprite to get the raw RGB332 byte.
+                // readPixel goes through the base LovyanGFX color-conversion
+                // path and would return RGB565 here, whose low byte does not
+                // match the stored RGB332 value.
+                LGFX_Sprite* sprite_target = nullptr;
+                int32_t w = 0, h = 0;
+                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
+                    // Screen readback is not supported for now — would need
+                    // a different path because g_lgfx is not an LGFX_Sprite.
+                    resp.status = 0xFF;
+                } else {
+                    canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+                    if (canvas && canvas->draw_buffer) {
+                        sprite_target = canvas->draw_buffer;
+                        w = canvas->active_width;
+                        h = canvas->active_height;
+                    }
+                }
+
+                if (!sprite_target && cmd->canvas_id != FMRB_CANVAS_SCREEN) {
+                    ESP_LOGW(TAG, "GET_PIXEL: canvas %u not found", cmd->canvas_id);
+                    resp.status = 0xFF;
+                } else if (sprite_target) {
+                    if (cmd->x < 0 || cmd->y < 0 || cmd->x >= w || cmd->y >= h) {
+                        resp.status = 1;   // out of range
+                    } else {
+                        resp.color = (uint8_t)sprite_target->readPixelValue(cmd->x, cmd->y);
+                        resp.status = 0;
+                    }
+                }
+
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+                socket_server_send_ack(msg_type, seq, (const uint8_t*)&resp, sizeof(resp));
+#else
+                COMM_INTERFACE->send_ack(msg_type, seq, (const uint8_t*)&resp, sizeof(resp));
+#endif
+                return 1;  // ACK already sent
+            }
+            break;
+
         case FMRB_LINK_GFX_UPDATE_WINDOW:
             if (size >= sizeof(fmrb_link_graphics_update_window_t)) {
                 const fmrb_link_graphics_update_window_t *cmd = (const fmrb_link_graphics_update_window_t*)data;
