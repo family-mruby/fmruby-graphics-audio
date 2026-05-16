@@ -24,9 +24,6 @@ For local development this repository also ships `sdl2-display/`, a standalone S
 # ESP32 (ESP32-WROVER-E/IE) — default UART link
 rake build:esp32
 
-# ESP32 with SPI link instead of UART
-CMAKE_OPTS="-DFMRB_COMM_TRANSPORT=SPI" rake build:esp32
-
 # Linux simulation build (ESP-IDF with IDF_TARGET=linux)
 rake build:linux
 
@@ -42,27 +39,7 @@ Patches in [patches/](patches/) (LovyanGFX, esp_littlefs) are applied automatica
 rake check-port   # detect & cache the serial port once
 rake flash        # flash the current build
 rake monitor      # open idf.py monitor
-rake menuconfig   # open idf.py menuconfig
 ```
-
-## Running the Linux simulation
-
-The firmware renders into a shared-memory framebuffer and reads HID events from a Unix socket. A separate SDL2 host process (no FreeRTOS dependency) handles the actual window, input, and audio output.
-
-```bash
-# 1. Build and start the SDL2 host
-cd sdl2-display
-make
-./fmrb_sdl2_display &
-
-# 2. Run the firmware in Linux mode
-cd ..
-./build/fmruby-graphics-audio.elf
-```
-
-`fmruby-core` can then connect over the socket-based link that replaces UART/SPI in the Linux simulation. See the repository root [README.md](../README.md) for the `docker compose up` integration that wires core, graphics-audio, and sdl2-display together.
-
-Design notes for the SDL2 split live in [doc/sdl2-process-separation.md](doc/sdl2-process-separation.md); the audio-on-Linux plan is in [doc/audio-linux-plan.md](doc/audio-linux-plan.md).
 
 ## Cleaning
 
