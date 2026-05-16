@@ -64,6 +64,13 @@ typedef struct {
     bool dirty;                    // Redraw flag
     bool use_transparent;          // Use transparent color key during composition
     uint8_t transparent_color;     // RGB332 color treated as transparent
+
+    // Sub-rect compositing regions. When region_count > 0 the compositor copies
+    // only these regions (each with its own transparent/opaque mode) instead of
+    // pushing the whole active area. region_count = 0 restores the default
+    // full-area pushSprite path. Updated by SET_COMPOSITE_REGIONS RPC.
+    uint8_t region_count;
+    fmrb_link_graphics_composite_region_t regions[FMRB_LINK_MAX_COMPOSITE_REGIONS];
 } canvas_state_t;
 
 // Maximum number of canvases
@@ -220,6 +227,7 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->dirty = false;
     canvas->use_transparent = false;
     canvas->transparent_color = 0;
+    canvas->region_count = 0;
 
     // Allocate external memory for draw buffer from mempool
     canvas->draw_buffer_mem = fmrb_mempool_canvas_alloc_buffer();
@@ -302,6 +310,62 @@ static void canvas_sort_by_zorder() {
     }
 }
 
+// Composite a single sub-rect of canvas->render_buffer onto dst (8bpp RGB332).
+// LovyanGFX's LGFXBase::pushImage overwrites pixelcopy_t::src_bitwidth at entry,
+// which breaks sub-rect copies whose source stride differs from the region
+// width. To stay independent of that quirk we do the row-by-row copy manually.
+// dst stride is taken from dst->width() (= bitwidth for 8bpp).
+static void composite_region(LGFX_Sprite* dst, const canvas_state_t* canvas,
+                             const fmrb_link_graphics_composite_region_t* r) {
+    const uint8_t* src_buf = (const uint8_t*)canvas->render_buffer->getBuffer();
+    uint8_t* dst_buf = (uint8_t*)dst->getBuffer();
+    if (!src_buf || !dst_buf) return;
+
+    const int32_t src_stride = canvas->render_buffer->width();
+    const int32_t dst_stride = dst->width();
+    const int32_t dst_w = dst->width();
+    const int32_t dst_h = dst->height();
+    const int32_t src_w = canvas->render_buffer->width();
+    const int32_t src_h = canvas->render_buffer->height();
+
+    int32_t sx = r->src_x;
+    int32_t sy = r->src_y;
+    int32_t dx = canvas->push_x + r->dst_x;
+    int32_t dy = canvas->push_y + r->dst_y;
+    int32_t w  = r->w;
+    int32_t h  = r->h;
+
+    // Clip against source bounds
+    if (sx < 0) { w += sx; dx -= sx; sx = 0; }
+    if (sy < 0) { h += sy; dy -= sy; sy = 0; }
+    if (sx + w > src_w) w = src_w - sx;
+    if (sy + h > src_h) h = src_h - sy;
+    // Clip against destination bounds
+    if (dx < 0) { w += dx; sx -= dx; dx = 0; }
+    if (dy < 0) { h += dy; sy -= dy; dy = 0; }
+    if (dx + w > dst_w) w = dst_w - dx;
+    if (dy + h > dst_h) h = dst_h - dy;
+    if (w <= 0 || h <= 0) return;
+
+    if (r->use_transparent) {
+        const uint8_t key = canvas->transparent_color;
+        for (int32_t y = 0; y < h; y++) {
+            const uint8_t* sp = src_buf + (sy + y) * src_stride + sx;
+            uint8_t* dp = dst_buf + (dy + y) * dst_stride + dx;
+            for (int32_t x = 0; x < w; x++) {
+                uint8_t px = sp[x];
+                if (px != key) dp[x] = px;
+            }
+        }
+    } else {
+        for (int32_t y = 0; y < h; y++) {
+            const uint8_t* sp = src_buf + (sy + y) * src_stride + sx;
+            uint8_t* dp = dst_buf + (dy + y) * dst_stride + dx;
+            memcpy(dp, sp, (size_t)w);
+        }
+    }
+}
+
 // Render all canvases to screen in Z-order
 static void graphics_handler_render_frame_internal() {
     if (g_canvas_count == 0) {
@@ -339,16 +403,24 @@ static void graphics_handler_render_frame_internal() {
         canvas_state_t* canvas = &g_canvases[i];
         if (canvas == bg_canvas) continue;
         if (canvas->is_visible && canvas->render_buffer) {
-            ESP_LOGD(TAG, "Composite canvas ID=%u to screen buffer at (%d,%d), active_size=%dx%d, z_order=%d",
+            ESP_LOGD(TAG, "Composite canvas ID=%u to screen buffer at (%d,%d), active_size=%dx%d, z_order=%d, regions=%u",
                     canvas->canvas_id, canvas->push_x, canvas->push_y,
-                    canvas->active_width, canvas->active_height, canvas->z_order);
+                    canvas->active_width, canvas->active_height, canvas->z_order,
+                    canvas->region_count);
             canvas->dirty = false;
 
-            // Push render_buffer to screen buffer
-            // Since setBuffer configures sprite to active size, pushSprite will only transfer active region
-            if (canvas->use_transparent) {
+            if (canvas->region_count > 0) {
+                // Sub-rect compositing: only the listed regions are copied,
+                // each with its own transparent/opaque mode. The rest of the
+                // active area is not touched.
+                for (uint8_t r = 0; r < canvas->region_count; r++) {
+                    composite_region(screen_buffer, canvas, &canvas->regions[r]);
+                }
+            } else if (canvas->use_transparent) {
+                // Full-area transparent compositing (fallback when no regions set)
                 canvas->render_buffer->pushSprite(screen_buffer, canvas->push_x, canvas->push_y, canvas->transparent_color);
             } else {
+                // Full-area opaque memcpy fast path
                 canvas->render_buffer->pushSprite(screen_buffer, canvas->push_x, canvas->push_y);
             }
             taskYIELD();  // Yield after each canvas composite to avoid WDT
@@ -1029,6 +1101,46 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             }
             break;
 
+        case FMRB_LINK_GFX_SET_COMPOSITE_REGIONS: {
+            // Variable-length payload: 4-byte header + count * 14-byte region.
+            const size_t header_size = offsetof(fmrb_link_graphics_set_composite_regions_t, regions);
+            if (size < header_size) {
+                ESP_LOGE(TAG, "SET_COMPOSITE_REGIONS: payload too small (%zu)", size);
+                return -1;
+            }
+            const fmrb_link_graphics_set_composite_regions_t *cmd =
+                (const fmrb_link_graphics_set_composite_regions_t*)data;
+
+            uint8_t count = cmd->count;
+            if (count > FMRB_LINK_MAX_COMPOSITE_REGIONS) {
+                ESP_LOGW(TAG, "SET_COMPOSITE_REGIONS: count %u exceeds max %u, clipping",
+                         count, (unsigned)FMRB_LINK_MAX_COMPOSITE_REGIONS);
+                count = FMRB_LINK_MAX_COMPOSITE_REGIONS;
+            }
+            size_t expected = header_size + (size_t)count * sizeof(fmrb_link_graphics_composite_region_t);
+            if (size < expected) {
+                ESP_LOGE(TAG, "SET_COMPOSITE_REGIONS: payload %zu < expected %zu (count=%u)",
+                         size, expected, count);
+                return -1;
+            }
+
+            canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+            if (!canvas) {
+                ESP_LOGE(TAG, "Canvas %u not found for SET_COMPOSITE_REGIONS", cmd->canvas_id);
+                return -1;
+            }
+
+            xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
+            if (count > 0) {
+                memcpy(canvas->regions, cmd->regions,
+                       (size_t)count * sizeof(fmrb_link_graphics_composite_region_t));
+            }
+            canvas->region_count = count;
+            xSemaphoreGive(g_canvas_mutex);
+            ESP_LOGI(TAG, "Canvas %u composite regions set: count=%u", cmd->canvas_id, count);
+            return 0;
+        }
+
         case FMRB_LINK_GFX_CREATE_MASK: {
             // BEGIN: reserve a zero-filled mask buffer of size width*height
             // bits. Data is streamed in subsequently via MASK_DATA chunks.
@@ -1212,6 +1324,12 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                                               canvas->active_width, canvas->active_height, 8);
                 canvas->render_buffer->setBuffer(canvas->render_buffer_mem,
                                                 canvas->active_width, canvas->active_height, 8);
+
+                // Composite regions are sized for the old dimensions and may
+                // now reach past the new buffer. Clear them so the next frame
+                // falls back to full-area compositing; the consumer should
+                // resend regions after resize if needed.
+                canvas->region_count = 0;
 
                 canvas->dirty = true;
 
