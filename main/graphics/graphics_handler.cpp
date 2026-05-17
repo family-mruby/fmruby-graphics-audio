@@ -201,7 +201,8 @@ static canvas_state_t* canvas_state_find(uint16_t canvas_id) {
     return nullptr;
 }
 
-static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width, uint16_t req_height) {
+static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width, uint16_t req_height,
+                                          int16_t z_order, bool use_transparent, uint8_t transparent_color) {
     if (g_canvas_count >= MAX_CANVAS_COUNT) {
         ESP_LOGE(TAG, "Maximum canvas count reached (%d)", MAX_CANVAS_COUNT);
         return nullptr;
@@ -220,13 +221,15 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->active_width = req_width;
     canvas->active_height = req_height;
 
-    canvas->z_order = canvas_id; // TODO: implement z_oder logic
+    // Assign final z_order up front so render task never observes a stale
+    // placeholder value during the publish window.
+    canvas->z_order = z_order;
     canvas->push_x = 0;
     canvas->push_y = 0;
     canvas->is_visible = false;  // Initially invisible until first present()
     canvas->dirty = false;
-    canvas->use_transparent = false;
-    canvas->transparent_color = 0;
+    canvas->use_transparent = use_transparent;
+    canvas->transparent_color = transparent_color;
     canvas->region_count = 0;
 
     // Allocate external memory for draw buffer from mempool
@@ -255,8 +258,22 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->render_buffer->setColorDepth(8);  // RGB332
     canvas->render_buffer->setBuffer(canvas->render_buffer_mem, req_width, req_height, 8);
 
-    // All initialization complete - now make visible to render task
+    if (use_transparent) {
+        // Pre-fill both buffers with the transparent color so uninitialized
+        // pixels composite as transparent instead of leaking buffer contents.
+        canvas->draw_buffer->fillScreen(transparent_color);
+        canvas->render_buffer->fillScreen(transparent_color);
+        ESP_LOGI(TAG, "Canvas ID=%u: transparency enabled (color=0x%02X)",
+                 canvas_id, transparent_color);
+    }
+
+    // Publish the new canvas atomically with respect to the render task.
+    // Without the mutex, render could observe g_canvas_count++ before the
+    // structure fields are flushed, or sort/composite while we are still
+    // writing.
+    xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
     g_canvas_count++;
+    xSemaphoreGive(g_canvas_mutex);
 
     ESP_LOGI(TAG, "Canvas allocated: ID=%u, allocated_size=%dx%d, active_size=%dx%d, z_order=%d",
               canvas_id, canvas->width, canvas->height,
@@ -268,6 +285,12 @@ static void canvas_state_free(canvas_state_t* canvas) {
     if (!canvas) return;
 
     ESP_LOGI(TAG, "Freeing canvas ID=%u", canvas->canvas_id);
+
+    // Hold the mutex across buffer destruction and array compaction.
+    // The render task dereferences render_buffer/draw_buffer and walks the
+    // canvas array under the same mutex, so freeing or shifting without it
+    // can be observed mid-render.
+    xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
 
     if (canvas->draw_buffer) {
         delete canvas->draw_buffer;
@@ -295,6 +318,8 @@ static void canvas_state_free(canvas_state_t* canvas) {
                 (g_canvas_count - index - 1) * sizeof(canvas_state_t));
     }
     g_canvas_count--;
+
+    xSemaphoreGive(g_canvas_mutex);
 }
 
 // Compare function for qsort (sort by z_order ascending)
@@ -951,27 +976,16 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                     canvas_id = g_next_canvas_id++;  // Skip invalid value
                 }
 
-                // Allocate canvas state
-                canvas_state_t* canvas = canvas_state_alloc(canvas_id, cmd->width, cmd->height);
+                // Allocate canvas state (z_order and transparency settings applied
+                // before the canvas becomes visible to the render task)
+                canvas_state_t* canvas = canvas_state_alloc(canvas_id, cmd->width, cmd->height,
+                                                            cmd->z_order,
+                                                            cmd->use_transparent != 0,
+                                                            cmd->transparent_color);
                 if (!canvas) {
                     ESP_LOGE(TAG, "Failed to allocate canvas %u (%dx%d)",
                             canvas_id, (int)cmd->width, (int)cmd->height);
                     return -1;
-                }
-
-                // Override z_order with value from Core
-                canvas->z_order = cmd->z_order;
-
-                // Apply transparency settings from protocol
-                canvas->use_transparent = (cmd->use_transparent != 0);
-                canvas->transparent_color = cmd->transparent_color;
-                if (canvas->use_transparent) {
-                    // Pre-fill both buffers with the transparent color so uninitialized
-                    // pixels composite as transparent instead of leaking buffer contents.
-                    canvas->draw_buffer->fillScreen(canvas->transparent_color);
-                    canvas->render_buffer->fillScreen(canvas->transparent_color);
-                    ESP_LOGI(TAG, "Canvas ID=%u: transparency enabled (color=0x%02X)",
-                             canvas_id, canvas->transparent_color);
                 }
 
                 ESP_LOGI(TAG, "Canvas created: ID=%u, %dx%d, z_order=%d", canvas_id, (int)cmd->width, (int)cmd->height, (int)cmd->z_order);
@@ -1025,14 +1039,19 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             if (size >= sizeof(fmrb_link_graphics_set_window_order_t)) {
                 const fmrb_link_graphics_set_window_order_t *cmd = (const fmrb_link_graphics_set_window_order_t*)data;
 
+                // Hold the mutex across find + update so the render task's
+                // qsort cannot swap canvas array entries between locating the
+                // target canvas and writing its new z_order, which would
+                // otherwise corrupt a different canvas's z_order permanently.
+                xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
                 canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
                 if (!canvas) {
+                    xSemaphoreGive(g_canvas_mutex);
                     ESP_LOGE(TAG, "Canvas %u not found for SET_WINDOW_ORDER", cmd->canvas_id);
                     return -1;
                 }
-
-                // Update z_order
                 canvas->z_order = cmd->z_order;
+                xSemaphoreGive(g_canvas_mutex);
                 ESP_LOGI(TAG, "Canvas %u z_order updated to %d", cmd->canvas_id, cmd->z_order);
                 return 0;
             }
