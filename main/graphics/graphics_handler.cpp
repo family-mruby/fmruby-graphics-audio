@@ -1331,6 +1331,59 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             }
             break;
 
+        case FMRB_LINK_GFX_DRAW_TILE:
+            if (size >= sizeof(fmrb_link_graphics_draw_tile_t)) {
+                const fmrb_link_graphics_draw_tile_t *cmd =
+                    (const fmrb_link_graphics_draw_tile_t *)data;
+
+                LGFX_Sprite *src = (LGFX_Sprite *)sprite_manager_get_image_sprite(cmd->image_id);
+                if (!src) {
+                    ESP_LOGE(TAG, "DRAW_TILE: image %u not found", cmd->image_id);
+                    return -1;
+                }
+                LGFX_Sprite *dst = nullptr;
+                if (cmd->canvas_id == FMRB_CANVAS_SCREEN) {
+                    ESP_LOGE(TAG, "DRAW_TILE: screen target not supported");
+                    return -1;
+                } else {
+                    canvas_state_t *canvas = canvas_state_find(cmd->canvas_id);
+                    if (!canvas || !canvas->draw_buffer) {
+                        ESP_LOGE(TAG, "DRAW_TILE: canvas %u not found", cmd->canvas_id);
+                        return -1;
+                    }
+                    dst = canvas->draw_buffer;
+                    canvas->dirty = true;
+                }
+
+                uint8_t transparent_color = 0;
+                bool has_transparent =
+                    sprite_manager_get_image_transparent(cmd->image_id,
+                                                         &transparent_color) == 1;
+
+                int sw = src->width();
+                int sh = src->height();
+                int src_x = cmd->src_x;
+                int src_y = cmd->src_y;
+                int w = cmd->w;
+                int h = cmd->h;
+                int dst_x = cmd->dst_x;
+                int dst_y = cmd->dst_y;
+
+                for (int yy = 0; yy < h; yy++) {
+                    int sy = src_y + yy;
+                    if (sy < 0 || sy >= sh) continue;
+                    for (int xx = 0; xx < w; xx++) {
+                        int sx = src_x + xx;
+                        if (sx < 0 || sx >= sw) continue;
+                        uint8_t pixel = (uint8_t)src->readPixelValue(sx, sy);
+                        if (has_transparent && pixel == transparent_color) continue;
+                        dst->drawPixel(dst_x + xx, dst_y + yy, pixel);
+                    }
+                }
+                return 0;
+            }
+            break;
+
         case FMRB_LINK_GFX_UPDATE_WINDOW:
             if (size >= sizeof(fmrb_link_graphics_update_window_t)) {
                 const fmrb_link_graphics_update_window_t *cmd = (const fmrb_link_graphics_update_window_t*)data;

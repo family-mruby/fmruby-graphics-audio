@@ -219,6 +219,18 @@ int sprite_manager_get_image_size(sprite_image_id_t image_id,
     return 0;
 }
 
+int sprite_manager_get_image_transparent(sprite_image_id_t image_id,
+    uint8_t *out_color)
+{
+    sprite_image_state_t *img = find_image(image_id);
+    if (!img) return -1;
+    if (img->use_transparent) {
+        if (out_color) *out_color = img->transparent_color;
+        return 1;
+    }
+    return 0;
+}
+
 sprite_instance_id_t sprite_manager_create_instance(uint16_t canvas_id,
     const uint16_t *image_ids, uint8_t frame_count,
     int16_t x, int16_t y, int16_t z_order)

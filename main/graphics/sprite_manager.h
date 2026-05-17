@@ -68,6 +68,16 @@ void* sprite_manager_get_image_sprite(sprite_image_id_t image_id);
 int sprite_manager_get_image_size(sprite_image_id_t image_id,
     uint16_t *width, uint16_t *height);
 
+/**
+ * @brief Query whether an image uses color-key transparency.
+ * @param image_id Target image
+ * @param out_color Receives the transparent color when use_transparent is true
+ *                  (untouched otherwise). May be NULL.
+ * @return 1 if use_transparent is set, 0 if not set, -1 if image not found.
+ */
+int sprite_manager_get_image_transparent(sprite_image_id_t image_id,
+    uint8_t *out_color);
+
 // --- SpriteInstance API ---
 
 /**
