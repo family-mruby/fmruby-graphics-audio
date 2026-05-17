@@ -414,11 +414,29 @@ static void graphics_handler_render_frame_internal() {
         return;  // No canvas with buffer ready yet
     }
     LGFX_Sprite* screen_buffer = bg_canvas->render_buffer;
+    const int screen_w = screen_buffer->width();
+    const int screen_h = screen_buffer->height();
+
+    // If any visible canvas on top fully covers the screen with opaque content,
+    // the bg_canvas pixels will be entirely overwritten anyway. Skip the
+    // ~screen_w*screen_h memcpy in that case (e.g. fullscreen apps).
+    bool bg_fully_covered = false;
+    for (size_t i = 0; i < g_canvas_count; i++) {
+        canvas_state_t* canvas = &g_canvases[i];
+        if (canvas == bg_canvas) continue;
+        if (!canvas->is_visible || !canvas->render_buffer) continue;
+        if (canvas->region_count != 0) continue;
+        if (canvas->use_transparent) continue;
+        if (canvas->push_x != 0 || canvas->push_y != 0) continue;
+        if (canvas->active_width < screen_w || canvas->active_height < screen_h) continue;
+        bg_fully_covered = true;
+        break;
+    }
 
     // Restore background canvas from draw_buffer before compositing.
     // This clears any previously composited window pixels that would
     // otherwise remain as ghost images when windows are moved.
-    if (bg_canvas->draw_buffer) {
+    if (bg_canvas->draw_buffer && !bg_fully_covered) {
         bg_canvas->draw_buffer->pushSprite(screen_buffer, 0, 0);
     }
     taskYIELD();  // Yield after heavy background copy to avoid WDT
