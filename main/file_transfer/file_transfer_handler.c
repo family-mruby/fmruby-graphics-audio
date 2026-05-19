@@ -11,6 +11,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <dirent.h>
+#include <unistd.h>
 
 static const char *TAG = "file_transfer";
 
@@ -326,6 +328,154 @@ static int handle_delete(uint8_t type, uint8_t seq,
     return 0;
 }
 
+// Recursive removal limited to a max depth to keep the WROVER stack bounded.
+// LittleFS has no symlink concept, so plain DFS is safe.
+#define RMDIR_MAX_DEPTH 8
+
+static int rmdir_recursive(char *path, size_t path_cap, int depth, uint32_t *deleted)
+{
+    if (depth > RMDIR_MAX_DEPTH) {
+        ESP_LOGW(TAG, "RMDIR: depth limit reached at %s", path);
+        return -1;
+    }
+
+    DIR *dir = opendir(path);
+    if (!dir) {
+        // Not a directory: try removing as a regular file.
+        if (remove(path) == 0) {
+            (*deleted)++;
+            return 0;
+        }
+        // Non-existent path is a no-op success.
+        if (errno == ENOENT) {
+            return 0;
+        }
+        ESP_LOGW(TAG, "RMDIR: cannot open %s: %s", path, strerror(errno));
+        return -1;
+    }
+
+    size_t path_len = strlen(path);
+    struct dirent *ent;
+    int err = 0;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        // Append "/<name>" to the in-place path buffer for the recursive call.
+        int written = snprintf(path + path_len, path_cap - path_len,
+                               "/%s", ent->d_name);
+        if (written < 0 || (size_t)written >= path_cap - path_len) {
+            ESP_LOGW(TAG, "RMDIR: path too long under %s", path);
+            err = -1;
+            path[path_len] = '\0';
+            continue;
+        }
+
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            if (rmdir_recursive(path, path_cap, depth + 1, deleted) != 0) {
+                err = -1;
+            }
+        } else {
+            if (remove(path) == 0) {
+                (*deleted)++;
+            } else if (errno != ENOENT) {
+                ESP_LOGW(TAG, "RMDIR: remove %s failed: %s", path, strerror(errno));
+                err = -1;
+            }
+        }
+        path[path_len] = '\0';
+    }
+    closedir(dir);
+
+    // Remove the now-empty directory. rmdir() returns ENOTEMPTY if a child
+    // removal failed; treat that as an error but keep walking caller-side.
+    if (rmdir(path) == 0) {
+        (*deleted)++;
+    } else if (errno != ENOENT) {
+        ESP_LOGW(TAG, "RMDIR: rmdir %s failed: %s", path, strerror(errno));
+        err = -1;
+    }
+    return err;
+}
+
+// Reject paths that resolve outside of FILE_TRANSFER_BASE_PATH "/cache". The
+// caller already prepended FILE_TRANSFER_BASE_PATH, but a relative "/.." in
+// the request would let it escape. Allow only paths that, after build, start
+// with the cache root and never contain "/.." segments.
+static bool path_is_inside_cache(const char *full_path)
+{
+    static const char prefix[] = FILE_TRANSFER_BASE_PATH "/cache";
+    const size_t plen = sizeof(prefix) - 1;
+    if (strncmp(full_path, prefix, plen) != 0) {
+        return false;
+    }
+    // Allow exact match ("/flash/cache") or a "/" separator next.
+    if (full_path[plen] != '\0' && full_path[plen] != '/') {
+        return false;
+    }
+    if (strstr(full_path, "/..") != NULL) {
+        return false;
+    }
+    return true;
+}
+
+// Handle RMDIR command
+static int handle_rmdir(uint8_t type, uint8_t seq,
+                        const uint8_t *payload, size_t payload_len)
+{
+    if (payload_len < sizeof(fmrb_link_file_transfer_rmdir_t)) {
+        ESP_LOGE(TAG, "RMDIR: payload too small");
+        return -1;
+    }
+
+    const fmrb_link_file_transfer_rmdir_t *cmd =
+        (const fmrb_link_file_transfer_rmdir_t *)payload;
+
+    const char *rel_path = (const char *)(payload + sizeof(fmrb_link_file_transfer_rmdir_t));
+
+    if (sizeof(fmrb_link_file_transfer_rmdir_t) + cmd->path_len > payload_len) {
+        ESP_LOGE(TAG, "RMDIR: path extends beyond payload");
+        return -1;
+    }
+
+    if (ensure_fs_mounted() != 0) {
+        return -1;
+    }
+
+    char full_path[FILE_TRANSFER_MAX_PATH];
+    if (build_full_path(full_path, sizeof(full_path), rel_path, cmd->path_len) != 0) {
+        ESP_LOGE(TAG, "RMDIR: invalid path");
+        return -1;
+    }
+
+    fmrb_link_file_transfer_rmdir_resp_t resp = {0};
+
+    if (!path_is_inside_cache(full_path)) {
+        ESP_LOGE(TAG, "RMDIR: path %s outside cache root, rejected", full_path);
+        resp.status = 1;
+        const comm_interface_t *comm = comm_get_interface();
+        if (comm) {
+            comm->send_ack(type, seq, (const uint8_t *)&resp, sizeof(resp));
+        }
+        return 1;
+    }
+
+    uint32_t deleted = 0;
+    int rc = rmdir_recursive(full_path, sizeof(full_path), 0, &deleted);
+    resp.deleted_count = deleted;
+    resp.status = (rc == 0) ? 0 : 2;
+
+    ESP_LOGI(TAG, "RMDIR: %s deleted=%u status=%u",
+             full_path, (unsigned)deleted, (unsigned)resp.status);
+
+    const comm_interface_t *comm = comm_get_interface();
+    if (comm) {
+        comm->send_ack(type, seq, (const uint8_t *)&resp, sizeof(resp));
+    }
+    return 1;
+}
+
 int file_transfer_handler_init(void)
 {
     memset(&g_recv, 0, sizeof(g_recv));
@@ -350,6 +500,9 @@ int file_transfer_handler_process(uint8_t type, uint8_t sub_cmd, uint8_t seq,
 
         case FMRB_LINK_FILE_TRANSFER_DELETE:
             return handle_delete(type, seq, payload, payload_len);
+
+        case FMRB_LINK_FILE_TRANSFER_RMDIR:
+            return handle_rmdir(type, seq, payload, payload_len);
 
         default:
             ESP_LOGE(TAG, "Unknown file transfer sub-command: 0x%02x", sub_cmd);
