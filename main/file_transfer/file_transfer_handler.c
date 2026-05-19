@@ -332,7 +332,11 @@ static int handle_delete(uint8_t type, uint8_t seq,
 // LittleFS has no symlink concept, so plain DFS is safe.
 #define RMDIR_MAX_DEPTH 8
 
-static int rmdir_recursive(char *path, size_t path_cap, int depth, uint32_t *deleted)
+// remove_self=false on the top-level call leaves the directory itself in
+// place (only its contents are wiped). Recursive calls pass remove_self=true
+// so empty descendants are reaped along the way.
+static int rmdir_recursive(char *path, size_t path_cap, int depth,
+                           bool remove_self, uint32_t *deleted)
 {
     if (depth > RMDIR_MAX_DEPTH) {
         ESP_LOGW(TAG, "RMDIR: depth limit reached at %s", path);
@@ -373,7 +377,7 @@ static int rmdir_recursive(char *path, size_t path_cap, int depth, uint32_t *del
 
         struct stat st;
         if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-            if (rmdir_recursive(path, path_cap, depth + 1, deleted) != 0) {
+            if (rmdir_recursive(path, path_cap, depth + 1, true, deleted) != 0) {
                 err = -1;
             }
         } else {
@@ -388,6 +392,9 @@ static int rmdir_recursive(char *path, size_t path_cap, int depth, uint32_t *del
     }
     closedir(dir);
 
+    if (!remove_self) {
+        return err;
+    }
     // Remove the now-empty directory. rmdir() returns ENOTEMPTY if a child
     // removal failed; treat that as an error but keep walking caller-side.
     if (rmdir(path) == 0) {
@@ -461,8 +468,10 @@ static int handle_rmdir(uint8_t type, uint8_t seq,
         return 1;
     }
 
+    // Top-level: clear contents but leave the cache root in place so later
+    // file_transfer writes don't have to recreate the bare directory.
     uint32_t deleted = 0;
-    int rc = rmdir_recursive(full_path, sizeof(full_path), 0, &deleted);
+    int rc = rmdir_recursive(full_path, sizeof(full_path), 0, false, &deleted);
     resp.deleted_count = deleted;
     resp.status = (rc == 0) ? 0 : 2;
 
