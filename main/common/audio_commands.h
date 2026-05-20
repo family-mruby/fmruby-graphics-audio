@@ -17,7 +17,10 @@ typedef enum {
     FMRB_AUDIO_CMD_GET_STATUS = 0x07,
     FMRB_AUDIO_CMD_PLAY_SLOT = 0x08,
     FMRB_AUDIO_CMD_NOTE_ON = 0x09,
-    FMRB_AUDIO_CMD_NOTE_OFF = 0x0A
+    FMRB_AUDIO_CMD_NOTE_OFF = 0x0A,
+    /* Load an FMSQ slot directly from a LittleFS path. Useful when the data
+     * is too large for the inline IPC payload (LOAD_BINARY limit ~150 B). */
+    FMRB_AUDIO_CMD_LOAD_FMSQ_FILE = 0x0B
 } fmrb_audio_cmd_type_t;
 
 // Audio status
@@ -67,6 +70,13 @@ typedef struct {
     uint8_t cmd_type;
     uint32_t music_id;
 } __attribute__((packed)) fmrb_audio_play_slot_cmd_t;
+
+typedef struct {
+    uint8_t cmd_type;
+    uint32_t music_id;
+    uint16_t path_len;
+    char path[];  // Flexible array member, LittleFS-relative (will be prefixed with /flash)
+} __attribute__((packed)) fmrb_audio_load_fmsq_file_cmd_t;
 
 // APU channel IDs
 #define FMRB_APU_CH_PULSE1    0

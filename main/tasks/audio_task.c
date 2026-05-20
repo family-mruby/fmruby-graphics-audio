@@ -114,7 +114,13 @@ int audio_task_fmsq_play_slot(uint32_t music_id) {
     /* Stop current playback */
     g_fmsq_player->playing = 0;
 
-    apuif_select(APUIF_INSTANCE_SUB);
+    /* NSF and FMSQ both target the MAIN APU instance, so stop NSF first
+     * to avoid register clobber. SUB is reserved for note_on SE. */
+    if (g_nsf_player && g_nsf_player->playing) {
+        g_nsf_player->playing = 0;
+    }
+
+    apuif_select(APUIF_INSTANCE_MAIN);
 
 #ifdef __linux__
     /* Flush ring buffers to minimize playback latency (Linux only) */
@@ -149,17 +155,14 @@ int audio_task_fmsq_play_slot(uint32_t music_id) {
 int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t duty, uint8_t sweep) {
     if (freq == 0) return -1;
 
+    /* note_on uses SUB; FMSQ/NSF stay on MAIN. Both APU instances are
+     * mixed by apuif_process_mix, so BGM keeps playing during SE. */
     apuif_select(APUIF_INSTANCE_SUB);
 
 #ifdef __linux__
     apuif_ring_flush();
     audio_handler_flush();  /* Also flush SHM ring buffer */
 #endif
-
-    /* Stop FMSQ playback if running (avoid conflicts on SUB instance) */
-    if (g_fmsq_player && g_fmsq_player->playing) {
-        g_fmsq_player->playing = 0;
-    }
 
     switch (channel) {
     case FMRB_APU_CH_PULSE1:
@@ -276,9 +279,9 @@ void audio_task(void *pvParameters) {
             nsf_player_tick(g_nsf_player);
         }
 
-        /* Tick FMSQ player on sub APU instance */
+        /* Tick FMSQ player on MAIN APU instance (SUB is reserved for SE). */
         if (g_fmsq_player && g_fmsq_player->playing) {
-            apuif_select(APUIF_INSTANCE_SUB);
+            apuif_select(APUIF_INSTANCE_MAIN);
             fmsq_player_tick(g_fmsq_player);
         }
 
@@ -353,9 +356,9 @@ void audio_task(void *pvParameters) {
             nsf_player_tick(g_nsf_player);
         }
 
-        /* Tick FMSQ player on sub APU instance */
+        /* Tick FMSQ player on MAIN APU instance (SUB is reserved for SE). */
         if (g_fmsq_player && g_fmsq_player->playing) {
-            apuif_select(APUIF_INSTANCE_SUB);
+            apuif_select(APUIF_INSTANCE_MAIN);
             fmsq_player_tick(g_fmsq_player);
         }
 

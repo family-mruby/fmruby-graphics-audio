@@ -107,6 +107,91 @@ static int process_play_command(const fmrb_audio_play_cmd_t *cmd, size_t total_s
     return ret;
 }
 
+/* Load an FMSQ slot by reading its bytes from LittleFS, then storing them in
+ * the same music_tracks[] table that LOAD_BINARY uses. Lets us bypass the
+ * inline IPC payload limit (~150 B) for larger BGM files. */
+static int process_load_fmsq_file_command(const fmrb_audio_load_fmsq_file_cmd_t *cmd, size_t total_size) {
+    if (total_size < sizeof(fmrb_audio_load_fmsq_file_cmd_t) + cmd->path_len) {
+        ESP_LOGE(TAG, "Load FMSQ file command too short");
+        return -1;
+    }
+
+    char path[128];
+    int len = cmd->path_len < sizeof(path) - 1 ? (int)cmd->path_len : (int)(sizeof(path) - 1);
+    memcpy(path, cmd->path, len);
+    path[len] = '\0';
+
+    /* Same prefix scheme as audio_task_nsf_play. */
+    char full_path[256];
+    const char *sep = path[0] == '/' ? "" : "/";
+#ifdef CONFIG_IDF_TARGET_LINUX
+    snprintf(full_path, sizeof(full_path), "flash%s%s", sep, path);
+#else
+    snprintf(full_path, sizeof(full_path), "/flash%s%s", sep, path);
+#endif
+
+    ESP_LOGI(TAG, "Load FMSQ file: music_id=%lu path=%s",
+             (unsigned long)cmd->music_id, full_path);
+
+    FILE *f = fopen(full_path, "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "Failed to open FMSQ %s", full_path);
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return -1;
+    }
+    long sz = ftell(f);
+    if (sz <= 0 || sz > 65536) {
+        ESP_LOGE(TAG, "Invalid FMSQ size %ld for %s", sz, full_path);
+        fclose(f);
+        return -1;
+    }
+    fseek(f, 0, SEEK_SET);
+
+    int track_idx = -1;
+    for (int i = 0; i < track_count; i++) {
+        if (music_tracks[i].music_id == cmd->music_id) {
+            track_idx = i;
+            break;
+        }
+    }
+    if (track_idx == -1) {
+        if (track_count >= FMRB_MAX_MUSIC_TRACKS) {
+            ESP_LOGE(TAG, "Maximum music tracks reached");
+            fclose(f);
+            return -1;
+        }
+        track_idx = track_count++;
+    } else if (music_tracks[track_idx].data) {
+        free(music_tracks[track_idx].data);
+        music_tracks[track_idx].data = NULL;
+    }
+
+    music_tracks[track_idx].music_id = cmd->music_id;
+    music_tracks[track_idx].size = (uint32_t)sz;
+    music_tracks[track_idx].data = malloc((size_t)sz);
+    if (!music_tracks[track_idx].data) {
+        ESP_LOGE(TAG, "Failed to allocate %ld bytes for FMSQ", sz);
+        fclose(f);
+        return -1;
+    }
+
+    size_t read_bytes = fread(music_tracks[track_idx].data, 1, (size_t)sz, f);
+    fclose(f);
+    if (read_bytes != (size_t)sz) {
+        ESP_LOGE(TAG, "FMSQ short read: %zu of %ld bytes", read_bytes, sz);
+        free(music_tracks[track_idx].data);
+        music_tracks[track_idx].data = NULL;
+        return -1;
+    }
+
+    ESP_LOGI(TAG, "Loaded FMSQ slot %lu from %s (%ld bytes)",
+             (unsigned long)cmd->music_id, full_path, sz);
+    return 0;
+}
+
 static int process_stop_command(void) {
     ESP_LOGI(TAG, "Stopping audio playback");
     audio_task_nsf_stop();
@@ -176,6 +261,13 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
                 const fmrb_audio_play_slot_cmd_t *cmd = (const fmrb_audio_play_slot_cmd_t*)data;
                 ESP_LOGI(TAG, "Play slot command: music_id=%lu (ESP32 stub)", (unsigned long)cmd->music_id);
                 return audio_task_fmsq_play_slot(cmd->music_id);
+            }
+            break;
+
+        case FMRB_AUDIO_CMD_LOAD_FMSQ_FILE:
+            if (size >= sizeof(fmrb_audio_load_fmsq_file_cmd_t)) {
+                const fmrb_audio_load_fmsq_file_cmd_t *cmd = (const fmrb_audio_load_fmsq_file_cmd_t*)data;
+                return process_load_fmsq_file_command(cmd, size);
             }
             break;
 
