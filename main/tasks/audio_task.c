@@ -30,7 +30,11 @@ void audio_task_stop(void) {
  * or pointers atomically, no mutex is needed.
  */
 static nsf_player_t *g_nsf_player = NULL;
-static fmsq_player_t *g_fmsq_player = NULL;
+/* One FMSQ player per APU instance: g_fmsq_players[0]=MAIN (mixed with
+ * NSF), g_fmsq_players[1]=SUB (mixed with note_on/off SE). The two run
+ * independently so a BGM on MAIN can play concurrently with a short
+ * FMSQ SE on SUB. */
+static fmsq_player_t *g_fmsq_players[2] = { NULL, NULL };
 
 /* ------------------------------------------------------------------ */
 /* Common functions (platform-independent APU operations)              */
@@ -93,34 +97,44 @@ void audio_task_nsf_stop(void) {
     }
 }
 
-int audio_task_fmsq_play_slot(uint32_t music_id) {
+int audio_task_fmsq_play_slot(uint32_t music_id, uint8_t instance) {
     const uint8_t *data = NULL;
     uint32_t size = 0;
+
+    if (instance > 1) {
+        ESP_LOGE(TAG, "FMSQ play_slot: invalid instance %u", instance);
+        return -1;
+    }
 
     if (audio_handler_get_track(music_id, &data, &size) != 0) {
         ESP_LOGE(TAG, "FMSQ play_slot: track %lu not found", (unsigned long)music_id);
         return -1;
     }
 
-    if (!g_fmsq_player) {
-        g_fmsq_player = (fmsq_player_t *)apuemu_malloc(sizeof(fmsq_player_t));
-        if (!g_fmsq_player) {
+    fmsq_player_t *player = g_fmsq_players[instance];
+    if (!player) {
+        player = (fmsq_player_t *)apuemu_malloc(sizeof(fmsq_player_t));
+        if (!player) {
             ESP_LOGE(TAG, "FMSQ play_slot: malloc failed");
             return -1;
         }
-        memset(g_fmsq_player, 0, sizeof(fmsq_player_t));
+        memset(player, 0, sizeof(fmsq_player_t));
+        g_fmsq_players[instance] = player;
     }
 
-    /* Stop current playback */
-    g_fmsq_player->playing = 0;
+    /* Stop current playback on this instance */
+    player->playing = 0;
 
-    /* NSF and FMSQ both target the MAIN APU instance, so stop NSF first
-     * to avoid register clobber. SUB is reserved for note_on SE. */
-    if (g_nsf_player && g_nsf_player->playing) {
+    int apu_inst = (instance == 0) ? APUIF_INSTANCE_MAIN : APUIF_INSTANCE_SUB;
+
+    /* NSF lives on MAIN as well; stop it if we're about to overwrite MAIN.
+     * SUB has no other shared user (note_on/off only writes when called),
+     * so we don't need to stop anything when targeting SUB. */
+    if (instance == 0 && g_nsf_player && g_nsf_player->playing) {
         g_nsf_player->playing = 0;
     }
 
-    apuif_select(APUIF_INSTANCE_MAIN);
+    apuif_select(apu_inst);
 
 #ifdef __linux__
     /* Flush ring buffers to minimize playback latency (Linux only) */
@@ -128,13 +142,14 @@ int audio_task_fmsq_play_slot(uint32_t music_id) {
     audio_handler_flush();
 #endif
 
-    if (fmsq_player_load_from_memory(g_fmsq_player, data, size) != 0) {
+    if (fmsq_player_load_from_memory(player, data, size) != 0) {
         ESP_LOGE(TAG, "FMSQ play_slot: load failed for track %lu", (unsigned long)music_id);
         return -1;
     }
 
-    fmsq_player_reset(g_fmsq_player);
-    ESP_LOGI(TAG, "FMSQ play_slot: playing track %lu", (unsigned long)music_id);
+    fmsq_player_reset(player);
+    ESP_LOGI(TAG, "FMSQ play_slot: track %lu on %s",
+             (unsigned long)music_id, instance == 0 ? "MAIN" : "SUB");
 
 #ifdef __linux__
     /* Immediately generate and push first frame to minimize latency */
@@ -253,19 +268,21 @@ void audio_task(void *pvParameters) {
         }
     }
 
-    /* Initialize sub APU (instance 1: FMSQ + note_on/off) */
+    /* Initialize sub APU (instance 1: note_on/off SE and optional SE-FMSQ) */
     apuif_init_sub();
 
-    g_fmsq_player = (fmsq_player_t *)apuemu_malloc(sizeof(fmsq_player_t));
-    if (g_fmsq_player) {
-        if (fmsq_player_load(g_fmsq_player, FMSQ_FILE_PATH) == 0) {
-            fmsq_player_reset(g_fmsq_player);
-            g_fmsq_player->playing = 0;  /* Wait for play command */
-            ESP_LOGI(TAG, "FMSQ loaded: %d frames (waiting for play command)", g_fmsq_player->frame_count);
+    /* Preload the default test FMSQ into the MAIN slot. SUB slot stays
+     * NULL until an app calls play_slot with instance=1. */
+    g_fmsq_players[0] = (fmsq_player_t *)apuemu_malloc(sizeof(fmsq_player_t));
+    if (g_fmsq_players[0]) {
+        if (fmsq_player_load(g_fmsq_players[0], FMSQ_FILE_PATH) == 0) {
+            fmsq_player_reset(g_fmsq_players[0]);
+            g_fmsq_players[0]->playing = 0;  /* Wait for play command */
+            ESP_LOGI(TAG, "FMSQ loaded: %d frames (waiting for play command)", g_fmsq_players[0]->frame_count);
         } else {
             ESP_LOGW(TAG, "No FMSQ file at %s", FMSQ_FILE_PATH);
-            apuemu_free(g_fmsq_player);
-            g_fmsq_player = NULL;
+            apuemu_free(g_fmsq_players[0]);
+            g_fmsq_players[0] = NULL;
         }
     }
 
@@ -279,10 +296,13 @@ void audio_task(void *pvParameters) {
             nsf_player_tick(g_nsf_player);
         }
 
-        /* Tick FMSQ player on MAIN APU instance (SUB is reserved for SE). */
-        if (g_fmsq_player && g_fmsq_player->playing) {
-            apuif_select(APUIF_INSTANCE_MAIN);
-            fmsq_player_tick(g_fmsq_player);
+        /* Tick FMSQ players on whichever APU instances they were started
+         * on. instance 0 = MAIN (with NSF), instance 1 = SUB (with SE). */
+        for (int i = 0; i < 2; i++) {
+            if (g_fmsq_players[i] && g_fmsq_players[i]->playing) {
+                apuif_select(i == 0 ? APUIF_INSTANCE_MAIN : APUIF_INSTANCE_SUB);
+                fmsq_player_tick(g_fmsq_players[i]);
+            }
         }
 
         /* Process both APU instances and mix output */
@@ -301,10 +321,12 @@ void audio_task(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(frame_interval_ms));
     }
 
-    if (g_fmsq_player) {
-        fmsq_player_free(g_fmsq_player);
-        apuemu_free(g_fmsq_player);
-        g_fmsq_player = NULL;
+    for (int i = 0; i < 2; i++) {
+        if (g_fmsq_players[i]) {
+            fmsq_player_free(g_fmsq_players[i]);
+            apuemu_free(g_fmsq_players[i]);
+            g_fmsq_players[i] = NULL;
+        }
     }
     if (g_nsf_player) {
         nsf_player_free(g_nsf_player);
@@ -356,10 +378,13 @@ void audio_task(void *pvParameters) {
             nsf_player_tick(g_nsf_player);
         }
 
-        /* Tick FMSQ player on MAIN APU instance (SUB is reserved for SE). */
-        if (g_fmsq_player && g_fmsq_player->playing) {
-            apuif_select(APUIF_INSTANCE_MAIN);
-            fmsq_player_tick(g_fmsq_player);
+        /* Tick FMSQ players on whichever APU instances they were started
+         * on. instance 0 = MAIN (with NSF), instance 1 = SUB (with SE). */
+        for (int i = 0; i < 2; i++) {
+            if (g_fmsq_players[i] && g_fmsq_players[i]->playing) {
+                apuif_select(i == 0 ? APUIF_INSTANCE_MAIN : APUIF_INSTANCE_SUB);
+                fmsq_player_tick(g_fmsq_players[i]);
+            }
         }
 
         /* Process both APU instances and mix output */
@@ -382,10 +407,12 @@ void audio_task(void *pvParameters) {
         }
     }
 
-    if (g_fmsq_player) {
-        fmsq_player_free(g_fmsq_player);
-        apuemu_free(g_fmsq_player);
-        g_fmsq_player = NULL;
+    for (int i = 0; i < 2; i++) {
+        if (g_fmsq_players[i]) {
+            fmsq_player_free(g_fmsq_players[i]);
+            apuemu_free(g_fmsq_players[i]);
+            g_fmsq_players[i] = NULL;
+        }
     }
     if (g_nsf_player) {
         nsf_player_free(g_nsf_player);

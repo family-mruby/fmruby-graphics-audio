@@ -79,9 +79,12 @@ void audio_task_nsf_stop(void);
 /**
  * @brief Play FMSQ from a loaded slot
  * @param music_id Slot ID to play
+ * @param instance APU instance (0=MAIN, shares with NSF; 1=SUB, shares
+ *                 with note_on/off SE). Defaults to MAIN when callers
+ *                 pass 0.
  * @return 0 on success, -1 on error
  */
-int audio_task_fmsq_play_slot(uint32_t music_id);
+int audio_task_fmsq_play_slot(uint32_t music_id, uint8_t instance);
 
 /**
  * @brief Start a note on an APU channel

@@ -343,8 +343,15 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
         case FMRB_AUDIO_CMD_PLAY_SLOT:
             if (size >= sizeof(fmrb_audio_play_slot_cmd_t)) {
                 const fmrb_audio_play_slot_cmd_t *cmd = (const fmrb_audio_play_slot_cmd_t*)data;
-                ESP_LOGI(TAG, "Play slot command: music_id=%lu", (unsigned long)cmd->music_id);
-                return audio_task_fmsq_play_slot(cmd->music_id);
+                ESP_LOGI(TAG, "Play slot: music_id=%lu instance=%u",
+                         (unsigned long)cmd->music_id, cmd->instance);
+                return audio_task_fmsq_play_slot(cmd->music_id, cmd->instance);
+            }
+            if (size >= FMRB_AUDIO_PLAY_SLOT_CMD_LEGACY_SIZE) {
+                /* Legacy payload without the instance byte: default to MAIN. */
+                const fmrb_audio_play_slot_cmd_t *cmd = (const fmrb_audio_play_slot_cmd_t*)data;
+                ESP_LOGI(TAG, "Play slot (legacy): music_id=%lu", (unsigned long)cmd->music_id);
+                return audio_task_fmsq_play_slot(cmd->music_id, 0);
             }
             break;
 

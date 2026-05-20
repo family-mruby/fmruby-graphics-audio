@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>  /* offsetof */
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,7 +70,15 @@ typedef struct {
 typedef struct {
     uint8_t cmd_type;
     uint32_t music_id;
+    /* 0 = MAIN (default; shares the instance with NSF playback)
+     * 1 = SUB  (shares the instance with note_on/off SE)
+     * This trailing byte is optional for backwards compatibility: older
+     * senders without the byte are accepted as MAIN. */
+    uint8_t instance;
 } __attribute__((packed)) fmrb_audio_play_slot_cmd_t;
+/* Older payloads omit `instance`; everything up to music_id is the
+ * legacy wire size. */
+#define FMRB_AUDIO_PLAY_SLOT_CMD_LEGACY_SIZE (offsetof(fmrb_audio_play_slot_cmd_t, instance))
 
 typedef struct {
     uint8_t cmd_type;
