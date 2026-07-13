@@ -127,11 +127,25 @@ static int try_connect_input_socket(void) {
     return -1;
 }
 
-static void send_input_event(uint8_t type, const void *data, uint16_t len) {
+/* Send an already-framed packet ([type][len16][payload]) to the input socket */
+static void send_raw_input(const uint8_t *packet, size_t n) {
     if (g_input_fd < 0) return;
 
+    ssize_t sent;
+    do {
+        sent = send(g_input_fd, packet, n, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+
+    if (sent < 0 && (errno == EPIPE || errno == ECONNRESET)) {
+        printf("[sdl2-display] Input socket disconnected\n");
+        close(g_input_fd);
+        g_input_fd = -1;
+    }
+}
+
+static void send_input_event(uint8_t type, const void *data, uint16_t len) {
     uint8_t packet[256];
-    if (3 + len > sizeof(packet)) return;
+    if (3 + (size_t)len > sizeof(packet)) return;
 
     packet[0] = type;
     packet[1] = (uint8_t)(len & 0xFF);
@@ -139,16 +153,46 @@ static void send_input_event(uint8_t type, const void *data, uint16_t len) {
     if (data && len > 0) {
         memcpy(packet + 3, data, len);
     }
+    send_raw_input(packet, 3 + len);
+}
 
-    ssize_t sent;
-    do {
-        sent = send(g_input_fd, packet, 3 + len, MSG_NOSIGNAL);
-    } while (sent < 0 && errno == EINTR);
+/* ----- Synthetic input injection (agent/CI) -----
+ * A Unix DGRAM socket accepts pre-framed HID packets (same wire format as
+ * send_input_event) and forwards them into the normal input stream, so
+ * synthetic events are serialized with real SDL input. Sender:
+ * family-mruby/tools/fmrb_input.py */
+static int g_inject_fd = -1;
 
-    if (sent < 0 && (errno == EPIPE || errno == ECONNRESET)) {
-        printf("[sdl2-display] Input socket disconnected\n");
-        close(g_input_fd);
-        g_input_fd = -1;
+static void setup_inject_socket(void) {
+    g_inject_fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+    if (g_inject_fd < 0) return;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, FMRB_INJECT_SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    unlink(FMRB_INJECT_SOCKET_PATH);
+    if (bind(g_inject_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "[sdl2-display] inject socket bind failed: %s\n",
+                strerror(errno));
+        close(g_inject_fd);
+        g_inject_fd = -1;
+        return;
+    }
+    printf("[sdl2-display] Inject socket ready: %s\n", FMRB_INJECT_SOCKET_PATH);
+}
+
+static void drain_inject_events(void) {
+    if (g_inject_fd < 0) return;
+
+    uint8_t packet[256];
+    for (int i = 0; i < 32; i++) {  /* bound per loop iteration */
+        ssize_t n = recv(g_inject_fd, packet, sizeof(packet), 0);
+        if (n < 0) break;  /* EAGAIN: no more datagrams */
+        if (n < 3) continue;
+        uint16_t len = (uint16_t)packet[1] | ((uint16_t)packet[2] << 8);
+        if ((ssize_t)(3 + len) != n) continue;  /* malformed frame */
+        send_raw_input(packet, (size_t)n);
     }
 }
 
@@ -202,6 +246,12 @@ static int setup_sdl2(void) {
     }
 
     g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
+    if (!g_renderer) {
+        /* Headless runs (SDL_VIDEODRIVER=dummy, used by the agent/CI
+         * screenshot flow) have no accelerated driver; fall back to the
+         * software renderer. */
+        g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_SOFTWARE);
+    }
     if (!g_renderer) {
         fprintf(stderr, "[sdl2-display] SDL_CreateRenderer failed: %s\n", SDL_GetError());
         return -1;
@@ -365,6 +415,9 @@ int main(int argc, char *argv[]) {
     /* Step 3: Try to connect input socket (will retry in main loop) */
     try_connect_input_socket();
 
+    /* Step 4: Open the synthetic-input injection socket (agent/CI) */
+    setup_inject_socket();
+
     uint16_t w = g_shm->display_width;
     uint16_t h = g_shm->display_height;
     uint8_t sx = g_shm->scaling_x > 0 ? g_shm->scaling_x : 2;
@@ -380,6 +433,9 @@ int main(int argc, char *argv[]) {
 
         /* Process SDL events */
         process_sdl_events(sx, sy);
+
+        /* Forward injected synthetic events */
+        drain_inject_events();
 
         /* Wait for new frame (with timeout to keep event processing responsive) */
         struct timespec ts;
@@ -414,6 +470,10 @@ int main(int argc, char *argv[]) {
     SDL_Quit();
 
     if (g_input_fd >= 0) close(g_input_fd);
+    if (g_inject_fd >= 0) {
+        close(g_inject_fd);
+        unlink(FMRB_INJECT_SOCKET_PATH);
+    }
     if (g_sem_frame != SEM_FAILED) sem_close(g_sem_frame);
     if (g_shm) munmap(g_shm, sizeof(fmrb_shm_t));
     if (g_shm_fd >= 0) close(g_shm_fd);

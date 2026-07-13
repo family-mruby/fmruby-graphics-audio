@@ -27,6 +27,12 @@ extern "C" {
 // Input event socket path
 #define FMRB_INPUT_SOCKET_PATH "/var/run/fmrb/fmrb_sdl_input"
 
+// Synthetic input injection socket (Unix DGRAM, bound by the SDL2 display
+// process). Accepts pre-framed HID packets ([type][len16][payload]) and
+// forwards them into the normal input stream. Used by tools/fmrb_input.py
+// for agent/CI-driven input.
+#define FMRB_INJECT_SOCKET_PATH "/var/run/fmrb/fmrb_inject"
+
 // Control commands (via input socket, alongside HID events)
 #define FMRB_CTRL_DISPLAY_INIT  0xF0
 #define FMRB_CTRL_SHUTDOWN      0xFF
