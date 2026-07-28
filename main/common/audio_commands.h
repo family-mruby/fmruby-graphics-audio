@@ -21,7 +21,11 @@ typedef enum {
     FMRB_AUDIO_CMD_NOTE_OFF = 0x0A,
     /* Load an FMSQ slot directly from a LittleFS path. Useful when the data
      * is too large for the inline IPC payload (LOAD_BINARY limit ~150 B). */
-    FMRB_AUDIO_CMD_LOAD_FMSQ_FILE = 0x0B
+    FMRB_AUDIO_CMD_LOAD_FMSQ_FILE = 0x0B,
+    /* Load an FMSQ slot in pieces. The inline LOAD_BINARY payload is limited
+     * by the app -> host message size (~150 B), which is far less than one
+     * PLAY worth of sequence, so BASIC's PLAY streams it in chunks. */
+    FMRB_AUDIO_CMD_LOAD_BINARY_CHUNK = 0x0C
 } fmrb_audio_cmd_type_t;
 
 // Audio status
@@ -111,6 +115,23 @@ typedef struct {
 #define FMRB_AUDIO_SAMPLE_RATE 44100
 #define FMRB_AUDIO_CHANNELS    2
 #define FMRB_AUDIO_BUFFER_SIZE 1024
+
+/* Chunked slot load. Chunks must arrive in order; offset 0 starts a new
+ * assembly, and the slot is stored once offset + chunk_len == total_size.
+ * A different music_id or a gap in the offsets discards the assembly. */
+typedef struct {
+    uint8_t cmd_type;
+    uint32_t music_id;
+    uint16_t total_size;   // whole sequence, same value in every chunk
+    uint16_t offset;       // where this chunk starts
+    uint8_t chunk_len;     // bytes following this header (<= 160)
+    // chunk_len bytes of data follow
+} __attribute__((packed)) fmrb_audio_load_chunk_cmd_t;
+
+/* Guard against a runaway assembly: one PLAY is a few kB at most. */
+#define FMRB_AUDIO_CHUNK_MAX_TOTAL 16384
+#define FMRB_AUDIO_CHUNK_MAX_DATA  160
+
 #define FMRB_MAX_MUSIC_TRACKS  16
 
 #ifdef __cplusplus

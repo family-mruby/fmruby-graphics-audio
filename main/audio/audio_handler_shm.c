@@ -167,6 +167,82 @@ static int process_load_command(const fmrb_audio_load_cmd_t *cmd, const uint8_t 
     return 0;
 }
 
+/* Chunked slot load (FMRB_AUDIO_CMD_LOAD_BINARY_CHUNK).
+ *
+ * BASIC's PLAY converts an MML string into an FMSQ sequence that is far larger
+ * than the inline LOAD_BINARY payload, so it streams the bytes in order and
+ * then plays the slot. One assembly at a time; anything out of sequence throws
+ * the assembly away so a lost chunk cannot corrupt a slot. */
+static uint8_t *chunk_buf = NULL;
+static uint32_t chunk_id = 0;
+static uint16_t chunk_total = 0;
+static uint16_t chunk_have = 0;
+
+static void chunk_reset(void) {
+    if (chunk_buf) {
+        free(chunk_buf);
+        chunk_buf = NULL;
+    }
+    chunk_total = 0;
+    chunk_have = 0;
+}
+
+static int process_load_chunk(const fmrb_audio_load_chunk_cmd_t *cmd, size_t size) {
+    if (size < sizeof(*cmd) + cmd->chunk_len) {
+        ESP_LOGE(TAG, "load_chunk: payload too short");
+        chunk_reset();
+        return -1;
+    }
+    if (cmd->total_size == 0 || cmd->total_size > FMRB_AUDIO_CHUNK_MAX_TOTAL ||
+        cmd->chunk_len > FMRB_AUDIO_CHUNK_MAX_DATA) {
+        ESP_LOGE(TAG, "load_chunk: bad sizes (total=%u chunk=%u)",
+                 (unsigned)cmd->total_size, (unsigned)cmd->chunk_len);
+        chunk_reset();
+        return -1;
+    }
+
+    if (cmd->offset == 0) {
+        chunk_reset();
+        chunk_buf = (uint8_t *)malloc(cmd->total_size);
+        if (!chunk_buf) {
+            ESP_LOGE(TAG, "load_chunk: malloc %u failed", (unsigned)cmd->total_size);
+            return -1;
+        }
+        chunk_id = cmd->music_id;
+        chunk_total = cmd->total_size;
+        chunk_have = 0;
+    } else if (!chunk_buf || cmd->music_id != chunk_id ||
+               cmd->total_size != chunk_total || cmd->offset != chunk_have) {
+        ESP_LOGE(TAG, "load_chunk: out of sequence (offset=%u have=%u)",
+                 (unsigned)cmd->offset, (unsigned)chunk_have);
+        chunk_reset();
+        return -1;
+    }
+
+    if ((uint32_t)cmd->offset + cmd->chunk_len > chunk_total) {
+        chunk_reset();
+        return -1;
+    }
+    memcpy(chunk_buf + cmd->offset, (const uint8_t *)cmd + sizeof(*cmd), cmd->chunk_len);
+    chunk_have = (uint16_t)(cmd->offset + cmd->chunk_len);
+
+    if (chunk_have < chunk_total) {
+        return 0;  /* more to come */
+    }
+
+    /* Hand the finished sequence to the same path as an inline load. */
+    fmrb_audio_load_cmd_t load = {
+        .cmd_type = FMRB_AUDIO_CMD_LOAD_BINARY,
+        .music_id = chunk_id,
+        .data_size = chunk_total,
+    };
+    const int ret = process_load_command(&load, chunk_buf);
+    ESP_LOGI(TAG, "load_chunk: slot %u complete (%u bytes)",
+             (unsigned)chunk_id, (unsigned)chunk_total);
+    chunk_reset();
+    return ret;
+}
+
 static int process_play_command(const fmrb_audio_play_cmd_t *cmd, size_t total_size) {
     if (total_size < sizeof(fmrb_audio_play_cmd_t) + cmd->path_len) {
         ESP_LOGE(TAG, "Play command too short");
@@ -316,6 +392,12 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
                 if (size >= sizeof(fmrb_audio_load_cmd_t) + cmd->data_size) {
                     return process_load_command(cmd, music_data);
                 }
+            }
+            break;
+
+        case FMRB_AUDIO_CMD_LOAD_BINARY_CHUNK:
+            if (size >= sizeof(fmrb_audio_load_chunk_cmd_t)) {
+                return process_load_chunk((const fmrb_audio_load_chunk_cmd_t*)data, size);
             }
             break;
 
