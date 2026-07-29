@@ -1,5 +1,6 @@
 #include "file_transfer_handler.h"
 #include "fmrb_link_protocol.h"
+#include "fmrb_link_cobs.h"
 #include "comm_interface.h"
 #include "esp_log.h"
 
@@ -239,6 +240,26 @@ static int handle_end(uint8_t type, uint8_t seq,
     return 0;
 }
 
+// CRC32 of a stored file, using the same routine and seed as the core side's
+// calc_file_crc32 so the two values are comparable. The core skips a transfer
+// when size and checksum both match; returning 0 here (as this used to) made
+// that comparison always fail, so every synced file was resent on every boot.
+static uint32_t file_crc32(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return 0;
+    }
+    uint32_t crc = 0;
+    uint8_t buf[256];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        crc = fmrb_link_crc32_update(crc, buf, n);
+    }
+    fclose(fp);
+    return crc;
+}
+
 // Handle STATUS command
 static int handle_status(uint8_t type, uint8_t seq,
                          const uint8_t *payload, size_t payload_len)
@@ -274,11 +295,12 @@ static int handle_status(uint8_t type, uint8_t seq,
     if (stat(full_path, &st) == 0) {
         resp.exists = 1;
         resp.file_size = (uint32_t)st.st_size;
-        resp.checksum = 0;  // TODO: compute CRC32
+        resp.checksum = file_crc32(full_path);
     }
 
-    ESP_LOGI(TAG, "STATUS: path=%s, exists=%d, size=%u",
-            full_path, resp.exists, (unsigned)resp.file_size);
+    ESP_LOGI(TAG, "STATUS: path=%s, exists=%d, size=%u, crc=0x%08x",
+            full_path, resp.exists, (unsigned)resp.file_size,
+            (unsigned)resp.checksum);
 
     // Send ACK with status response
     const comm_interface_t *comm = comm_get_interface();
