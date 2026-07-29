@@ -33,6 +33,12 @@ static const char *TAG = "graphics_handler";
 // Present counter for stats
 static uint32_t s_present_count = 0;
 
+// Boot screen hand-off. Set when the core presents its first frame; until then
+// the render loop leaves the framebuffer alone so graphics_task's boot text
+// stays on screen. See graphics_handler_render_frame_internal.
+static bool s_first_present_seen = false;
+static bool s_boot_screen_cleared = false;
+
 extern "C" uint32_t graphics_handler_get_and_reset_present_count(void) {
     uint32_t count = s_present_count;
     s_present_count = 0;
@@ -395,6 +401,21 @@ static void composite_region(LGFX_Sprite* dst, const canvas_state_t* canvas,
 static void graphics_handler_render_frame_internal() {
     if (g_canvas_count == 0) {
         return;  // No canvases to render
+    }
+
+    // Hold the boot screen until the core actually has a frame to show.
+    // Canvases are created several seconds before the desktop draws anything,
+    // and compositing an untouched canvas paints the display black for that
+    // whole stretch. Waiting for the first present() keeps graphics_task's boot
+    // text up until the desktop takes over. Wipe once at that hand-off, because
+    // the canvas is smaller than the display and would otherwise leave boot
+    // text in the margins.
+    if (!s_first_present_seen) {
+        return;
+    }
+    if (!s_boot_screen_cleared) {
+        g_lgfx->fillScreen(0x00);
+        s_boot_screen_cleared = true;
     }
 
     // Sort canvases by Z-order (low to high)
@@ -1477,6 +1498,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                     src_canvas->push_x = cmd->x;
                     src_canvas->push_y = cmd->y;
                     src_canvas->is_visible = true;  // Make visible on first present()
+                    s_first_present_seen = true;
                     s_present_count++;
                     push_x = 0;
                     push_y = 0;

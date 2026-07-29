@@ -429,15 +429,13 @@ void graphics_task(void *pvParameters) {
         return;
     }
 
-    // Keep boot screen visible for 1 second before Core takes over
-    ESP_LOGI(TAG, "Holding boot screen for 1 second...");
-    lgfx::delay(1000);
-
-    // Clear boot screen and reset LGFX state before canvas system takes over
-    gfx->fillScreen(0x00);
+    // Reset LGFX text state before the canvas system takes over. The boot
+    // screen is deliberately left on the display: the core does not draw
+    // anything for several seconds after this ACK, and clearing here left the
+    // screen black for that whole stretch. graphics_handler wipes it in the
+    // frame where the core's first present() arrives instead.
     gfx->setTextColor(0xFFFFFFU);
     gfx->setCursor(0, 0);
-    DISPLAY_INTERFACE->display();
 
     // Send deferred ACK for INIT_DISPLAY now that everything is ready
     // Must include response data (like VERSION does) for transport layer ACK matching
