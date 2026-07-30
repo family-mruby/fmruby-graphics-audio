@@ -64,6 +64,9 @@ set(INCLUDE_DIRS
 set(REQUIRES
     LovyanGFX
     fmrb_pin_assign
+    # esp_app_desc.h: the boot screen reports which build it is (version, build
+    # time, IDF). Available on the Linux target too, so it is not ESP32 only.
+    esp_app_format
 )
 
 # Add apu_emu for all targets

@@ -13,10 +13,12 @@ extern "C" {
 #include "input_handler.h"
 #include "input_socket.h"
 #include "fmrb_link_protocol.h"
+#include "fmrb_ga_version.h"
 #include "fmrb_gfx.h"
 #include "../mempool/fmrb_mempool.h"
 #include "audio_handler.h"
 #include "comm_interface.h"
+#include "esp_app_desc.h"
 #ifndef CONFIG_IDF_TARGET_LINUX
 #include "esp_chip_info.h"
 #include "esp_flash.h"
@@ -182,6 +184,25 @@ static void draw_boot_info(lgfx::LGFX_Device *gfx, const fmrb_control_init_displ
 
     boot_print_line(gfx, "Family mruby Graphics-Audio System");
     boot_print_line(gfx, "==================================");
+    boot_print_blank(gfx);
+
+    // Which build is on screen. The app description is written by the build at
+    // link time, so unlike __DATE__ / __TIME__ in this file it cannot linger as
+    // a stale value through an incremental build. Its version is git describe
+    // (the project sets no PROJECT_VER), so it carries the commit and whether
+    // the tree was dirty -- more than FMRB_GA_FW_VERSION says on its own.
+    const esp_app_desc_t *app = esp_app_get_description();
+    // 28 characters of version leave the fixed parts room on a 320 dot line.
+    snprintf(buf, sizeof(buf), "GA: %.28s  link v%d", app->version, FMRB_LINK_VERSION);
+    boot_print_line(gfx, buf);
+    snprintf(buf, sizeof(buf), "Built: %s %s", app->date, app->time);
+    boot_print_line(gfx, buf);
+    // Whole idf_ver on a line of its own: cutting it at the first dash would
+    // turn "v5.5.4-1242-g10ca0dff2f4" (a master build 1242 commits past the
+    // tag) into "v5.5.4", which reads as the release and is not the same
+    // toolchain.
+    snprintf(buf, sizeof(buf), "IDF: %.40s", app->idf_ver);
+    boot_print_line(gfx, buf);
     boot_print_blank(gfx);
 
 #ifndef CONFIG_IDF_TARGET_LINUX
