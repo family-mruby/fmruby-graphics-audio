@@ -31,8 +31,14 @@ UID  = `id -u`.strip
 GID  = `id -g`.strip
 PWD_ = Dir.pwd
 
+# Pin the build image to a version tag, never :latest -- two machines on the same
+# commit have already ended up with different IDF and toolchain versions that
+# way, and :latest here was in fact 1242 commits past the v5.5.4 tag while the
+# rest of the project built against the release. Keep in sync with .env,
+# fmruby-core/Rakefile and the root docker-compose.yml.
 ESP_IDF_VERSION = ENV.fetch("ESP_IDF_VERSION", "v5.5.4")
-IMAGE           = ENV.fetch("DOCKER_IMAGE", "ghcr.io/family-mruby/fmruby-esp32-build:latest")
+IMAGE           = ENV.fetch("DOCKER_IMAGE",
+                            "ghcr.io/family-mruby/fmruby-esp32-build:#{ESP_IDF_VERSION}")
 
 # Detect available serial devices
 DEVICE_ARGS = Dir.glob("/dev/ttyUSB*").concat(Dir.glob("/dev/ttyACM*"))
