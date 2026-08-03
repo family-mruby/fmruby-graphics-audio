@@ -3,6 +3,7 @@
 #include "fmrb_link_protocol.h"
 #include "graphics_handler.h"
 #include "audio_handler.h"
+#include "audio_latency.h"
 #include "file_transfer_handler.h"
 #include "comm_interface.h"
 #include "comm_message.h"
@@ -13,6 +14,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -183,20 +185,31 @@ static int handle_file_transfer_message(uint8_t type, uint8_t seq, uint8_t sub_c
  * Handle AUDIO messages
  */
 static int handle_audio_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
-                               const uint8_t *payload, size_t payload_len) {
+                               const uint8_t *payload, size_t payload_len,
+                               uint64_t rx_us) {
     (void)type;
     (void)seq;
     (void)sub_cmd;
 
-    // Pass to audio handler
-    return audio_handler_process_command(payload, payload_len);
+    // Note commands are the real-time path (a MIDI transport drives them),
+    // so time how long they take from arrival to being applied.
+    uint8_t cmd = (payload_len > 0) ? payload[0] : 0;
+    bool timed = (cmd == FMRB_AUDIO_CMD_NOTE_ON || cmd == FMRB_AUDIO_CMD_NOTE_OFF);
+
+    int result = audio_handler_process_command(payload, payload_len);
+
+    if (timed) {
+        audio_latency_record(rx_us, cmd == FMRB_AUDIO_CMD_NOTE_ON);
+    }
+    return result;
 }
 
 /**
  * Process a received message
  */
 static int process_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
-                           const uint8_t *payload, size_t payload_len) {
+                           const uint8_t *payload, size_t payload_len,
+                           uint64_t rx_us) {
     // Strip flag bits (ACK_REQUIRED=0x20, CHUNKED=0x40) for type matching
     uint8_t base_type = type & FMRB_LINK_TYPE_MASK;
 
@@ -208,7 +221,7 @@ static int process_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
             return handle_graphics_message(type, seq, sub_cmd, payload, payload_len);
 
         case FMRB_LINK_TYPE_AUDIO:
-            return handle_audio_message(type, seq, sub_cmd, payload, payload_len);
+            return handle_audio_message(type, seq, sub_cmd, payload, payload_len, rx_us);
 
         case FMRB_LINK_TYPE_FILE_TRANSFER:
             return handle_file_transfer_message(type, seq, sub_cmd, payload, payload_len);
@@ -247,7 +260,7 @@ void message_handler_task(void *pvParameters) {
                    msg.type, msg.seq, msg.sub_cmd, msg.payload_len);
 
             int result = process_message(msg.type, msg.seq, msg.sub_cmd,
-                                        msg.payload, msg.payload_len);
+                                        msg.payload, msg.payload_len, msg.rx_us);
 
             if (result < 0) {
                 ESP_LOGW(TAG, "Handler failed: type=%u seq=%u sub_cmd=0x%02x (result=%d)",

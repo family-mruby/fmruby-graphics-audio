@@ -96,6 +96,21 @@ void apuif_write_reg(uint32_t address, uint8_t value)
 
 uint8_t apuif_read_reg(uint32_t address)
 {
+    /* Read from the selected instance, the way apuif_write_reg writes to it.
+     * Without this the read always saw the main instance, because write_reg
+     * leaves main as the active context: apu_helper's read-modify-write of
+     * $4015 then rebuilt the sub instance's channel enables from the main
+     * instance's, so each note_on switched off the voices already sounding
+     * on sub. One voice at a time still worked, which is why only playing a
+     * chord (or MIDI) exposed it. */
+    if (_current_instance == APUIF_INSTANCE_SUB && _sub_initialized) {
+        apu_setcontext(_apu_sub);
+        uint8_t value = apu_read(address);
+        apu_getcontext(_apu_sub);
+        apu_setcontext(_apu); /* restore main as active */
+        return value;
+    }
+    apu_setcontext(_apu);
     return apu_read(address);
 }
 

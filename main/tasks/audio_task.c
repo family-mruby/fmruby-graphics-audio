@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "audio_handler.h"
+#include "audio_latency.h"
 #include "apu_if.h"
 #include "apu_helper.h"
 #include "nsf_player.h"
@@ -316,6 +317,7 @@ void audio_task(void *pvParameters) {
 #ifdef CONFIG_IDF_TARGET_LINUX
         /* Transfer APU ring buffer samples to SHM for SDL2 process */
         audio_handler_push_samples();
+        audio_latency_flush();
 #endif
 
         vTaskDelay(pdMS_TO_TICKS(frame_interval_ms));
@@ -394,6 +396,8 @@ void audio_task(void *pvParameters) {
         if (count > 0) {
             apuif_audio_write(buffer, count, 1);
         }
+
+        audio_latency_flush();
 
         /* Frame timing */
         next_frame_time += target_frame_time_us;

@@ -1,6 +1,7 @@
 #include "socket_server.h"
 #include "fmrb_link_msgpack.h"
 #include "comm_message.h"
+#include "fmrb_time.h"
 #include "fmrb_link_protocol.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,6 +100,9 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
         return -1;
     }
     msg.payload_len = (uint16_t)payload_len;
+    /* Stamp arrival so the audio handler can report how long a note
+     * command waited before reaching the APU (see audio_latency.h). */
+    msg.rx_us = fmrb_now_us();
 
     ESP_LOGD(TAG, "RX msgpack: type=%d seq=%d sub_cmd=0x%02x payload_len=%zu",
                msg.type, msg.seq, msg.sub_cmd, payload_len);

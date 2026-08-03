@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "fmrb_link_msgpack.h"
 #include "comm_message.h"
+#include "fmrb_time.h"
 #include "fmrb_link_protocol.h"
 #include "fmrb_pin_assign.h"
 #include "spi_frame.h"
@@ -141,6 +142,9 @@ static int process_cobs_frame(const uint8_t *encoded_data, size_t encoded_len) {
         return -1;
     }
     msg.payload_len = (uint16_t)payload_len;
+    /* Stamp arrival so the audio handler can report how long a note
+     * command waited before reaching the APU (see audio_latency.h). */
+    msg.rx_us = fmrb_now_us();
 
     // Skip EMPTY frames (no-data polling from master)
     if (msg.type == FMRB_LINK_TYPE_EMPTY) {
