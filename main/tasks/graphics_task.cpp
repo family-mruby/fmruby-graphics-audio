@@ -18,6 +18,7 @@ extern "C" {
 #include "../mempool/fmrb_mempool.h"
 #include "audio_handler.h"
 #include "comm_interface.h"
+#include "fmrb_time.h"
 #include "esp_app_desc.h"
 #ifndef CONFIG_IDF_TARGET_LINUX
 #include "esp_chip_info.h"
@@ -483,10 +484,14 @@ void graphics_task(void *pvParameters) {
     // yields at least one full tick.
     const uint32_t MIN_YIELD_MS = 10;
 
-    // Main loop timing stats
+    // Main loop timing stats. Render time is measured in microseconds: at 30fps
+    // a composite costs a few ms, which the FreeRTOS tick (10ms on the Linux
+    // build) cannot resolve at all -- it reported render_avg=0ms.
     uint32_t loop_count = 0;
-    uint32_t total_render_ms = 0;
-    uint32_t max_render_ms = 0;
+    uint64_t total_render_us = 0;
+    uint32_t max_render_us = 0;
+    uint64_t total_disp_us = 0;
+    uint32_t max_disp_us = 0;
     uint32_t late_frames = 0;
     uint32_t stats_last_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     uint32_t next_frame_ms = stats_last_ms + TARGET_FRAME_PERIOD_MS;
@@ -507,28 +512,39 @@ void graphics_task(void *pvParameters) {
         }
 #endif
 
-        uint32_t render_start = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        // One frame of drawing cost, split in two so a blocking handoff cannot
+        // be mistaken for composite work: render_us is the Z-order composite,
+        // disp_us is the panel/SHM handoff.
+        uint64_t render_start_us = fmrb_now_us();
         graphics_handler_render_frame();
-        uint32_t render_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS) - render_start;
+        uint64_t render_done_us = fmrb_now_us();
 
         DISPLAY_INTERFACE->display();
+        uint32_t render_us = (uint32_t)(render_done_us - render_start_us);
+        uint32_t disp_us = (uint32_t)(fmrb_now_us() - render_done_us);
 
         loop_count++;
-        total_render_ms += render_ms;
-        if (render_ms > max_render_ms) max_render_ms = render_ms;
+        total_render_us += render_us;
+        if (render_us > max_render_us) max_render_us = render_us;
+        total_disp_us += disp_us;
+        if (disp_us > max_disp_us) max_disp_us = disp_us;
 
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         if (now - stats_last_ms >= 5000) {
             uint32_t elapsed_ms = now - stats_last_ms;
-            uint32_t avg_ms = loop_count > 0 ? total_render_ms / loop_count : 0;
+            uint32_t avg_us = loop_count > 0 ? (uint32_t)(total_render_us / loop_count) : 0;
             // fps with one decimal place using fixed-point arithmetic.
             uint32_t fps_x10 = elapsed_ms > 0 ? (loop_count * 10000UL) / elapsed_ms : 0;
-            ESP_LOGI(TAG, "loop: fps=%lu.%lu render_avg=%lums render_max=%lums late=%lu (count=%lu/%lums)",
-                     fps_x10 / 10, fps_x10 % 10, avg_ms, max_render_ms,
+            uint32_t disp_avg_us = loop_count > 0 ? (uint32_t)(total_disp_us / loop_count) : 0;
+            ESP_LOGI(TAG, "loop: fps=%lu.%lu render_avg=%luus render_max=%luus disp_avg=%luus disp_max=%luus late=%lu (count=%lu/%lums)",
+                     fps_x10 / 10, fps_x10 % 10, avg_us, max_render_us,
+                     disp_avg_us, max_disp_us,
                      late_frames, loop_count, elapsed_ms);
             loop_count = 0;
-            total_render_ms = 0;
-            max_render_ms = 0;
+            total_render_us = 0;
+            max_render_us = 0;
+            total_disp_us = 0;
+            max_disp_us = 0;
             late_frames = 0;
             stats_last_ms = now;
         }
