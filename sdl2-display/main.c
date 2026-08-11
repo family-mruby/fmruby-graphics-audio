@@ -303,11 +303,20 @@ static int setup_sdl2(void) {
  * (drain_inject_events) never come through this function and are already
  * well-formed pairs.
  *
- * A key that really is held down longer than the gap below sends its press
- * twice. That only reaches the two mode keys, where a doubled press just
- * cancels itself out, and holding either of them is not a thing anyone does.
+ * There is a second half to it: because the release never comes, SDL still
+ * believes the key is held, so the NEXT press arrives flagged as a repeat and
+ * the repeat filter throws it away. That is why the second press produced no
+ * event at all.
+ *
+ * So for these two keys every event counts as one press - key down, a repeat,
+ * or a lone key up - with anything inside the debounce window below ignored.
+ * That covers all three shapes at once: the real release of a normal press
+ * (tens of ms after its down), auto-repeat while held (~30 ms apart), and a
+ * locking key's single alternating events (seconds apart). Pressing one of
+ * these keys twice within the window registers once, which is a fair trade
+ * for a key that selects an input mode.
  */
-#define JIS_LOCK_KEY_GAP_MS 400
+#define JIS_MODE_KEY_DEBOUNCE_MS 350
 
 static int is_jis_mode_key(int scancode) {
     return scancode == SDL_SCANCODE_GRAVE ||          /* 0x35 half/full-width */
@@ -328,8 +337,22 @@ static void send_key_tap(const SDL_Keysym *keysym) {
 }
 
 /* ----- Process SDL events and send as HID ----- */
+/* One press of a JIS mode key, whatever event shape it arrived in. Returns
+ * false when the event is inside the debounce window and should be dropped. */
+static int accept_mode_key_press(int scancode) {
+    static uint32_t last_ms[2];
+    static int seen[2];
+    int i = (scancode == SDL_SCANCODE_GRAVE) ? 0 : 1;
+    uint32_t now = SDL_GetTicks();
+    if (seen[i] && (now - last_ms[i]) < JIS_MODE_KEY_DEBOUNCE_MS) {
+        return 0;
+    }
+    seen[i] = 1;
+    last_ms[i] = now;
+    return 1;
+}
+
 static void process_sdl_events(uint8_t sx, uint8_t sy) {
-    static uint32_t mode_key_down_ms[2];  /* GRAVE, INTERNATIONAL2 */
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -338,31 +361,26 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
             break;
 
         case SDL_KEYDOWN:
-            if (event.key.repeat) {
-                break;
-            }
-            if (is_jis_mode_key(event.key.keysym.scancode)) {
-                int i = (event.key.keysym.scancode == SDL_SCANCODE_GRAVE) ? 0 : 1;
-                mode_key_down_ms[i] = SDL_GetTicks();
-                send_key_tap(&event.key.keysym);
-                break;
-            }
-            send_key(HID_EVENT_KEY_DOWN, &event.key.keysym);
-            break;
-
         case SDL_KEYUP:
             if (is_jis_mode_key(event.key.keysym.scancode)) {
-                int i = (event.key.keysym.scancode == SDL_SCANCODE_GRAVE) ? 0 : 1;
-                uint32_t gap = SDL_GetTicks() - mode_key_down_ms[i];
-                /* Soon after the press: the release of the tap already sent.
-                 * Long after: this IS the next press (locking key). */
-                if (gap > JIS_LOCK_KEY_GAP_MS) {
-                    mode_key_down_ms[i] = SDL_GetTicks();
+                int press = accept_mode_key_press(event.key.keysym.scancode);
+                /* Logged unconditionally: when one of these still misbehaves,
+                 * what SDL handed over is the whole answer. */
+                fprintf(stderr, "[sdl2-display] mode key sc=%d %s repeat=%d%s\n",
+                        event.key.keysym.scancode,
+                        event.type == SDL_KEYDOWN ? "down" : "up",
+                        event.key.repeat, press ? " -> press" : " (debounced)");
+                if (press) {
                     send_key_tap(&event.key.keysym);
                 }
                 break;
             }
-            send_key(HID_EVENT_KEY_UP, &event.key.keysym);
+            if (event.type == SDL_KEYDOWN && event.key.repeat) {
+                break;
+            }
+            send_key(event.type == SDL_KEYDOWN ? HID_EVENT_KEY_DOWN
+                                               : HID_EVENT_KEY_UP,
+                     &event.key.keysym);
             break;
 
         case SDL_MOUSEBUTTONDOWN:
