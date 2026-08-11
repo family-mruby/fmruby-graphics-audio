@@ -290,8 +290,46 @@ static int setup_sdl2(void) {
     return 0;
 }
 
+/* X11 hands the JIS mode keys over as LOCKING keys: one event per physical
+ * press, alternating KEYDOWN and KEYUP, with the "release" of a press only
+ * arriving when the user presses the key again (measured on a real JIS
+ * keyboard: 4.1 s between the two). A USB keyboard on the device reports them
+ * like any other key, and the firmware's rule is the USB one -- one press is
+ * one key_down -- so half of the presses did nothing at all: kana input turned
+ * on and would not turn off.
+ *
+ * Each of those single events is turned back into a complete press here, which
+ * is the simulator's job: it exists to look like a keyboard. Injected events
+ * (drain_inject_events) never come through this function and are already
+ * well-formed pairs.
+ *
+ * A key that really is held down longer than the gap below sends its press
+ * twice. That only reaches the two mode keys, where a doubled press just
+ * cancels itself out, and holding either of them is not a thing anyone does.
+ */
+#define JIS_LOCK_KEY_GAP_MS 400
+
+static int is_jis_mode_key(int scancode) {
+    return scancode == SDL_SCANCODE_GRAVE ||          /* 0x35 half/full-width */
+           scancode == SDL_SCANCODE_INTERNATIONAL2;   /* 0x88 katakana */
+}
+
+static void send_key(int type, const SDL_Keysym *keysym) {
+    hid_keyboard_event_t kbd;
+    kbd.scancode = (uint8_t)keysym->scancode;
+    kbd.keycode = (uint8_t)(keysym->sym & 0xFF);
+    kbd.modifier = (uint8_t)(keysym->mod & 0xFF);
+    send_input_event(type, &kbd, sizeof(kbd));
+}
+
+static void send_key_tap(const SDL_Keysym *keysym) {
+    send_key(HID_EVENT_KEY_DOWN, keysym);
+    send_key(HID_EVENT_KEY_UP, keysym);
+}
+
 /* ----- Process SDL events and send as HID ----- */
 static void process_sdl_events(uint8_t sx, uint8_t sy) {
+    static uint32_t mode_key_down_ms[2];  /* GRAVE, INTERNATIONAL2 */
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -300,23 +338,32 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
             break;
 
         case SDL_KEYDOWN:
-            if (!event.key.repeat) {
-                hid_keyboard_event_t kbd;
-                kbd.scancode = (uint8_t)event.key.keysym.scancode;
-                kbd.keycode = (uint8_t)(event.key.keysym.sym & 0xFF);
-                kbd.modifier = (uint8_t)(event.key.keysym.mod & 0xFF);
-                send_input_event(HID_EVENT_KEY_DOWN, &kbd, sizeof(kbd));
+            if (event.key.repeat) {
+                break;
             }
+            if (is_jis_mode_key(event.key.keysym.scancode)) {
+                int i = (event.key.keysym.scancode == SDL_SCANCODE_GRAVE) ? 0 : 1;
+                mode_key_down_ms[i] = SDL_GetTicks();
+                send_key_tap(&event.key.keysym);
+                break;
+            }
+            send_key(HID_EVENT_KEY_DOWN, &event.key.keysym);
             break;
 
-        case SDL_KEYUP: {
-            hid_keyboard_event_t kbd;
-            kbd.scancode = (uint8_t)event.key.keysym.scancode;
-            kbd.keycode = (uint8_t)(event.key.keysym.sym & 0xFF);
-            kbd.modifier = (uint8_t)(event.key.keysym.mod & 0xFF);
-            send_input_event(HID_EVENT_KEY_UP, &kbd, sizeof(kbd));
+        case SDL_KEYUP:
+            if (is_jis_mode_key(event.key.keysym.scancode)) {
+                int i = (event.key.keysym.scancode == SDL_SCANCODE_GRAVE) ? 0 : 1;
+                uint32_t gap = SDL_GetTicks() - mode_key_down_ms[i];
+                /* Soon after the press: the release of the tap already sent.
+                 * Long after: this IS the next press (locking key). */
+                if (gap > JIS_LOCK_KEY_GAP_MS) {
+                    mode_key_down_ms[i] = SDL_GetTicks();
+                    send_key_tap(&event.key.keysym);
+                }
+                break;
+            }
+            send_key(HID_EVENT_KEY_UP, &event.key.keysym);
             break;
-        }
 
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP: {
