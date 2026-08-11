@@ -290,29 +290,29 @@ static int setup_sdl2(void) {
     return 0;
 }
 
-/* X11 hands the JIS mode keys over as LOCKING keys, and the firmware log plus
- * the SDL event log together spell out exactly what that means:
+/* The JIS mode keys (half/full-width, katakana) do not survive X11, and the
+ * simulator stops pretending they do.
  *
- *   mode key sc=53 down repeat=0     <- press 1: the lock engages
- *   mode key sc=53 down repeat=1     <- ... and X11 believes the key is now
- *   mode key sc=53 down repeat=1        held, so auto-repeat runs forever
- *   ...
- *   mode key sc=53 up   repeat=0     <- press 2: the lock disengages
- *   mode key sc=53 down repeat=0     <- press 3, and around it goes
+ * What the logs showed, over three attempts at rebuilding a usable press:
  *
- * So a physical press is either the first key-down or the key-up that ends the
- * hold, and everything in between is noise. A USB keyboard on the device sends
- * an ordinary press/release pair, and the firmware follows the USB rule (one
- * press is one key_down), so the simulator translates rather than the firmware
- * carrying an X11 quirk.
+ *   mode key sc=53 down repeat=0     <- the press arrives
+ *   mode key sc=53 down repeat=1     <- and then X11 believes the key is held
+ *   mode key sc=53 down repeat=1        down FOREVER: auto-repeat, ~30 ms apart
+ *   ...                                 for as long as ten seconds
+ *   mode key sc=53 up                <- a release, arriving only when the
+ *                                       window loses focus (both keys at once)
  *
- * Auto-repeat is what tells the two apart, with no timing guesswork: a normal
- * short press produces no repeats, so its release is just a release and is
- * dropped. (Holding one of these keys past the repeat delay counts as two
- * presses. On a key that selects an input mode, two presses cancel out.)
+ * The release never comes back on its own, so every later press of the key
+ * arrives as repeat=1 - byte for byte identical to the auto-repeat around it.
+ * There is no information left to tell a press from the noise: rebuilding the
+ * release made the second press vanish into the repeat filter, and accepting
+ * repeats made the mode flip back and forth on its own.
  *
- * Injected events (drain_inject_events) never come through here and are
- * already well-formed pairs.
+ * So these two keys are dropped here, with one line saying so. A USB keyboard
+ * on the device reports them like any other key and the firmware handles them
+ * correctly - this is the X11 path only. In the simulator, Ctrl+Space toggles
+ * kana input and the on-screen indicator can be clicked; both are unaffected,
+ * as is the injection path used by the test scripts.
  */
 static int is_jis_mode_key(int scancode) {
     return scancode == SDL_SCANCODE_GRAVE ||          /* 0x35 half/full-width */
@@ -327,15 +327,8 @@ static void send_key(int type, const SDL_Keysym *keysym) {
     send_input_event(type, &kbd, sizeof(kbd));
 }
 
-static void send_key_tap(const SDL_Keysym *keysym) {
-    send_key(HID_EVENT_KEY_DOWN, keysym);
-    send_key(HID_EVENT_KEY_UP, keysym);
-}
-
 /* ----- Process SDL events and send as HID ----- */
 static void process_sdl_events(uint8_t sx, uint8_t sy) {
-    /* Auto-repeat seen since each mode key went down (GRAVE, INTERNATIONAL2). */
-    static int mode_key_held[2];
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -346,21 +339,12 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
         case SDL_KEYDOWN:
         case SDL_KEYUP:
             if (is_jis_mode_key(event.key.keysym.scancode)) {
-                /* Auto-repeat while the lock is engaged: not a press, and the
-                 * flag is what makes the eventual key-up one. */
-                int i = (event.key.keysym.scancode == SDL_SCANCODE_GRAVE) ? 0 : 1;
-                if (event.type == SDL_KEYDOWN && event.key.repeat) {
-                    mode_key_held[i] = 1;
-                    break;
+                if (event.type == SDL_KEYDOWN && !event.key.repeat) {
+                    fprintf(stderr, "[sdl2-display] the JIS mode keys do not "
+                            "work under X11 (sc=%d ignored) -- use Ctrl+Space "
+                            "or click the mode indicator\n",
+                            event.key.keysym.scancode);
                 }
-                if (event.type == SDL_KEYUP && !mode_key_held[i]) {
-                    break;  /* ordinary release of an ordinary press */
-                }
-                mode_key_held[i] = 0;
-                fprintf(stderr, "[sdl2-display] mode key sc=%d %s -> press\n",
-                        event.key.keysym.scancode,
-                        event.type == SDL_KEYDOWN ? "down" : "up");
-                send_key_tap(&event.key.keysym);
                 break;
             }
             if (event.type == SDL_KEYDOWN && event.key.repeat) {
