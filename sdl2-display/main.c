@@ -290,34 +290,30 @@ static int setup_sdl2(void) {
     return 0;
 }
 
-/* X11 hands the JIS mode keys over as LOCKING keys: one event per physical
- * press, alternating KEYDOWN and KEYUP, with the "release" of a press only
- * arriving when the user presses the key again (measured on a real JIS
- * keyboard: 4.1 s between the two). A USB keyboard on the device reports them
- * like any other key, and the firmware's rule is the USB one -- one press is
- * one key_down -- so half of the presses did nothing at all: kana input turned
- * on and would not turn off.
+/* X11 hands the JIS mode keys over as LOCKING keys, and the firmware log plus
+ * the SDL event log together spell out exactly what that means:
  *
- * Each of those single events is turned back into a complete press here, which
- * is the simulator's job: it exists to look like a keyboard. Injected events
- * (drain_inject_events) never come through this function and are already
- * well-formed pairs.
+ *   mode key sc=53 down repeat=0     <- press 1: the lock engages
+ *   mode key sc=53 down repeat=1     <- ... and X11 believes the key is now
+ *   mode key sc=53 down repeat=1        held, so auto-repeat runs forever
+ *   ...
+ *   mode key sc=53 up   repeat=0     <- press 2: the lock disengages
+ *   mode key sc=53 down repeat=0     <- press 3, and around it goes
  *
- * There is a second half to it: because the release never comes, SDL still
- * believes the key is held, so the NEXT press arrives flagged as a repeat and
- * the repeat filter throws it away. That is why the second press produced no
- * event at all.
+ * So a physical press is either the first key-down or the key-up that ends the
+ * hold, and everything in between is noise. A USB keyboard on the device sends
+ * an ordinary press/release pair, and the firmware follows the USB rule (one
+ * press is one key_down), so the simulator translates rather than the firmware
+ * carrying an X11 quirk.
  *
- * So for these two keys every event counts as one press - key down, a repeat,
- * or a lone key up - with anything inside the debounce window below ignored.
- * That covers all three shapes at once: the real release of a normal press
- * (tens of ms after its down), auto-repeat while held (~30 ms apart), and a
- * locking key's single alternating events (seconds apart). Pressing one of
- * these keys twice within the window registers once, which is a fair trade
- * for a key that selects an input mode.
+ * Auto-repeat is what tells the two apart, with no timing guesswork: a normal
+ * short press produces no repeats, so its release is just a release and is
+ * dropped. (Holding one of these keys past the repeat delay counts as two
+ * presses. On a key that selects an input mode, two presses cancel out.)
+ *
+ * Injected events (drain_inject_events) never come through here and are
+ * already well-formed pairs.
  */
-#define JIS_MODE_KEY_DEBOUNCE_MS 350
-
 static int is_jis_mode_key(int scancode) {
     return scancode == SDL_SCANCODE_GRAVE ||          /* 0x35 half/full-width */
            scancode == SDL_SCANCODE_INTERNATIONAL2;   /* 0x88 katakana */
@@ -337,22 +333,9 @@ static void send_key_tap(const SDL_Keysym *keysym) {
 }
 
 /* ----- Process SDL events and send as HID ----- */
-/* One press of a JIS mode key, whatever event shape it arrived in. Returns
- * false when the event is inside the debounce window and should be dropped. */
-static int accept_mode_key_press(int scancode) {
-    static uint32_t last_ms[2];
-    static int seen[2];
-    int i = (scancode == SDL_SCANCODE_GRAVE) ? 0 : 1;
-    uint32_t now = SDL_GetTicks();
-    if (seen[i] && (now - last_ms[i]) < JIS_MODE_KEY_DEBOUNCE_MS) {
-        return 0;
-    }
-    seen[i] = 1;
-    last_ms[i] = now;
-    return 1;
-}
-
 static void process_sdl_events(uint8_t sx, uint8_t sy) {
+    /* Auto-repeat seen since each mode key went down (GRAVE, INTERNATIONAL2). */
+    static int mode_key_held[2];
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -363,16 +346,21 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
         case SDL_KEYDOWN:
         case SDL_KEYUP:
             if (is_jis_mode_key(event.key.keysym.scancode)) {
-                int press = accept_mode_key_press(event.key.keysym.scancode);
-                /* Logged unconditionally: when one of these still misbehaves,
-                 * what SDL handed over is the whole answer. */
-                fprintf(stderr, "[sdl2-display] mode key sc=%d %s repeat=%d%s\n",
-                        event.key.keysym.scancode,
-                        event.type == SDL_KEYDOWN ? "down" : "up",
-                        event.key.repeat, press ? " -> press" : " (debounced)");
-                if (press) {
-                    send_key_tap(&event.key.keysym);
+                /* Auto-repeat while the lock is engaged: not a press, and the
+                 * flag is what makes the eventual key-up one. */
+                int i = (event.key.keysym.scancode == SDL_SCANCODE_GRAVE) ? 0 : 1;
+                if (event.type == SDL_KEYDOWN && event.key.repeat) {
+                    mode_key_held[i] = 1;
+                    break;
                 }
+                if (event.type == SDL_KEYUP && !mode_key_held[i]) {
+                    break;  /* ordinary release of an ordinary press */
+                }
+                mode_key_held[i] = 0;
+                fprintf(stderr, "[sdl2-display] mode key sc=%d %s -> press\n",
+                        event.key.keysym.scancode,
+                        event.type == SDL_KEYDOWN ? "down" : "up");
+                send_key_tap(&event.key.keysym);
                 break;
             }
             if (event.type == SDL_KEYDOWN && event.key.repeat) {
