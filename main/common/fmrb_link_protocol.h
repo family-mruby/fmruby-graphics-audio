@@ -142,6 +142,8 @@ typedef enum {
     FMRB_LINK_GFX_SET_CANVAS_VISIBLE = 0x54,
     FMRB_LINK_GFX_GET_PIXEL = 0x55,
     FMRB_LINK_GFX_SET_COMPOSITE_REGIONS = 0x56,
+    // 0x57 (SET_CANVAS_VIEWPORT) is Modern/P4 only, see the Core-side header.
+    FMRB_LINK_GFX_SET_SPRITE_CLIP = 0x58,
 
     // Cursor control (global resource, no canvas_id)
     FMRB_LINK_GFX_CURSOR_SET_POSITION = 0x60,
@@ -404,6 +406,18 @@ typedef struct __attribute__((packed)) {
     uint8_t _pad;
     fmrb_link_graphics_composite_region_t regions[FMRB_LINK_MAX_COMPOSITE_REGIONS];
 } fmrb_link_graphics_set_composite_regions_t;
+
+// SET_SPRITE_CLIP: confine this canvas's sprite compositing to a sub-rect.
+// Sprites are composited on top of everything the canvas itself drew, so
+// without a clip they paint over the window frame and title bar the app drew
+// into the same canvas. The rect is in the same coordinate space as sprite
+// instance positions (canvas-local) and is clamped to the canvas. w == 0 or
+// h == 0 clears the clip (sprites bounded by the canvas only, the default).
+typedef struct __attribute__((packed)) {
+    uint16_t canvas_id;
+    uint16_t x, y;
+    uint16_t w, h;
+} fmrb_link_graphics_set_sprite_clip_t;
 
 // GET_PIXEL: read a single RGB332 pixel from a canvas back buffer.
 typedef struct __attribute__((packed)) {

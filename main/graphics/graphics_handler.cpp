@@ -77,6 +77,15 @@ typedef struct {
     // full-area pushSprite path. Updated by SET_COMPOSITE_REGIONS RPC.
     uint8_t region_count;
     fmrb_link_graphics_composite_region_t regions[FMRB_LINK_MAX_COMPOSITE_REGIONS];
+
+    // Sprite compositing clip. Sprites land on the render buffer after the
+    // drawn content, so without a clip they cover the window frame the app
+    // drew into the same canvas. clip_w = 0 means no clip (canvas bounds
+    // only, the default). Held here rather than on the sprite itself because
+    // LGFX_Sprite::setBuffer() resets the clip rect on every resize.
+    // Updated by SET_SPRITE_CLIP RPC.
+    uint16_t clip_x, clip_y;
+    uint16_t clip_w, clip_h;
 } canvas_state_t;
 
 // Maximum number of canvases
@@ -237,6 +246,10 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->use_transparent = use_transparent;
     canvas->transparent_color = transparent_color;
     canvas->region_count = 0;
+    canvas->clip_x = 0;
+    canvas->clip_y = 0;
+    canvas->clip_w = 0;   // 0 = no sprite clip (canvas bounds)
+    canvas->clip_h = 0;
 
     // Allocate external memory for draw buffer from mempool
     canvas->draw_buffer_mem = fmrb_mempool_canvas_alloc_buffer();
@@ -1199,6 +1212,40 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             return 0;
         }
 
+        case FMRB_LINK_GFX_SET_SPRITE_CLIP: {
+            if (size < sizeof(fmrb_link_graphics_set_sprite_clip_t)) {
+                ESP_LOGE(TAG, "SET_SPRITE_CLIP: payload too small (%zu)", size);
+                return -1;
+            }
+            const fmrb_link_graphics_set_sprite_clip_t *cmd =
+                (const fmrb_link_graphics_set_sprite_clip_t*)data;
+
+            canvas_state_t* canvas = canvas_state_find(cmd->canvas_id);
+            if (!canvas) {
+                ESP_LOGE(TAG, "Canvas %u not found for SET_SPRITE_CLIP", cmd->canvas_id);
+                return -1;
+            }
+
+            xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
+            if (cmd->w == 0 || cmd->h == 0 ||
+                cmd->x >= canvas->active_width || cmd->y >= canvas->active_height) {
+                canvas->clip_x = canvas->clip_y = 0;
+                canvas->clip_w = canvas->clip_h = 0;
+            } else {
+                uint16_t max_w = canvas->active_width - cmd->x;
+                uint16_t max_h = canvas->active_height - cmd->y;
+                canvas->clip_x = cmd->x;
+                canvas->clip_y = cmd->y;
+                canvas->clip_w = (cmd->w < max_w) ? cmd->w : max_w;
+                canvas->clip_h = (cmd->h < max_h) ? cmd->h : max_h;
+            }
+            xSemaphoreGive(g_canvas_mutex);
+            ESP_LOGI(TAG, "Canvas %u sprite clip set: (%u,%u) %ux%u",
+                     cmd->canvas_id, canvas->clip_x, canvas->clip_y,
+                     canvas->clip_w, canvas->clip_h);
+            return 0;
+        }
+
         case FMRB_LINK_GFX_CREATE_MASK: {
             // BEGIN: reserve a zero-filled mask buffer of size width*height
             // bits. Data is streamed in subsequently via MASK_DATA chunks.
@@ -1442,6 +1489,12 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // resend regions after resize if needed.
                 canvas->region_count = 0;
 
+                // Same for the sprite clip: it was sized for the old active
+                // area. The app resends one for the new user area from its
+                // resize handler.
+                canvas->clip_x = canvas->clip_y = 0;
+                canvas->clip_w = canvas->clip_h = 0;
+
                 canvas->dirty = true;
 
                 xSemaphoreGive(g_canvas_mutex);
@@ -1534,9 +1587,20 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                     ESP_LOGD(TAG, "Canvas pushed: ID=%u to %s at (%d,%d)", cmd->canvas_id, dst_name, push_x, push_y);
                 }
 
-                // Composite sprites onto render buffer after draw_buffer copy
+                // Composite sprites onto render buffer after draw_buffer copy.
+                // The app-set clip (SET_SPRITE_CLIP) keeps them inside its
+                // user area instead of over the frame it just drew. It is
+                // applied here and dropped again because setBuffer() on resize
+                // would silently reset a clip left on the sprite.
                 if (cmd->dest_canvas_id == FMRB_CANVAS_RENDER && src_canvas->render_buffer) {
+                    bool clipped = (src_canvas->clip_w > 0 && src_canvas->clip_h > 0);
+                    if (clipped) {
+                        src_canvas->render_buffer->setClipRect(
+                            src_canvas->clip_x, src_canvas->clip_y,
+                            src_canvas->clip_w, src_canvas->clip_h);
+                    }
                     sprite_manager_composite(cmd->canvas_id, src_canvas->render_buffer);
+                    if (clipped) src_canvas->render_buffer->clearClipRect();
                 }
 
                 // Release mutex if we locked for render_buffer path
