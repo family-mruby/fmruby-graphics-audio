@@ -169,7 +169,11 @@ int audio_task_fmsq_play_slot(uint32_t music_id, uint8_t instance) {
 }
 
 int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t duty, uint8_t sweep) {
-    if (freq == 0) return -1;
+    /* freq is a pitch in Hz for the tone channels, where 0 is meaningless,
+     * but on noise it is a period index (0..15, plus the mode bit) where 0 is
+     * the shortest period - a legal note. Rejecting 0 for every channel
+     * silently dropped every noise hit at period 0. */
+    if (freq == 0 && channel != FMRB_APU_CH_NOISE) return -1;
 
     /* note_on uses SUB; FMSQ/NSF stay on MAIN. Both APU instances are
      * mixed by apuif_process_mix, so BGM keeps playing during SE. */
