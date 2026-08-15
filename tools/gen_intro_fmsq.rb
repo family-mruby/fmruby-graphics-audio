@@ -52,8 +52,15 @@ def note_on_pulse(ch, freq, volume: 12, duty: 2)
     reg_write(hi_reg, 0x08 | ((timer >> 8) & 0x07))
 end
 
+# The triangle's timer counts at half the pulse rate, so it needs its own
+# divider: apu_helper.c uses 16 for the pulses and 32 here. Reusing
+# freq_to_timer sounds the note an octave below the one asked for.
+def freq_to_tri_timer(freq)
+  (CPU_FREQ / (32.0 * freq) - 1).round
+end
+
 def note_on_triangle(freq)
-  timer = freq_to_timer(freq)
+  timer = freq_to_tri_timer(freq)
   reg_write(REG_TRI_LINEAR, 0xFF) +
     reg_write(REG_TRI_LO, timer & 0xFF) +
     reg_write(REG_TRI_HI, 0x08 | ((timer >> 8) & 0x07))
