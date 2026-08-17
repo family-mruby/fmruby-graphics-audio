@@ -246,7 +246,6 @@ int audio_task_note_off(uint8_t channel) {
 
 #ifdef CONFIG_IDF_TARGET_LINUX
 
-#define NSF_FILE_PATH  "/project/flash/data/test.nsf"
 #define FMSQ_FILE_PATH "/project/flash/data/test.fmsq"
 
 void audio_task(void *pvParameters) {
@@ -261,17 +260,8 @@ void audio_task(void *pvParameters) {
     /* Initialize main APU (instance 0: NSF) */
     apuif_init();
 
-    /* Load NSF file on main APU instance (playback starts on command) */
-    g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
-    if (g_nsf_player) {
-        if (nsf_player_load(g_nsf_player, NSF_FILE_PATH) == 0) {
-            ESP_LOGI(TAG, "NSF loaded: %d songs (waiting for play command)", g_nsf_player->header.total_songs);
-        } else {
-            ESP_LOGW(TAG, "No NSF file at %s", NSF_FILE_PATH);
-            apuemu_free(g_nsf_player);
-            g_nsf_player = NULL;
-        }
-    }
+    /* No NSF is loaded here: a play command always names the file it wants,
+     * and the play path allocates the player itself. */
 
     /* Initialize sub APU (instance 1: note_on/off SE and optional SE-FMSQ) */
     apuif_init_sub();
@@ -349,8 +339,6 @@ void audio_task(void *pvParameters) {
 
 #include "esp_timer.h"
 
-#define NSF_FILE_PATH "/flash/data/test.nsf"
-
 void audio_task(void *pvParameters) {
     ESP_LOGI(TAG, "Audio task started on core %d", xPortGetCoreID());
 
@@ -360,18 +348,8 @@ void audio_task(void *pvParameters) {
     /* Initialize sub APU (instance 1: FMSQ + note_on/off) */
     apuif_init_sub();
 
-    /* Load default NSF file (playback starts on command from Core) */
-    g_nsf_player = (nsf_player_t *)apuemu_malloc(sizeof(nsf_player_t));
-    if (g_nsf_player) {
-        if (nsf_player_load(g_nsf_player, NSF_FILE_PATH) == 0) {
-            ESP_LOGI(TAG, "NSF loaded: %d songs (waiting for play command)",
-                     g_nsf_player->header.total_songs);
-        } else {
-            ESP_LOGW(TAG, "No NSF file at %s", NSF_FILE_PATH);
-            apuemu_free(g_nsf_player);
-            g_nsf_player = NULL;
-        }
-    }
+    /* No NSF is loaded here: a play command always names the file it wants,
+     * and the play path allocates the player itself. */
 
     /* 60Hz timing */
     const uint64_t target_frame_time_us = 16667;
