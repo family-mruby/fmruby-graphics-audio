@@ -424,6 +424,19 @@ static void composite_region(LGFX_Sprite* dst, const canvas_state_t* canvas,
 // before the cursor is baked in, and this keeps the two the same. It also
 // keeps the export from overwriting the saved background the render path
 // restores the cursor from.
+// Does this build carry the extra efont cuts (16px, and the 12px bold)?
+//
+// It does, on WROVER as well, and that was a measurement rather than a taste:
+// the two cuts add 776160 bytes to the image (834144 -> 1610304) and leave
+// 437184 bytes (21%) of the 2000K app partition free, well clear of the
+// 200KB the decision was pinned to (doc/picorabbit/report/p6.md in
+// fmruby-core). The cost is real -- the image nearly doubles, and so does the
+// time to flash it -- so this is the switch to flip if the partition ever
+// gets tight: at 0 the two cuts are dropped, a 16px request draws 12 and a
+// bold request draws the regular cut. The Ruby side carries a table of the
+// same shape (FmrbGfx::FONT_AVAILABLE), and it has to be edited to match.
+#define FMRB_FONT_JA_EXTRA 1
+
 static LGFX_Sprite* compose_screen_buffer(bool with_cursor = true) {
     if (g_canvas_count == 0) {
         return NULL;  // No canvases to render
@@ -1012,9 +1025,33 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                         break;
                     case FMRB_LINK_GFX_FONT_FAMILY_JA:
                         // size=8 -> misaki (matches the system 8px UI height),
-                        // size=12 -> efontJA_12 (readability over compactness).
+                        // 12 and 16 -> efontJA (readability over compactness).
+                        // A size this build does not carry lands on 12.
                         if (cmd->size == 8) {
                             target->setFont(&lgfx::fonts::misaki_8);
+                        } else if (cmd->size == 16 && FMRB_FONT_JA_EXTRA) {
+                            target->setFont(&lgfx::fonts::efontJA_16);
+                        } else {
+                            if (cmd->size != 12) {
+                                ESP_LOGW(TAG, "SET_FONT: no JA %upx, using 12",
+                                         cmd->size);
+                            }
+                            target->setFont(&lgfx::fonts::efontJA_12);
+                        }
+                        break;
+                    case FMRB_LINK_GFX_FONT_FAMILY_JA_BOLD:
+                        // The bold cut is one more font in flash, which the
+                        // WROVER's 2000K app partition may not have to spare
+                        // (doc/picorabbit/report/p6.md has the numbers). Where
+                        // it is missing, the regular cut is drawn and the
+                        // caller, told by FmrbGfx#set_font what it got, draws
+                        // its own bold instead.
+                        if (FMRB_FONT_JA_EXTRA) {
+                            if (cmd->size != 12) {
+                                ESP_LOGW(TAG, "SET_FONT: no JA bold %upx, using 12",
+                                         cmd->size);
+                            }
+                            target->setFont(&lgfx::fonts::efontJA_12_b);
                         } else {
                             target->setFont(&lgfx::fonts::efontJA_12);
                         }
