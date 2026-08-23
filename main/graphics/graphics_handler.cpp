@@ -21,6 +21,8 @@ extern "C" {
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+#include <sys/stat.h>       // mkdir, for EXPORT_FRAME
+#include <stdlib.h>
 #include "socket_server.h"  // For socket_server_send_ack
 #else
 #include "comm_interface.h"
@@ -411,9 +413,20 @@ static void composite_region(LGFX_Sprite* dst, const canvas_state_t* canvas,
 }
 
 // Render all canvases to screen in Z-order
-static void graphics_handler_render_frame_internal() {
+// Composite every visible canvas (and the cursor) into the background
+// canvas's render buffer and hand that buffer back. Split out of
+// render_frame so EXPORT_FRAME can take the same picture without
+// pushing it to the display from another task. Call with the canvas
+// mutex held. NULL means there is nothing to show yet.
+//
+// with_cursor false leaves the pointer out, for a picture that is being
+// saved rather than shown -- the device's own export takes the framebuffer
+// before the cursor is baked in, and this keeps the two the same. It also
+// keeps the export from overwriting the saved background the render path
+// restores the cursor from.
+static LGFX_Sprite* compose_screen_buffer(bool with_cursor = true) {
     if (g_canvas_count == 0) {
-        return;  // No canvases to render
+        return NULL;  // No canvases to render
     }
 
     // Hold the boot screen until the core actually has a frame to show.
@@ -424,7 +437,7 @@ static void graphics_handler_render_frame_internal() {
     // the canvas is smaller than the display and would otherwise leave boot
     // text in the margins.
     if (!s_first_present_seen) {
-        return;
+        return NULL;
     }
     if (!s_boot_screen_cleared) {
         g_lgfx->fillScreen(0x00);
@@ -445,7 +458,7 @@ static void graphics_handler_render_frame_internal() {
         }
     }
     if (!bg_canvas) {
-        return;  // No canvas with buffer ready yet
+        return NULL;  // No canvas with buffer ready yet
     }
     LGFX_Sprite* screen_buffer = bg_canvas->render_buffer;
     const int screen_w = screen_buffer->width();
@@ -505,7 +518,7 @@ static void graphics_handler_render_frame_internal() {
     }
 
     // Save background under cursor, then draw cursor on screen_buffer
-    if (g_cursor_visible && g_cursor_sprite && g_cursor_save) {
+    if (with_cursor && g_cursor_visible && g_cursor_sprite && g_cursor_save) {
         // Save the 16x16 area that cursor will overwrite
         for (int y = 0; y < 16; y++) {
             for (int x = 0; x < 16; x++) {
@@ -523,6 +536,107 @@ static void graphics_handler_render_frame_internal() {
         g_cursor_sprite->pushSprite(screen_buffer, g_cursor_x, g_cursor_y, CURSOR_TRANSPARENT_COLOR);
         g_cursor_drawn = true;
         ESP_LOGD(TAG, "Cursor drawn at (%d, %d)", g_cursor_x, g_cursor_y);
+    }
+
+    return screen_buffer;
+}
+
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+// Write one composited frame out as a 24-bit BMP.
+//
+// Only the simulator does this: EXPORT_FRAME exists so a deck can be saved as
+// pictures, and only here is there a host filesystem to leave them on. BMP
+// rather than PNG because an uncompressed bottom-up bitmap is forty lines of
+// code and needs no image library; the RGB332 -> RGB888 expansion is the same
+// one tools/fmrb_screenshot.py uses, so an exported slide and a screenshot of
+// the same slide are byte-identical pictures.
+static bool export_frame_bmp(LGFX_Sprite *src, const char *path)
+{
+    const int w = src->width();
+    const int h = src->height();
+    if (w <= 0 || h <= 0) return false;
+
+    const int row_bytes = w * 3;
+    const int pad = (4 - (row_bytes % 4)) % 4;
+    const uint32_t data_size = (uint32_t)(row_bytes + pad) * (uint32_t)h;
+    const uint32_t file_size = 54 + data_size;
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        ESP_LOGE(TAG, "EXPORT_FRAME: cannot open %s", path);
+        return false;
+    }
+
+    uint8_t hdr[54];
+    memset(hdr, 0, sizeof(hdr));
+    hdr[0] = 'B'; hdr[1] = 'M';
+    hdr[2] = (uint8_t)(file_size); hdr[3] = (uint8_t)(file_size >> 8);
+    hdr[4] = (uint8_t)(file_size >> 16); hdr[5] = (uint8_t)(file_size >> 24);
+    hdr[10] = 54;                       // pixel data offset
+    hdr[14] = 40;                       // BITMAPINFOHEADER size
+    hdr[18] = (uint8_t)(w); hdr[19] = (uint8_t)(w >> 8);
+    hdr[20] = (uint8_t)(w >> 16); hdr[21] = (uint8_t)(w >> 24);
+    hdr[22] = (uint8_t)(h); hdr[23] = (uint8_t)(h >> 8);
+    hdr[24] = (uint8_t)(h >> 16); hdr[25] = (uint8_t)(h >> 24);
+    hdr[26] = 1;                        // planes
+    hdr[28] = 24;                       // bits per pixel
+    hdr[34] = (uint8_t)(data_size); hdr[35] = (uint8_t)(data_size >> 8);
+    hdr[36] = (uint8_t)(data_size >> 16); hdr[37] = (uint8_t)(data_size >> 24);
+    fwrite(hdr, 1, sizeof(hdr), f);
+
+    // BMP rows run bottom-up, and each pixel is stored blue first.
+    //
+    // The source row is read as rgb332 explicitly: readPixel hands back
+    // RGB565 whatever the sprite's own depth is, and a round trip through
+    // 565 does not reproduce the *255/7 expansion the screenshot tool uses,
+    // so the two pictures of one frame would differ everywhere.
+    uint8_t *row = (uint8_t *)malloc((size_t)row_bytes + pad);
+    uint8_t *raw = (uint8_t *)malloc((size_t)w);
+    if (!row || !raw) {
+        if (row) free(row);
+        if (raw) free(raw);
+        fclose(f);
+        return false;
+    }
+    memset(row, 0, (size_t)row_bytes + pad);
+    for (int y = h - 1; y >= 0; y--) {
+        src->readRect(0, y, w, 1, (lgfx::rgb332_t *)raw);
+        for (int x = 0; x < w; x++) {
+            uint8_t c = raw[x];
+            row[x * 3 + 0] = (uint8_t)((c & 0x03) * 255 / 3);          // blue
+            row[x * 3 + 1] = (uint8_t)(((c >> 2) & 0x07) * 255 / 7);   // green
+            row[x * 3 + 2] = (uint8_t)(((c >> 5) & 0x07) * 255 / 7);   // red
+        }
+        fwrite(row, 1, (size_t)row_bytes + pad, f);
+    }
+    free(raw);
+    free(row);
+    fclose(f);
+    return true;
+}
+
+// Make every directory on the way to the file, so an app only has to name
+// where it wants the picture. The core's own mkdir cannot reach this
+// filesystem: in the simulator the two sides do not share one.
+static void export_frame_mkdirs(const char *path)
+{
+    char buf[256];
+    size_t n = strlen(path);
+    if (n >= sizeof(buf)) return;
+    memcpy(buf, path, n + 1);
+    for (size_t i = 1; i < n; i++) {
+        if (buf[i] != '/') continue;
+        buf[i] = '\0';
+        mkdir(buf, 0777);
+        buf[i] = '/';
+    }
+}
+#endif
+
+static void graphics_handler_render_frame_internal() {
+    LGFX_Sprite* screen_buffer = compose_screen_buffer();
+    if (!screen_buffer) {
+        return;
     }
 
     // Push the complete screen buffer (with cursor) to g_lgfx in a single transfer
@@ -1611,6 +1725,50 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 return 0;
             }
             break;
+
+        case FMRB_LINK_GFX_EXPORT_FRAME: {
+            if (size < sizeof(fmrb_link_graphics_export_frame_t)) break;
+            const fmrb_link_graphics_export_frame_t *cmd =
+                (const fmrb_link_graphics_export_frame_t*)data;
+            const char *path_data = (const char *)(data + sizeof(*cmd));
+            uint16_t path_len = cmd->path_len;
+            if (sizeof(*cmd) + path_len > size) {
+                ESP_LOGE(TAG, "EXPORT_FRAME: path extends beyond payload");
+                return -1;
+            }
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+            {
+                const char *p = path_data;
+                int plen = (int)path_len;
+                if (plen > 0 && p[0] == '/') { p++; plen--; }
+                char full_path[256];
+                snprintf(full_path, sizeof(full_path), "flash/%.*s", plen, p);
+                export_frame_mkdirs(full_path);
+
+                // Composite here rather than wait for the render task: the
+                // command sits right behind the present it belongs to, and
+                // that present has not reached the screen yet. Pushing to
+                // the display from this task is what we must not do, which
+                // is why only the compositing half is called.
+                xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
+                LGFX_Sprite *fb = compose_screen_buffer(false);
+                bool ok = fb ? export_frame_bmp(fb, full_path) : false;
+                xSemaphoreGive(g_canvas_mutex);
+                if (ok) {
+                    ESP_LOGI(TAG, "EXPORT_FRAME: wrote %s", full_path);
+                } else {
+                    ESP_LOGE(TAG, "EXPORT_FRAME: failed for %s", full_path);
+                    return -1;
+                }
+            }
+#else
+            // Retro (WROVER) has no encoder and no filesystem worth writing
+            // pictures to. Say so once per call and carry on.
+            ESP_LOGW(TAG, "EXPORT_FRAME: NOT_SUPPORTED (%.*s)",
+                     (int)path_len, path_data);
+#endif
+            return 0;
+        }
 
         case FMRB_LINK_GFX_CURSOR_SET_POSITION:
             if (size >= sizeof(fmrb_link_graphics_cursor_position_t)) {
