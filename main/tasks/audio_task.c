@@ -195,6 +195,12 @@ int audio_task_nsf_play(const char *path, int track) {
     if (g_nsf_player && g_nsf_player->playing) {
         g_nsf_player->playing = 0;
     }
+    /* NSF takes MAIN, so whatever FMSQ was on MAIN has to give way -- the
+     * mirror of play_slot(MAIN) stopping the NSF below. Two players writing
+     * one instance is not a mix, it is one set of registers fought over. */
+    if (g_fmsq_players[0] && g_fmsq_players[0]->playing) {
+        g_fmsq_players[0]->playing = 0;
+    }
 
     /* Free existing player if loaded from different file */
     if (g_nsf_player) {
@@ -220,14 +226,34 @@ int audio_task_nsf_play(const char *path, int track) {
     return 0;
 }
 
-void audio_task_nsf_stop(void) {
+/* "stop" means the caller wants the sound to end, whichever player is making
+ * it. Stopping only the NSF used to be enough because an FMSQ could only be
+ * on SUB and an effect killed it; now a BGM can hold MAIN, and one left
+ * running outlives the app that started it -- the app's own stop, its Ctrl+Q
+ * and the kernel's cleanup after a crash all arrive here, and all three did
+ * nothing to it. Nothing at all once the boot-time NSF preload went away:
+ * with no NSF ever played there is no player to stop and the silencing write
+ * never ran either. */
+void audio_task_stop_all(void) {
+    ESP_LOGI(TAG, "audio stop");
+
     if (g_nsf_player) {
-        ESP_LOGI(TAG, "NSF stop");
         g_nsf_player->playing = 0;
-        // Silence all APU channels
-        apuif_select(APUIF_INSTANCE_MAIN);
-        apuif_write_reg(0x4015, 0x00);
     }
+    if (g_fmsq_players[0]) {
+        g_fmsq_players[0]->playing = 0;
+    }
+    if (g_fmsq_players[1]) {
+        g_fmsq_players[1]->playing = 0;
+    }
+
+    /* Silence the channels of both instances. Unconditional: the players
+     * above hold notes in the APU, so clearing their flags alone leaves the
+     * last one sounding. */
+    apuif_select(APUIF_INSTANCE_MAIN);
+    apuif_write_reg(0x4015, 0x00);
+    apuif_select(APUIF_INSTANCE_SUB);
+    apuif_write_reg(0x4015, 0x00);
 }
 
 int audio_task_fmsq_play_slot(uint32_t music_id, uint8_t instance) {

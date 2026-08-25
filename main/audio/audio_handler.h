@@ -72,9 +72,13 @@ int audio_handler_get_track(uint32_t music_id, const uint8_t **out_data, uint32_
 int audio_task_nsf_play(const char *path, int track);
 
 /**
- * @brief Stop NSF playback
+ * @brief Stop every player and silence both APU instances
+ *
+ * What the "stop" command means: the caller wants the sound to end, whichever
+ * player is making it. Stops the NSF and the FMSQ on both instances, and
+ * clears 0x4015 on each so a held note does not keep sounding.
  */
-void audio_task_nsf_stop(void);
+void audio_task_stop_all(void);
 
 /**
  * @brief Play FMSQ from a loaded slot

@@ -270,7 +270,7 @@ static int process_load_fmsq_file_command(const fmrb_audio_load_fmsq_file_cmd_t 
 
 static int process_stop_command(void) {
     ESP_LOGI(TAG, "Stopping audio playback");
-    audio_task_nsf_stop();
+    audio_task_stop_all();
     current_status = FMRB_AUDIO_STATUS_STOPPED;
     return 0;
 }
