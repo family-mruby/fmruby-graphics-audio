@@ -8,7 +8,10 @@
 #include "apu_helper.h"
 #include "nsf_player.h"
 #include "fmsq_player.h"
+#include "fmrb_wav.h"
+#include "freertos/semphr.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "audio_task";
@@ -36,6 +39,135 @@ static nsf_player_t *g_nsf_player = NULL;
  * independently so a BGM on MAIN can play concurrently with a short
  * FMSQ SE on SUB. */
 static fmsq_player_t *g_fmsq_players[2] = { NULL, NULL };
+
+/* ------------------------------------------------------------------ */
+/* WAV playback (play_wav): one clip mixed on top of the APU           */
+/* ------------------------------------------------------------------ */
+/*
+ * Unlike the players above, this one does need a mutex. They are only ever
+ * handed a pointer or a flag, but starting a clip FREES the buffer the mix
+ * loop is reading from, so the two have to be kept apart. The lock is held
+ * only around the swap and the per-frame mix, both of which are short.
+ *
+ * The clip is read whole rather than streamed: these are notification sounds
+ * and short spoken lines, and a reader task feeding a ring would be a second
+ * timing loop to keep in step with the APU's. FMRB_WAV_MAX_BYTES (2 MB) is
+ * about 60 s at 16 kHz.
+ */
+static int16_t *g_wav_pcm = NULL;      /* owns the samples */
+static fmrb_wav_stream_t g_wav_stream; /* reads g_wav_pcm */
+static SemaphoreHandle_t g_wav_lock = NULL;
+
+/* Created once, before the task loop starts feeding frames. Until then the
+ * lock helpers are no-ops, which is correct: nothing can be playing yet. */
+static void wav_init(void) {
+    if (!g_wav_lock) g_wav_lock = xSemaphoreCreateMutex();
+}
+
+static void wav_lock(void) {
+    if (g_wav_lock) xSemaphoreTake(g_wav_lock, portMAX_DELAY);
+}
+
+static void wav_unlock(void) {
+    if (g_wav_lock) xSemaphoreGive(g_wav_lock);
+}
+
+static void wav_release_locked(void) {
+    fmrb_wav_stream_stop(&g_wav_stream);
+    if (g_wav_pcm) {
+        apuemu_free(g_wav_pcm);
+        g_wav_pcm = NULL;
+    }
+}
+
+/* Add the playing clip to one frame the APU just produced. Called from every
+ * place a frame is written out, so a clip keeps its shape whether the frame
+ * came from the 60 Hz loop or from one of the immediate pushes. */
+static void wav_mix_frame(int16_t *buf, int count) {
+    if (count <= 0) return;
+    /* Nothing playing is the normal state, and it costs nothing to say so:
+     * the read is a plain load, and losing a race with a play_wav that has
+     * not published yet only delays the clip by one 16 ms frame. */
+    if (!g_wav_stream.playing) return;
+    wav_lock();
+    fmrb_wav_stream_mix(&g_wav_stream, buf, count);
+    wav_unlock();
+}
+
+int audio_task_play_wav(const char *path) {
+    if (!path || path[0] == '\0') {
+        ESP_LOGW(TAG, "play_wav: empty path");
+        return -1;
+    }
+
+    char full_path[256];
+    const char *sep = path[0] == '/' ? "" : "/";
+#ifdef CONFIG_IDF_TARGET_LINUX
+    snprintf(full_path, sizeof(full_path), "flash%s%s", sep, path);
+#else
+    snprintf(full_path, sizeof(full_path), "/flash%s%s", sep, path);
+#endif
+
+    FILE *fp = fopen(full_path, "rb");
+    if (!fp) {
+        ESP_LOGW(TAG, "play_wav: cannot open %s", full_path);
+        return -1;
+    }
+    fseek(fp, 0, SEEK_END);
+    long fsize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    /* Checked before reading: a file too big to play is also too big to hold. */
+    if (fsize <= 0 || (uint32_t)fsize > FMRB_WAV_MAX_BYTES) {
+        ESP_LOGW(TAG, "play_wav: %s is %ld bytes (limit %u)",
+                 full_path, fsize, (unsigned)FMRB_WAV_MAX_BYTES);
+        fclose(fp);
+        return -1;
+    }
+
+    uint8_t *raw = (uint8_t *)apuemu_malloc((uint32_t)fsize);
+    if (!raw) {
+        ESP_LOGE(TAG, "play_wav: out of memory for %ld bytes", fsize);
+        fclose(fp);
+        return -1;
+    }
+    size_t rd = fread(raw, 1, (size_t)fsize, fp);
+    fclose(fp);
+    if (rd != (size_t)fsize) {
+        ESP_LOGW(TAG, "play_wav: short read %zu/%ld on %s", rd, fsize, full_path);
+        apuemu_free(raw);
+        return -1;
+    }
+
+    fmrb_wav_info_t info;
+    fmrb_wav_err_t err = fmrb_wav_parse(raw, (size_t)fsize, &info);
+    if (err != FMRB_WAV_OK) {
+        ESP_LOGW(TAG, "play_wav: %s rejected: %s", full_path, fmrb_wav_strerror(err));
+        apuemu_free(raw);
+        return -1;
+    }
+
+    /* Move the samples to the front of the allocation so they are aligned for
+     * int16 reads regardless of where the data chunk happened to start. */
+    memmove(raw, raw + info.data_offset, (size_t)info.frames * 2u);
+
+    wav_lock();
+    wav_release_locked();
+    g_wav_pcm = (int16_t *)raw;
+    fmrb_wav_stream_start(&g_wav_stream, g_wav_pcm, info.frames,
+                          info.sample_rate, FMRB_APU_MIX_RATE);
+    wav_unlock();
+
+    ESP_LOGI(TAG, "play_wav: %s (%lu frames @ %lu Hz)", full_path,
+             (unsigned long)info.frames, (unsigned long)info.sample_rate);
+    return 0;
+}
+
+int audio_task_stop_wav(void) {
+    wav_lock();
+    wav_release_locked();
+    wav_unlock();
+    return 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* Common functions (platform-independent APU operations)              */
@@ -158,6 +290,7 @@ int audio_task_fmsq_play_slot(uint32_t music_id, uint8_t instance) {
         int16_t buf[(NTSC_SAMPLE + 1) * 2];
         memset(buf, 0, sizeof(buf));
         int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]));
+        wav_mix_frame(buf, count);
         if (count > 0) {
             apuif_audio_write(buf, count, 1);
         }
@@ -208,6 +341,7 @@ int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t d
         int16_t buf[(NTSC_SAMPLE + 1) * 2];
         memset(buf, 0, sizeof(buf));
         int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]));
+        wav_mix_frame(buf, count);
         if (count > 0) {
             apuif_audio_write(buf, count, 1);
         }
@@ -249,6 +383,7 @@ int audio_task_note_off(uint8_t channel) {
 #define FMSQ_FILE_PATH "/project/flash/data/test.fmsq"
 
 void audio_task(void *pvParameters) {
+    wav_init();
     ESP_LOGI(TAG, "Audio task started (Linux)");
 
     /* Initialize SDL2 audio handler */
@@ -304,6 +439,7 @@ void audio_task(void *pvParameters) {
         int16_t buffer[(NTSC_SAMPLE + 1) * 2];
         memset(buffer, 0, sizeof(buffer));
         int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
+        wav_mix_frame(buffer, count);
         if (count > 0) {
             apuif_audio_write(buffer, count, 1);
         }
@@ -340,6 +476,7 @@ void audio_task(void *pvParameters) {
 #include "esp_timer.h"
 
 void audio_task(void *pvParameters) {
+    wav_init();
     ESP_LOGI(TAG, "Audio task started on core %d", xPortGetCoreID());
 
     /* Initialize main APU (instance 0: NSF) */
@@ -375,6 +512,7 @@ void audio_task(void *pvParameters) {
         int16_t buffer[(NTSC_SAMPLE + 1) * 2];
         memset(buffer, 0, sizeof(buffer));
         int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
+        wav_mix_frame(buffer, count);
         if (count > 0) {
             apuif_audio_write(buffer, count, 1);
         }

@@ -360,6 +360,16 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
             }
             break;
 
+        case FMRB_AUDIO_CMD_PLAY_WAV:
+        case FMRB_AUDIO_CMD_STOP_WAV:
+            /* Modern only. The caller does not send these to a Retro machine
+             * (FmrbAudio#play_wav refuses on this family), so reaching here
+             * means a newer core is talking to this WROVER -- say so once and
+             * carry on rather than treating it as a broken protocol. */
+            ESP_LOGW(TAG, "WAV playback is not supported on this audio backend (cmd 0x%02x)",
+                     cmd_type);
+            return -1;
+
         case FMRB_AUDIO_CMD_NOTE_ON:
             if (size >= sizeof(fmrb_audio_note_on_cmd_t)) {
                 const fmrb_audio_note_on_cmd_t *cmd = (const fmrb_audio_note_on_cmd_t*)data;

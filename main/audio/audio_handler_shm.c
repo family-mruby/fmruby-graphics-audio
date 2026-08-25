@@ -444,6 +444,23 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
             }
             break;
 
+        case FMRB_AUDIO_CMD_PLAY_WAV:
+            if (size >= sizeof(fmrb_audio_play_wav_cmd_t)) {
+                const fmrb_audio_play_wav_cmd_t *cmd = (const fmrb_audio_play_wav_cmd_t*)data;
+                if (size >= sizeof(*cmd) + cmd->path_len) {
+                    char path[128];
+                    int len = cmd->path_len < sizeof(path) - 1
+                                  ? (int)cmd->path_len : (int)(sizeof(path) - 1);
+                    memcpy(path, cmd->path, len);
+                    path[len] = '\0';
+                    return audio_task_play_wav(path);
+                }
+            }
+            break;
+
+        case FMRB_AUDIO_CMD_STOP_WAV:
+            return audio_task_stop_wav();
+
         case FMRB_AUDIO_CMD_NOTE_ON:
             if (size >= sizeof(fmrb_audio_note_on_cmd_t)) {
                 const fmrb_audio_note_on_cmd_t *cmd = (const fmrb_audio_note_on_cmd_t*)data;

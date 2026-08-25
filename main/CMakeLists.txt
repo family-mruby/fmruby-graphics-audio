@@ -8,6 +8,7 @@ set(SRCS
     "common/fmrb_link_cobs.c"
     "common/fmrb_link_fragment.c"
     "common/fmrb_bmp332.c"
+    "common/fmrb_wav.c"
     "mempool/fmrb_mempool.c"
     "mempool/fmrb_sprite_pool.c"
     "mempool/tlsf/tlsf.c"

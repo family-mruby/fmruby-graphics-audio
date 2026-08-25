@@ -103,6 +103,25 @@ int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t d
  */
 int audio_task_note_off(uint8_t channel);
 
+/**
+ * @brief Play a WAV file on top of the APU
+ *
+ * PCM 16-bit mono, 8-48 kHz, up to FMRB_WAV_MAX_BYTES, read whole from this
+ * side's filesystem and resampled to the APU's mono rate. Starting one while
+ * another plays replaces it. Every refusal (missing file, wrong format, too
+ * large) logs one line and leaves the current sound alone.
+ *
+ * @param path Path on this side's filesystem
+ * @return 0 when playback started, -1 otherwise
+ */
+int audio_task_play_wav(const char *path);
+
+/**
+ * @brief Stop the WAV started by audio_task_play_wav
+ * @return 0 (stopping when nothing plays is not an error)
+ */
+int audio_task_stop_wav(void);
+
 #ifdef __cplusplus
 }
 #endif
