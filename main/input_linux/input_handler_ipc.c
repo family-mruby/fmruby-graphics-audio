@@ -147,6 +147,7 @@ static int process_one_event(void) {
             break;
 
         case HID_EVENT_MOUSE_BUTTON:
+        case HID_EVENT_MOUSE_WHEEL:
         case HID_EVENT_KEY_DOWN:
         case HID_EVENT_KEY_UP:
             /* Forward to fmruby-core */

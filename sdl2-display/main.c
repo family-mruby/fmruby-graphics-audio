@@ -366,6 +366,28 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
             break;
         }
 
+        case SDL_MOUSEWHEEL: {
+            /* SDL reports notches, with y positive away from the user, which
+               is the sign the rest of the system uses. Flipped input (a
+               trackpad set to natural scrolling) arrives pre-flipped in
+               event.wheel.direction; honour it so the machine agrees with the
+               desktop it is running on. Horizontal wheels are not carried. */
+            int delta = event.wheel.y;
+            if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+                delta = -delta;
+            }
+            if (delta != 0) {
+                int mx = 0, my = 0;
+                SDL_GetMouseState(&mx, &my);
+                hid_mouse_wheel_event_t wheel;
+                wheel.delta = (int8_t)(delta > 127 ? 127 : (delta < -127 ? -127 : delta));
+                wheel.x = (uint16_t)(mx / sx);
+                wheel.y = (uint16_t)(my / sy);
+                send_input_event(HID_EVENT_MOUSE_WHEEL, &wheel, sizeof(wheel));
+            }
+            break;
+        }
+
         case SDL_MOUSEMOTION: {
             static uint32_t last_motion_ms = 0;
             uint32_t now = SDL_GetTicks();
