@@ -10,3 +10,5 @@ ws/
 .serial_port
 flash/cache/*
 flash/data/rubykaigi/
+# Output settings (mute, volume) the audio task keeps across reboots
+flash/etc/audio_output_*.txt
