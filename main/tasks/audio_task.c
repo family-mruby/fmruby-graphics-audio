@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 static const char *TAG = "audio_task";
 static volatile int task_running = 1;
@@ -78,6 +79,86 @@ static void wav_release_locked(void) {
         apuemu_free(g_wav_pcm);
         g_wav_pcm = NULL;
     }
+}
+
+/* ---- Output settings: mute and volume (fmruby-core doc/audio_mute/) ------
+ *
+ * A speaker's mute switch and volume knob: everything upstream runs as usual,
+ * and the frame on its way to the output is scaled (or replaced by silence)
+ * just before it is written. Kept on this board's flash so the boot beep,
+ * played before the core connects, follows the last settings the core sent. */
+/* One name per platform, like display_conf_*: the simulator writes its file
+ * into the same flash/ tree the ESP32 storage image is built from, and the
+ * board must not boot with the simulator's settings. */
+#ifdef CONFIG_IDF_TARGET_LINUX
+#define AUDIO_OUTPUT_PATH "flash/etc/audio_output_linux.txt"
+#else
+#define AUDIO_OUTPUT_PATH "/flash/etc/audio_output_esp32.txt"
+#endif
+
+static volatile bool g_out_silent = false;
+static volatile uint32_t g_out_gain_q16 = 65536;   /* 65536 = unity */
+static fmrb_audio_output_cmd_t g_out_saved;          /* what the file holds */
+
+/* A level in tenths of a dB as a gain. Unity at the top: a gain above 1
+ * would only clip, so a level above 0 dB is held there. */
+static uint32_t gain_q16(int16_t db_x10) {
+    if (db_x10 >= 0) return 65536;
+    return (uint32_t)(65536.0f * powf(10.0f, (float)db_x10 / 200.0f) + 0.5f);
+}
+
+static void audio_output_apply(const fmrb_audio_output_cmd_t *out) {
+    g_out_gain_q16 = gain_q16(out->level_db_x10);
+    g_out_silent = out->muted || out->volume == 0;
+}
+
+static void audio_output_load(void) {
+    FILE *f = fopen(AUDIO_OUTPUT_PATH, "r");
+    if (!f) return;  /* Nothing saved yet: full level, unmuted, as before */
+    int m = 0, v = 0, d = 0;
+    int n = fscanf(f, "%d %d %d", &m, &v, &d);
+    fclose(f);
+    if (n != 3) return;
+    g_out_saved.cmd_type = FMRB_AUDIO_CMD_SET_OUTPUT;
+    g_out_saved.muted = m ? 1 : 0;
+    g_out_saved.volume = (uint8_t)v;
+    g_out_saved.level_db_x10 = (int16_t)d;
+    audio_output_apply(&g_out_saved);
+    ESP_LOGI(TAG, "output (saved): volume %d, %d dB/10%s", v, d, m ? ", muted" : "");
+}
+
+void audio_task_set_output(const fmrb_audio_output_cmd_t *out) {
+    audio_output_apply(out);
+    ESP_LOGI(TAG, "output: volume %u, %d dB/10%s", out->volume,
+             out->level_db_x10, out->muted ? ", muted" : "");
+    if (out->muted == g_out_saved.muted && out->volume == g_out_saved.volume &&
+        out->level_db_x10 == g_out_saved.level_db_x10 && g_out_saved.cmd_type) {
+        return;  /* Same as saved: the core resends it at every connection */
+    }
+    FILE *f = fopen(AUDIO_OUTPUT_PATH, "w");
+    if (!f) {
+        ESP_LOGW(TAG, "output settings not saved (%s)", AUDIO_OUTPUT_PATH);
+        return;
+    }
+    fprintf(f, "%d %d %d\n", out->muted, out->volume, out->level_db_x10);
+    fclose(f);
+    g_out_saved = *out;
+}
+
+/* The last stage before the output: every frame goes out through here. */
+static void audio_out_write(int16_t *buf, int count) {
+    if (count <= 0) return;
+    if (g_out_silent) {
+        memset(buf, 0, (size_t)count * sizeof(buf[0]));
+    } else {
+        uint32_t g = g_out_gain_q16;
+        if (g < 65536) {
+            for (int i = 0; i < count; i++) {
+                buf[i] = (int16_t)(((int32_t)buf[i] * (int32_t)g) >> 16);
+            }
+        }
+    }
+    apuif_audio_write(buf, count, 1);
 }
 
 /* Add the playing clip to one frame the APU just produced. Called from every
@@ -317,9 +398,7 @@ int audio_task_fmsq_play_slot(uint32_t music_id, uint8_t instance) {
         memset(buf, 0, sizeof(buf));
         int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]));
         wav_mix_frame(buf, count);
-        if (count > 0) {
-            apuif_audio_write(buf, count, 1);
-        }
+        audio_out_write(buf, count);
         audio_handler_push_samples();
     }
 #endif
@@ -368,9 +447,7 @@ int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t d
         memset(buf, 0, sizeof(buf));
         int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]));
         wav_mix_frame(buf, count);
-        if (count > 0) {
-            apuif_audio_write(buf, count, 1);
-        }
+        audio_out_write(buf, count);
         audio_handler_push_samples();
     }
 #endif
@@ -410,6 +487,7 @@ int audio_task_note_off(uint8_t channel) {
 
 void audio_task(void *pvParameters) {
     wav_init();
+    audio_output_load();
     ESP_LOGI(TAG, "Audio task started (Linux)");
 
     /* Initialize SDL2 audio handler */
@@ -466,9 +544,7 @@ void audio_task(void *pvParameters) {
         memset(buffer, 0, sizeof(buffer));
         int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
         wav_mix_frame(buffer, count);
-        if (count > 0) {
-            apuif_audio_write(buffer, count, 1);
-        }
+        audio_out_write(buffer, count);
 
 #ifdef CONFIG_IDF_TARGET_LINUX
         /* Transfer APU ring buffer samples to SHM for SDL2 process */
@@ -503,6 +579,7 @@ void audio_task(void *pvParameters) {
 
 void audio_task(void *pvParameters) {
     wav_init();
+    audio_output_load();
     ESP_LOGI(TAG, "Audio task started on core %d", xPortGetCoreID());
 
     /* Initialize main APU (instance 0: NSF) */
@@ -539,9 +616,7 @@ void audio_task(void *pvParameters) {
         memset(buffer, 0, sizeof(buffer));
         int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
         wav_mix_frame(buffer, count);
-        if (count > 0) {
-            apuif_audio_write(buffer, count, 1);
-        }
+        audio_out_write(buffer, count);
 
         audio_latency_flush();
 

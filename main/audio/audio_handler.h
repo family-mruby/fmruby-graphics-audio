@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include "audio_commands.h"
 
@@ -106,6 +107,17 @@ int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t d
  * @return 0 on success, -1 on error
  */
 int audio_task_note_off(uint8_t channel);
+
+/**
+ * @brief Mute and volume at the output stage (FMRB_AUDIO_CMD_SET_OUTPUT)
+ *
+ * Players, notes and WAVs keep running; every frame written to the output
+ * (I2S on the ESP32, the SHM ring on Linux) is scaled by the level's gain, or
+ * is silence while muted or at volume 0. The settings are kept in a small
+ * file on this board's flash, so after a reboot the boot beep obeys them
+ * before the core has said anything. Written only when they change.
+ */
+void audio_task_set_output(const fmrb_audio_output_cmd_t *out);
 
 /**
  * @brief Play a WAV file on top of the APU

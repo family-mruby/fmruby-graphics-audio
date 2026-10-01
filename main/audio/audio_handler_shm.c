@@ -468,6 +468,15 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
             }
             break;
 
+        case FMRB_AUDIO_CMD_SET_OUTPUT:
+            if (size >= sizeof(fmrb_audio_output_cmd_t)) {
+                fmrb_audio_output_cmd_t cmd;
+                memcpy(&cmd, data, sizeof(cmd));
+                audio_task_set_output(&cmd);
+                return 0;
+            }
+            break;
+
         case FMRB_AUDIO_CMD_NOTE_OFF:
             if (size >= sizeof(fmrb_audio_note_off_cmd_t)) {
                 const fmrb_audio_note_off_cmd_t *cmd = (const fmrb_audio_note_off_cmd_t*)data;
