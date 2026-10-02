@@ -81,7 +81,7 @@ static void wav_release_locked(void) {
     }
 }
 
-/* ---- Output settings: mute and volume (fmruby-core doc/audio_mute/) ------
+/* ---- Output settings: mute and volume (fmruby-core doc/reference/audio_output.md) ------
  *
  * A speaker's mute switch and volume knob: everything upstream runs as usual,
  * and the frame on its way to the output is scaled (or replaced by silence)
