@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "shm_display.h"
 #include "fmrb_hid_event.h"
+#include "fmrb_eintr.h"
 
 static const char *TAG = "input_handler_ipc";
 
@@ -48,14 +49,14 @@ int input_handler_init(void) {
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, FMRB_INPUT_SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    if (bind(g_server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (fmrb_unix_bind(g_server_fd, &addr) < 0) {
         ESP_LOGE(TAG, "Failed to bind socket: %s", strerror(errno));
         close(g_server_fd);
         g_server_fd = -1;
         return -1;
     }
 
-    if (listen(g_server_fd, 1) < 0) {
+    if (FMRB_RETRY_EINTR(listen(g_server_fd, 1)) < 0) {
         ESP_LOGE(TAG, "Failed to listen: %s", strerror(errno));
         close(g_server_fd);
         g_server_fd = -1;
@@ -78,7 +79,7 @@ static void try_accept(void) {
 
     struct sockaddr_un client_addr;
     socklen_t client_len = sizeof(client_addr);
-    g_client_fd = accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len);
+    g_client_fd = FMRB_RETRY_EINTR(accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len));
     if (g_client_fd >= 0) {
         /* Set client non-blocking */
         int flags = fcntl(g_client_fd, F_GETFL, 0);
@@ -93,7 +94,7 @@ static int process_one_event(void) {
 
     /* Read packet header: [type(1)][len(2)] */
     uint8_t header[3];
-    ssize_t n = recv(g_client_fd, header, 3, MSG_PEEK);
+    ssize_t n = FMRB_RETRY_EINTR(recv(g_client_fd, header, 3, MSG_PEEK));
     if (n == 0) {
         /* Client disconnected */
         ESP_LOGI(TAG, "SDL2 display process disconnected");
@@ -105,7 +106,6 @@ static int process_one_event(void) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return 0; /* No data available */
         }
-        if (errno == EINTR) return 0;
         ESP_LOGE(TAG, "recv error: %s", strerror(errno));
         close(g_client_fd);
         g_client_fd = -1;
@@ -122,15 +122,16 @@ static int process_one_event(void) {
     if (total > sizeof(buf)) {
         /* Packet too large, discard */
         ESP_LOGE(TAG, "Packet too large: %u bytes", total);
-        recv(g_client_fd, buf, sizeof(buf), 0);
+        (void)FMRB_RETRY_EINTR(recv(g_client_fd, buf, sizeof(buf), 0));
         return 0;
     }
 
-    n = recv(g_client_fd, buf, total, MSG_PEEK);
+    n = FMRB_RETRY_EINTR(recv(g_client_fd, buf, total, MSG_PEEK));
     if (n < total) return 0; /* Wait for full packet */
 
-    /* Consume the packet */
-    recv(g_client_fd, buf, total, 0);
+    /* Consume the packet. An interrupted consume would leave it queued and
+     * process the same event twice. */
+    (void)FMRB_RETRY_EINTR(recv(g_client_fd, buf, total, 0));
 
     const uint8_t *data = buf + 3;
 
