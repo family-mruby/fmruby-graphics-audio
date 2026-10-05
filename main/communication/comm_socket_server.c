@@ -14,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/message_buffer.h"
 #include "esp_log.h"
+#include "fmrb_eintr.h"
 
 static const char *TAG = "socket_server";
 
@@ -43,14 +44,14 @@ static int create_socket_server(void) {
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+    if (fmrb_unix_bind(server_fd, &addr) == -1) {
         ESP_LOGE(TAG, "Failed to bind socket: %s", strerror(errno));
         close(server_fd);
         server_fd = -1;
         return -1;
     }
 
-    if (listen(server_fd, 1) == -1) {
+    if (FMRB_RETRY_EINTR(listen(server_fd, 1)) == -1) {
         ESP_LOGE(TAG, "Failed to listen on socket: %s", strerror(errno));
         close(server_fd);
         server_fd = -1;
@@ -70,7 +71,7 @@ static int accept_connection(void) {
         return 0; // Already connected
     }
 
-    client_fd = accept(server_fd, NULL, NULL);
+    client_fd = FMRB_RETRY_EINTR(accept(server_fd, NULL, NULL));
     if (client_fd == -1) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             ESP_LOGE(TAG, "Failed to accept connection: %s", strerror(errno));
@@ -125,10 +126,7 @@ static int read_message(void) {
     static size_t buffer_pos = 0;
 
     // Read data into buffer
-    ssize_t bytes_read;
-    do {
-        bytes_read = read(client_fd, buffer + buffer_pos, BUFFER_SIZE - buffer_pos);
-    } while (bytes_read < 0 && errno == EINTR);
+    ssize_t bytes_read = FMRB_RETRY_EINTR(read(client_fd, buffer + buffer_pos, BUFFER_SIZE - buffer_pos));
     if (bytes_read <= 0) {
         if (bytes_read == 0) {
             ESP_LOGI(TAG, "Client disconnected");
@@ -212,10 +210,7 @@ int socket_server_send_ack(uint8_t type, uint8_t seq, const uint8_t *response_da
     }
 
     // Send to client
-    ssize_t written;
-    do {
-        written = write(client_fd, encoded_buffer, encoded_len);
-    } while (written < 0 && errno == EINTR);
+    ssize_t written = FMRB_RETRY_EINTR(write(client_fd, encoded_buffer, encoded_len));
     if (written != (ssize_t)encoded_len) {
         ESP_LOGE(TAG, "Failed to write ACK response: %zd/%zu (client_fd=%d, errno=%d: %s)",
                    written, encoded_len, client_fd, errno, strerror(errno));

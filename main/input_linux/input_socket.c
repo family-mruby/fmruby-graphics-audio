@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include "esp_log.h"
+#include "fmrb_eintr.h"
 
 static const char *TAG = "input_socket";
 
@@ -45,7 +46,7 @@ int input_socket_start(void) {
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, INPUT_SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    if (bind(g_server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (fmrb_unix_bind(g_server_fd, &addr) < 0) {
         ESP_LOGE(TAG, "Failed to bind socket: %s", strerror(errno));
         close(g_server_fd);
         g_server_fd = -1;
@@ -53,7 +54,7 @@ int input_socket_start(void) {
     }
 
     // Listen
-    if (listen(g_server_fd, 1) < 0) {
+    if (FMRB_RETRY_EINTR(listen(g_server_fd, 1)) < 0) {
         ESP_LOGE(TAG, "Failed to listen: %s", strerror(errno));
         close(g_server_fd);
         g_server_fd = -1;
@@ -70,7 +71,7 @@ int input_socket_start(void) {
     // Try to accept client (non-blocking)
     struct sockaddr_un client_addr;
     socklen_t client_len = sizeof(client_addr);
-    g_client_fd = accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len);
+    g_client_fd = FMRB_RETRY_EINTR(accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len));
     if (g_client_fd >= 0) {
         int cflags = fcntl(g_client_fd, F_GETFL, 0);
         fcntl(g_client_fd, F_SETFL, cflags | O_NONBLOCK);
@@ -99,7 +100,7 @@ int input_socket_send_event(uint8_t type, const void* data, uint16_t len) {
     if (g_client_fd < 0 && g_server_fd >= 0) {
         struct sockaddr_un client_addr;
         socklen_t client_len = sizeof(client_addr);
-        g_client_fd = accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len);
+        g_client_fd = FMRB_RETRY_EINTR(accept(g_server_fd, (struct sockaddr*)&client_addr, &client_len));
         if (g_client_fd >= 0) {
             int cflags = fcntl(g_client_fd, F_GETFL, 0);
             fcntl(g_client_fd, F_SETFL, cflags | O_NONBLOCK);
@@ -126,10 +127,7 @@ int input_socket_send_event(uint8_t type, const void* data, uint16_t len) {
         memcpy(packet + 3, data, len);
     }
 
-    ssize_t sent;
-    do {
-        sent = send(g_client_fd, packet, 3 + len, MSG_NOSIGNAL);
-    } while (sent < 0 && errno == EINTR);
+    ssize_t sent = FMRB_RETRY_EINTR(send(g_client_fd, packet, 3 + len, MSG_NOSIGNAL));
     if (sent < 0 && errno == EAGAIN) {
         ESP_LOGW(TAG, "Socket send would block (type=%u, len=%u)", type, len);
         return -1;
