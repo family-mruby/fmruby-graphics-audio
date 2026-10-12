@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Generate the RubyKaigi intro fanfare as an FMSQ file.
+# Generate a short intro fanfare as an FMSQ file.
 # About 2 seconds (~120 frames @ 60Hz), no loop.
 # Structure:
 #   pulse1 ascending arpeggio C5 -> E5 -> G5
