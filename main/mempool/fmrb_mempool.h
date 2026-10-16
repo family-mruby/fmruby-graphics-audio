@@ -15,6 +15,12 @@ extern "C" {
 #define FMRB_CANVAS_MAX_CANVASES  8
 #define FMRB_CANVAS_MAX_BUFFERS   (FMRB_CANVAS_MAX_CANVASES * 2)  // 2 buffers per canvas (draw + render)
 
+// The fullscreen high-resolution screen (SET_SCREEN_MODE). The Linux build
+// sizes every canvas buffer to hold a canvas of this size as well as one of
+// the base screen; the ESP32 build sizes them to the base screen only.
+#define FMRB_CANVAS_HIRES_WIDTH   640
+#define FMRB_CANVAS_HIRES_HEIGHT  360
+
 // Generic memory pool structures
 typedef struct mempool_block {
     void *ptr;                    // Pointer to memory block
@@ -110,6 +116,13 @@ int fmrb_mempool_canvas_free_buffer(void *buffer);
  * @param free_buffers Output: number of free buffers
  */
 void fmrb_mempool_canvas_get_stats(size_t *used_buffers, size_t *free_buffers);
+
+/**
+ * @brief Largest canvas a pool buffer holds, per dimension (Linux build only)
+ * The base screen, grown to FMRB_CANVAS_HIRES_WIDTH x _HEIGHT where smaller.
+ * 0x0 before fmrb_mempool_canvas_init.
+ */
+void fmrb_mempool_canvas_max_size(uint16_t *width, uint16_t *height);
 
 //---------------------------
 // TLSF-based variable-size pool API

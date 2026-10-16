@@ -175,6 +175,10 @@ void mempool_stats(const mempool_t *pool, size_t *used_blocks, size_t *free_bloc
 static mempool_t g_canvas_pool;
 static bool g_canvas_pool_initialized = false;
 static size_t g_canvas_buffer_size = 0;  // Dynamic buffer size based on display
+#ifdef CONFIG_IDF_TARGET_LINUX
+static uint16_t g_canvas_max_w = 0;  // Largest canvas a buffer holds
+static uint16_t g_canvas_max_h = 0;
+#endif
 
 int fmrb_mempool_canvas_init(uint16_t width, uint16_t height, uint8_t color_depth) {
     if (g_canvas_pool_initialized) {
@@ -186,8 +190,22 @@ int fmrb_mempool_canvas_init(uint16_t width, uint16_t height, uint8_t color_dept
     // Currently only 8-bit (RGB332) is supported
     size_t bytes_per_pixel = (color_depth + 7) / 8;  // Round up to nearest byte
 
+#ifdef CONFIG_IDF_TARGET_LINUX
+    // The Modern simulator's fullscreen apps draw on a 640x360 canvas while
+    // they hold the high-resolution screen. Host memory is plentiful (16
+    // buffers of 230,400 bytes), so every buffer can take one.
+    g_canvas_max_w = width < FMRB_CANVAS_HIRES_WIDTH ? FMRB_CANVAS_HIRES_WIDTH : width;
+    g_canvas_max_h = height < FMRB_CANVAS_HIRES_HEIGHT ? FMRB_CANVAS_HIRES_HEIGHT : height;
+    ESP_LOGI(TAG, "Canvas buffers sized for %ux%u (high-resolution screen)",
+             g_canvas_max_w, g_canvas_max_h);
+#endif
+
     // Calculate buffer size dynamically based on display dimensions
+#ifdef CONFIG_IDF_TARGET_LINUX
+    g_canvas_buffer_size = (size_t)g_canvas_max_w * g_canvas_max_h * bytes_per_pixel;
+#else
     g_canvas_buffer_size = (size_t)width * height * bytes_per_pixel;
+#endif
 
     // Initialize pool with canvas buffer configuration
     // Use PSRAM on ESP32 if available
@@ -256,6 +274,13 @@ int fmrb_mempool_canvas_free_buffer(void *buffer) {
 
     return mempool_free(&g_canvas_pool, buffer);
 }
+
+#ifdef CONFIG_IDF_TARGET_LINUX
+void fmrb_mempool_canvas_max_size(uint16_t *width, uint16_t *height) {
+    if (width) *width = g_canvas_max_w;
+    if (height) *height = g_canvas_max_h;
+}
+#endif
 
 void fmrb_mempool_canvas_get_stats(size_t *used_buffers, size_t *free_buffers) {
     if (!g_canvas_pool_initialized) {

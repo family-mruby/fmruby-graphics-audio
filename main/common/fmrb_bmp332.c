@@ -1,5 +1,16 @@
 #include "fmrb_bmp332.h"
 #include <string.h>
+#include "sdkconfig.h"
+
+// Largest sheet side accepted. The ESP32 (WROVER) keeps 256: its sprite
+// pool is small and the flip below uses a row buffer of this size on the
+// stack. The Linux simulator takes the sheets the Modern machines load (the
+// mahjong hand sheet is 420 px wide) and flips without a row buffer.
+#ifdef CONFIG_IDF_TARGET_LINUX
+#define FMRB_BMP332_MAX_DIM 2048
+#else
+#define FMRB_BMP332_MAX_DIM 256
+#endif
 
 // Read little-endian uint16 from buffer
 static uint16_t read_u16(const uint8_t *p) {
@@ -35,8 +46,8 @@ int fmrb_bmp332_parse(uint8_t *buf, size_t buf_size, fmrb_bmp332_t *out) {
     uint16_t bpp = read_u16(buf + 28);
     uint32_t compression = read_u32(buf + 30);
 
-    if (width <= 0 || width > 256 || bpp != 8 || compression != 0) {
-        return -1;  // Only 8-bit uncompressed, max 256px wide
+    if (width <= 0 || width > FMRB_BMP332_MAX_DIM || bpp != 8 || compression != 0) {
+        return -1;  // Only 8-bit uncompressed, max FMRB_BMP332_MAX_DIM px wide
     }
 
     // height > 0 means bottom-up (standard), height < 0 means top-down
@@ -45,7 +56,7 @@ int fmrb_bmp332_parse(uint8_t *buf, size_t buf_size, fmrb_bmp332_t *out) {
         height = -height;
         bottom_up = 0;
     }
-    if (height <= 0 || height > 256) {
+    if (height <= 0 || height > FMRB_BMP332_MAX_DIM) {
         return -1;
     }
 
@@ -60,8 +71,23 @@ int fmrb_bmp332_parse(uint8_t *buf, size_t buf_size, fmrb_bmp332_t *out) {
     uint8_t *pixel_data = buf + pixel_offset;
 
     // Flip rows in place if bottom-up (convert to top-down)
+#ifdef CONFIG_IDF_TARGET_LINUX
     if (bottom_up) {
-        uint8_t temp_row[256];  // Max 256 px wide
+        // Byte by byte: a row can be up to FMRB_BMP332_MAX_DIM wide, too much
+        // for a stack buffer on a FreeRTOS task.
+        for (int y = 0; y < height / 2; y++) {
+            uint8_t *top = pixel_data + y * row_size;
+            uint8_t *bot = pixel_data + (height - 1 - y) * row_size;
+            for (uint32_t x = 0; x < row_size; x++) {
+                uint8_t t = top[x];
+                top[x] = bot[x];
+                bot[x] = t;
+            }
+        }
+    }
+#else
+    if (bottom_up) {
+        uint8_t temp_row[FMRB_BMP332_MAX_DIM];  // Max FMRB_BMP332_MAX_DIM px wide
         for (int y = 0; y < height / 2; y++) {
             uint8_t *top = pixel_data + y * row_size;
             uint8_t *bot = pixel_data + (height - 1 - y) * row_size;
@@ -70,6 +96,7 @@ int fmrb_bmp332_parse(uint8_t *buf, size_t buf_size, fmrb_bmp332_t *out) {
             memcpy(bot, temp_row, row_size);
         }
     }
+#endif
 
     // Extract pixel data without padding (if row_size != width)
     // For simplicity, if padding exists, compact rows in place

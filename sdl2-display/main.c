@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <semaphore.h>
 
@@ -37,6 +38,11 @@ static SDL_Window *g_window = NULL;
 static SDL_Renderer *g_renderer = NULL;
 static SDL_Texture *g_texture = NULL;
 static SDL_AudioDeviceID g_audio_device = 0;
+/* Size of the texture (= the frame being shown). The renderer's logical size
+ * follows it, so the window keeps its size and SDL reports mouse positions in
+ * frame coordinates whatever the frame size and the window size. */
+static int g_tex_w = 0;
+static int g_tex_h = 0;
 
 /* RGB332 to RGB888 lookup table */
 static uint8_t g_rgb332_to_rgb888[256 * 3];
@@ -65,11 +71,27 @@ static int setup_shm(void) {
     shm_unlink(FMRB_SHM_NAME);
     sem_unlink(FMRB_SEM_FRAME_NAME);
 
-    /* Wait for FreeRTOS process to create shared memory */
-    printf("[sdl2-display] Waiting for shared memory...\n");
+    /* Wait for FreeRTOS process to create shared memory, and to size it:
+     * mapping past the end of a shorter object faults on the first read. */
+    printf("[sdl2-display] Waiting for shared memory (SHM layout %d, %zu bytes)...\n",
+           FMRB_SHM_LAYOUT_VERSION, sizeof(fmrb_shm_t));
+    int size_warned = 0;
     while (g_running) {
-        g_shm_fd = shm_open(FMRB_SHM_NAME, O_RDWR, 0666);
-        if (g_shm_fd >= 0) break;
+        if (g_shm_fd < 0) g_shm_fd = shm_open(FMRB_SHM_NAME, O_RDWR, 0666);
+        if (g_shm_fd >= 0) {
+            struct stat st;
+            if (fstat(g_shm_fd, &st) == 0 && (size_t)st.st_size >= sizeof(fmrb_shm_t)) break;
+            if (fstat(g_shm_fd, &st) == 0 && st.st_size > 0 && !size_warned) {
+                /* An older graphics-audio makes a smaller object (layout 1
+                 * is 307,2xx bytes of frames). Keep waiting: it may still be
+                 * sizing a new one, and a rebuilt graphics-audio fixes it. */
+                fprintf(stderr, "[sdl2-display] shared memory is %ld bytes, layout %d needs %zu: "
+                        "graphics-audio may be built from an older shm_display.h "
+                        "(rebuild it: rake build:linux in fmruby-graphics-audio)\n",
+                        (long)st.st_size, FMRB_SHM_LAYOUT_VERSION, sizeof(fmrb_shm_t));
+                size_warned = 1;
+            }
+        }
         usleep(200000); /* 200ms */
     }
     if (!g_running) return -1;
@@ -85,10 +107,31 @@ static int setup_shm(void) {
     /* Wait for FreeRTOS process to freshly initialize SHM (magic value).
      * This avoids reading stale data from a previous run. */
     printf("[sdl2-display] Waiting for FreeRTOS initialization...\n");
+    uint32_t warned_magic = 0;
     while (g_running && g_shm->ready_magic != FMRB_SHM_READY_MAGIC) {
+        uint32_t m = g_shm->ready_magic;
+        if (m != 0 && m != warned_magic) {
+            /* Say once per value what is wrong, then keep waiting: restarting
+             * the stack with a matching graphics-audio clears it. */
+            fprintf(stderr, "[sdl2-display] ERROR: shared memory magic 0x%08x is not SHM layout %d "
+                    "(0x%08x)%s. graphics-audio and this image were built from different "
+                    "shm_display.h: rebuild the one that is older "
+                    "(docker compose build sdl2-display / rake build:linux)\n",
+                    m, FMRB_SHM_LAYOUT_VERSION, FMRB_SHM_READY_MAGIC,
+                    m == FMRB_SHM_LEGACY_MAGIC_V1 ? " but layout 1" : "");
+            warned_magic = m;
+        }
         usleep(100000);
     }
     if (!g_running) return -1;
+    if (g_shm->layout_version != FMRB_SHM_LAYOUT_VERSION ||
+        g_shm->shm_size != (uint32_t)sizeof(fmrb_shm_t)) {
+        fprintf(stderr, "[sdl2-display] ERROR: shared memory says layout %u, %u bytes; "
+                "this image is layout %d, %zu bytes. Rebuild the older side.\n",
+                g_shm->layout_version, g_shm->shm_size,
+                FMRB_SHM_LAYOUT_VERSION, sizeof(fmrb_shm_t));
+        return -1;
+    }
 
     /* Open frame semaphore */
     while (g_running) {
@@ -98,8 +141,9 @@ static int setup_shm(void) {
     }
     if (!g_running) return -1;
 
-    printf("[sdl2-display] Shared memory connected: %dx%d, %d-bit\n",
-           g_shm->display_width, g_shm->display_height, g_shm->color_depth);
+    printf("[sdl2-display] Shared memory connected: %dx%d, %d-bit (SHM layout %d)\n",
+           g_shm->display_width, g_shm->display_height, g_shm->color_depth,
+           FMRB_SHM_LAYOUT_VERSION);
     return 0;
 }
 
@@ -224,6 +268,36 @@ static void audio_callback(void *userdata, Uint8 *stream, int len) {
     shm->audio_read_pos = rp;
 }
 
+/* (Re)create the texture for a frame of w x h. The window is left alone: the
+ * logical size scales the frame into it, the base screen and the 640x360
+ * high-resolution screen alike. */
+static int ensure_texture(int w, int h) {
+    if (g_texture && w == g_tex_w && h == g_tex_h) return 0;
+    if (g_texture) SDL_DestroyTexture(g_texture);
+    g_texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_RGB24,
+                                  SDL_TEXTUREACCESS_STREAMING, w, h);
+    if (!g_texture) {
+        fprintf(stderr, "[sdl2-display] SDL_CreateTexture failed: %s\n", SDL_GetError());
+        g_tex_w = g_tex_h = 0;
+        return -1;
+    }
+    SDL_RenderSetLogicalSize(g_renderer, w, h);
+    if (g_tex_w != 0) {
+        printf("[sdl2-display] frame size %dx%d (was %dx%d)\n", w, h, g_tex_w, g_tex_h);
+    }
+    g_tex_w = w;
+    g_tex_h = h;
+    return 0;
+}
+
+/* A position SDL reports (logical, i.e. frame coordinates) kept inside the
+ * frame: the letterbox around it maps outside. */
+static uint16_t clamp_coord(int v, int limit) {
+    if (v < 0) return 0;
+    if (limit > 0 && v >= limit) return (uint16_t)(limit - 1);
+    return (uint16_t)v;
+}
+
 /* ----- SDL2 setup ----- */
 static int setup_sdl2(void) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
@@ -257,12 +331,7 @@ static int setup_sdl2(void) {
         return -1;
     }
 
-    g_texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_RGB24,
-                                  SDL_TEXTUREACCESS_STREAMING, w, h);
-    if (!g_texture) {
-        fprintf(stderr, "[sdl2-display] SDL_CreateTexture failed: %s\n", SDL_GetError());
-        return -1;
-    }
+    if (ensure_texture(w, h) < 0) return -1;
 
     /* Setup audio */
     SDL_AudioSpec want, have;
@@ -327,8 +396,11 @@ static void send_key(int type, const SDL_Keysym *keysym) {
     send_input_event(type, &kbd, sizeof(kbd));
 }
 
-/* ----- Process SDL events and send as HID ----- */
-static void process_sdl_events(uint8_t sx, uint8_t sy) {
+/* ----- Process SDL events and send as HID -----
+ * Mouse positions: with a logical size set, SDL reports button and motion
+ * positions in frame coordinates already (the window can be any size, and the
+ * frame changes size with the screen mode). */
+static void process_sdl_events(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -360,8 +432,8 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
             hid_mouse_button_event_t mouse;
             mouse.button = event.button.button;
             mouse.state = (event.type == SDL_MOUSEBUTTONDOWN) ? 1 : 0;
-            mouse.x = (uint16_t)(event.button.x / sx);
-            mouse.y = (uint16_t)(event.button.y / sy);
+            mouse.x = clamp_coord(event.button.x, g_tex_w);
+            mouse.y = clamp_coord(event.button.y, g_tex_h);
             send_input_event(HID_EVENT_MOUSE_BUTTON, &mouse, sizeof(mouse));
             break;
         }
@@ -378,11 +450,13 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
             }
             if (delta != 0) {
                 int mx = 0, my = 0;
-                SDL_GetMouseState(&mx, &my);
+                float lx = 0.0f, ly = 0.0f;
+                SDL_GetMouseState(&mx, &my);   /* window coordinates */
+                SDL_RenderWindowToLogical(g_renderer, mx, my, &lx, &ly);
                 hid_mouse_wheel_event_t wheel;
                 wheel.delta = (int8_t)(delta > 127 ? 127 : (delta < -127 ? -127 : delta));
-                wheel.x = (uint16_t)(mx / sx);
-                wheel.y = (uint16_t)(my / sy);
+                wheel.x = clamp_coord((int)lx, g_tex_w);
+                wheel.y = clamp_coord((int)ly, g_tex_h);
                 send_input_event(HID_EVENT_MOUSE_WHEEL, &wheel, sizeof(wheel));
             }
             break;
@@ -394,8 +468,8 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
             if (now - last_motion_ms >= 66) { /* ~15 Hz throttle */
                 last_motion_ms = now;
                 hid_mouse_motion_event_t motion;
-                motion.x = (uint16_t)(event.motion.x / sx);
-                motion.y = (uint16_t)(event.motion.y / sy);
+                motion.x = clamp_coord(event.motion.x, g_tex_w);
+                motion.y = clamp_coord(event.motion.y, g_tex_h);
                 send_input_event(HID_EVENT_MOUSE_MOTION, &motion, sizeof(motion));
             }
             break;
@@ -408,11 +482,17 @@ static void process_sdl_events(uint8_t sx, uint8_t sy) {
 }
 
 /* ----- Render one frame from SHM to SDL2 ----- */
-static void render_frame(uint16_t w, uint16_t h) {
+static void render_frame(void) {
     /* Read from the buffer that was just written (write_index was swapped) */
     uint32_t read_buf = g_shm->write_index & 1;
     /* Actually we read from the opposite of write_index (the completed buffer) */
     read_buf = read_buf ^ 1;
+
+    /* The frame's own size: the screen changes size with the screen mode. */
+    int w = g_shm->frame_width[read_buf];
+    int h = g_shm->frame_height[read_buf];
+    if (w <= 0 || h <= 0 || (size_t)w * (size_t)h > FMRB_SHM_FRAMEBUF_SIZE) return;
+    if (ensure_texture(w, h) < 0) return;
 
     const uint8_t *src = g_shm->framebuf[read_buf];
 
@@ -477,11 +557,6 @@ int main(int argc, char *argv[]) {
     /* Step 4: Open the synthetic-input injection socket (agent/CI) */
     setup_inject_socket();
 
-    uint16_t w = g_shm->display_width;
-    uint16_t h = g_shm->display_height;
-    uint8_t sx = g_shm->scaling_x > 0 ? g_shm->scaling_x : 2;
-    uint8_t sy = g_shm->scaling_y > 0 ? g_shm->scaling_y : 2;
-
     /* Main loop */
     while (g_running) {
         /* Check for shutdown from FreeRTOS side */
@@ -491,7 +566,7 @@ int main(int argc, char *argv[]) {
         }
 
         /* Process SDL events */
-        process_sdl_events(sx, sy);
+        process_sdl_events();
 
         /* Forward injected synthetic events */
         drain_inject_events();
@@ -507,7 +582,7 @@ int main(int argc, char *argv[]) {
 
         if (sem_timedwait(g_sem_frame, &ts) == 0) {
             /* New frame available */
-            render_frame(w, h);
+            render_frame();
         }
 
         /* Try to connect/reconnect input socket if not connected */
