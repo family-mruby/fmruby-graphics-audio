@@ -464,8 +464,17 @@ void graphics_task(void *pvParameters) {
     if (deferred_ack_pending) {
         const comm_interface_t *comm = comm_get_interface();
         if (comm && (deferred_ack_type & FMRB_LINK_FLAG_ACK_REQUIRED)) {
+#ifdef CONFIG_IDF_TARGET_LINUX
+            // Status, then the display capabilities: the Linux build knows
+            // the fullscreen high-resolution screen (SET_SCREEN_MODE). A core
+            // that reads only the status byte is unaffected; one that reads
+            // both creates 640x360 canvases only when told it may.
+            uint8_t ack_data[2] = { 0, FMRB_LINK_DISPLAY_CAP_SCREEN_MODE };
+            comm->send_ack(deferred_ack_type, deferred_ack_seq, ack_data, sizeof(ack_data));
+#else
             uint8_t ack_status = 0;  // 0 = success
             comm->send_ack(deferred_ack_type, deferred_ack_seq, &ack_status, sizeof(ack_status));
+#endif
             ESP_LOGI(TAG, "Deferred INIT_DISPLAY ACK sent (seq=%d)", deferred_ack_seq);
         }
         deferred_ack_pending = 0;

@@ -7,6 +7,7 @@
 #include <LovyanGFX.hpp>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -16,16 +17,24 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "shm_display.h"
+#include "display_shm.h"
 
 static const char *TAG = "display_shm";
 
-// Headless LGFX using a plain Sprite as the screen buffer
+// Headless LGFX using a plain Sprite as the screen buffer. The sprite draws
+// into g_screen_mem, which is large enough for the base screen and for the
+// high-resolution screen, so a screen size change is a setBuffer on the same
+// sprite: graphics_handler holds this pointer as its g_lgfx and keeps it.
 static lgfx::LGFX_Sprite* g_screen_sprite = nullptr;
+static uint8_t* g_screen_mem = nullptr;
+static size_t g_screen_mem_size = 0;
 static fmrb_shm_t* g_shm = nullptr;
 static int g_shm_fd = -1;
 static sem_t* g_sem_frame = SEM_FAILED;
 static uint16_t g_width = 0;
 static uint16_t g_height = 0;
+static uint16_t g_base_width = 0;
+static uint16_t g_base_height = 0;
 
 static int shm_display_init(uint16_t width, uint16_t height, uint8_t color_depth,
                             uint8_t margin_x, uint8_t margin_y) {
@@ -73,6 +82,12 @@ static int shm_display_init(uint16_t width, uint16_t height, uint8_t color_depth
     g_shm->color_depth = color_depth;
     g_shm->scaling_x = 2;
     g_shm->scaling_y = 2;
+    g_shm->layout_version = FMRB_SHM_LAYOUT_VERSION;
+    g_shm->shm_size = (uint32_t)sizeof(fmrb_shm_t);
+    for (int i = 0; i < 2; i++) {
+        g_shm->frame_width[i] = width;
+        g_shm->frame_height[i] = height;
+    }
     // Set magic LAST to signal SDL2 side that SHM is freshly initialized
     g_shm->ready_magic = FMRB_SHM_READY_MAGIC;
 
@@ -89,13 +104,25 @@ static int shm_display_init(uint16_t width, uint16_t height, uint8_t color_depth
         return -1;
     }
 
-    // Create headless LGFX_Sprite as the screen buffer
+    // Create headless LGFX_Sprite as the screen buffer, over memory sized for
+    // the larger of the base and the high-resolution screen.
+    {
+        size_t base_px = (size_t)width * height;
+        size_t hires_px = (size_t)FMRB_SHM_HIRES_WIDTH * FMRB_SHM_HIRES_HEIGHT;
+        g_screen_mem_size = (base_px > hires_px ? base_px : hires_px) * ((color_depth + 7) / 8);
+    }
+    g_screen_mem = (uint8_t*)calloc(1, g_screen_mem_size);
     g_screen_sprite = new lgfx::LGFX_Sprite(nullptr);
     g_screen_sprite->setColorDepth(color_depth);
-    if (!g_screen_sprite->createSprite(width, height)) {
+    if (g_screen_mem) {
+        g_screen_sprite->setBuffer(g_screen_mem, width, height, color_depth);
+    }
+    if (!g_screen_mem || !g_screen_sprite->getBuffer()) {
         ESP_LOGE(TAG, "Failed to create screen sprite %dx%d", width, height);
         delete g_screen_sprite;
         g_screen_sprite = nullptr;
+        free(g_screen_mem);
+        g_screen_mem = nullptr;
         sem_close(g_sem_frame);
         sem_unlink(FMRB_SEM_FRAME_NAME);
         munmap(g_shm, sizeof(fmrb_shm_t));
@@ -107,6 +134,8 @@ static int shm_display_init(uint16_t width, uint16_t height, uint8_t color_depth
 
     g_width = width;
     g_height = height;
+    g_base_width = width;
+    g_base_height = height;
 
     // Wait for SDL2 display process to connect
     // Use vTaskDelay instead of usleep (FreeRTOS SIGALRM interrupts usleep)
@@ -116,13 +145,46 @@ static int shm_display_init(uint16_t width, uint16_t height, uint8_t color_depth
         vTaskDelay(pdMS_TO_TICKS(100));
         wait_count++;
         if (wait_count % 50 == 0) {
-            ESP_LOGW(TAG, "Still waiting for SDL2 display process (%d seconds)...", wait_count / 10);
+            // An sdl2-display image built from an older shm_display.h waits
+            // for the old magic and never answers this one.
+            ESP_LOGW(TAG, "Still waiting for SDL2 display process (%d seconds)... "
+                     "If it never connects, its image may predate SHM layout %d: "
+                     "docker compose build sdl2-display",
+                     wait_count / 10, FMRB_SHM_LAYOUT_VERSION);
         }
     }
     ESP_LOGI(TAG, "SDL2 display process connected");
 
-    ESP_LOGI(TAG, "SHM display initialized: %dx%d, %d-bit", width, height, color_depth);
+    ESP_LOGI(TAG, "SHM display initialized: %dx%d, %d-bit (SHM layout %d, %u bytes)",
+             width, height, color_depth, FMRB_SHM_LAYOUT_VERSION, (unsigned)sizeof(fmrb_shm_t));
     return 0;
+}
+
+int shm_display_set_screen_size(uint16_t width, uint16_t height) {
+    if (!g_screen_sprite || !g_screen_mem) return -1;
+    if (width == 0 || height == 0) {
+        width = g_base_width;
+        height = g_base_height;
+    }
+    if ((size_t)width * height > g_screen_mem_size ||
+        (size_t)width * height > FMRB_SHM_FRAMEBUF_SIZE) {
+        ESP_LOGE(TAG, "screen size %ux%u does not fit the screen buffer", width, height);
+        return -1;
+    }
+    if (width == g_width && height == g_height) return 0;
+    // Called from the render task only, between two frames: present() runs
+    // on the same task, so no frame is copied while the size changes.
+    g_screen_sprite->setBuffer(g_screen_mem, width, height, g_screen_sprite->getColorDepth());
+    g_screen_sprite->fillScreen(0);
+    g_width = width;
+    g_height = height;
+    ESP_LOGI(TAG, "screen size %ux%u (base %ux%u)", width, height, g_base_width, g_base_height);
+    return 0;
+}
+
+void shm_display_get_base_size(uint16_t *width, uint16_t *height) {
+    if (width) *width = g_base_width;
+    if (height) *height = g_base_height;
 }
 
 static void* shm_display_get_lgfx(void) {
@@ -147,10 +209,12 @@ static void shm_display_present(void) {
 
     // Write to the current write buffer
     uint32_t buf_idx = g_shm->write_index & 1;
-    size_t frame_size = g_width * g_height;
+    size_t frame_size = (size_t)g_width * g_height;
     memcpy(g_shm->framebuf[buf_idx], pixels, frame_size);
+    g_shm->frame_width[buf_idx] = g_width;
+    g_shm->frame_height[buf_idx] = g_height;
 
-    // Swap buffers
+    // Swap buffers (after the size: the reader takes the size from the slot)
     g_shm->write_index = buf_idx ^ 1;
 
     // Signal the SDL2 process that a new frame is ready
@@ -169,6 +233,9 @@ static void shm_display_cleanup(void) {
         delete g_screen_sprite;
         g_screen_sprite = nullptr;
     }
+    free(g_screen_mem);
+    g_screen_mem = nullptr;
+    g_screen_mem_size = 0;
 
     if (g_sem_frame != SEM_FAILED) {
         sem_close(g_sem_frame);

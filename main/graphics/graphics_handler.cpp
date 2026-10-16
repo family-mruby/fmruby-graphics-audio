@@ -24,6 +24,7 @@ extern "C" {
 #include <sys/stat.h>       // mkdir, for EXPORT_FRAME
 #include <stdlib.h>
 #include "socket_server.h"  // For socket_server_send_ack
+#include "display_shm.h"    // screen size changes (SET_SCREEN_MODE)
 #else
 #include "comm_interface.h"
 #include "esp_heap_caps.h"
@@ -31,6 +32,15 @@ extern "C" {
 }
 
 static const char *TAG = "graphics_handler";
+
+// Largest sprite sheet file LOAD_SPRITE_IMAGE_BMP reads. The Linux simulator
+// takes the sheets the Modern machines load (fmrb_bmp332.c has the matching
+// side limit); the ESP32 keeps its 64 KB.
+#if defined(CONFIG_IDF_TARGET_LINUX)
+#define GH_SPRITE_BMP_MAX_FILE (256 * 1024)
+#else
+#define GH_SPRITE_BMP_MAX_FILE 65536
+#endif
 
 // Present counter for stats
 static uint32_t s_present_count = 0;
@@ -88,6 +98,12 @@ typedef struct {
     // Updated by SET_SPRITE_CLIP RPC.
     uint16_t clip_x, clip_y;
     uint16_t clip_w, clip_h;
+#if defined(CONFIG_IDF_TARGET_LINUX)
+    // The render buffer holds a frame laid out for the current active size
+    // (a present since the last resize). The screen mode switch waits for
+    // one from the owner canvas.
+    bool committed_fresh;
+#endif
 } canvas_state_t;
 
 // Maximum number of canvases
@@ -231,8 +247,23 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     canvas->canvas_id = canvas_id;
 
     // Always allocate at display screen size to avoid reallocation on resize
+#if defined(CONFIG_IDF_TARGET_LINUX)
+    // The pool buffers also hold a 640x360 canvas (fmrb_mempool.c), and the
+    // screen itself changes size in the high-resolution mode, so the
+    // allocation is the pool's and not g_lgfx's. A request larger than that
+    // would draw past the buffer: it is cut down to what fits.
+    fmrb_mempool_canvas_max_size(&canvas->width, &canvas->height);
+    if (req_width > canvas->width || req_height > canvas->height) {
+        ESP_LOGW(TAG, "Canvas %u: %ux%u is larger than a canvas buffer (%ux%u), cut down",
+                 canvas_id, req_width, req_height, canvas->width, canvas->height);
+        if (req_width > canvas->width) req_width = canvas->width;
+        if (req_height > canvas->height) req_height = canvas->height;
+    }
+    canvas->committed_fresh = false;
+#else
     canvas->width = g_lgfx->width();
     canvas->height = g_lgfx->height();
+#endif
 
     // Set initial active size to requested size
     canvas->active_width = req_width;
@@ -355,6 +386,308 @@ static void canvas_sort_by_zorder() {
         qsort(g_canvases, g_canvas_count, sizeof(canvas_state_t), canvas_compare_zorder);
     }
 }
+
+#if defined(CONFIG_IDF_TARGET_LINUX)
+// ============================================================
+// Screen mode: the fullscreen high-resolution mode (Linux build only)
+//
+// The Modern simulator's counterpart of display_local's screen mode in
+// fmruby-core (main/drivers/display_local/display_local_task.cpp). The rules
+// are the ones described with SET_SCREEN_MODE in fmruby-core's
+// fmrb_link_protocol.h; when one side changes, change the other.
+//
+// Normally every visible canvas is composited into the base screen (426x240
+// on the Modern simulator). SET_SCREEN_MODE asks for the high-resolution
+// screen instead: one canvas, the owner (a fullscreen app's), is shown alone
+// on a 640x360 screen. The switch waits: a request makes it PENDING and the
+// previous picture is held until the owner presents a frame at the new size
+// (either direction), at most SCREEN_MODE_WAIT_MS. While on the
+// high-resolution screen, the screen goes back by itself when the owner
+// canvas is deleted or hidden, or has had no 640x360 frame for
+// SCREEN_MODE_WAIT_MS.
+//
+// The state is read and written with g_canvas_mutex held: by the command
+// handler (the requests, the presents, the resizes) and by the render task
+// (the time-outs, and the screen size itself, which only the render task
+// changes, between two frames).
+// ============================================================
+
+#define SCREEN_MODE_HIRES_W  FMRB_CANVAS_HIRES_WIDTH
+#define SCREEN_MODE_HIRES_H  FMRB_CANVAS_HIRES_HEIGHT
+#define SCREEN_MODE_WAIT_MS  500
+
+typedef struct {
+    bool     hires;              // the high-resolution screen is current
+    bool     pending;            // a switch was asked for and is waiting
+    bool     pending_hires;      // ... towards this mode
+    bool     force_render;       // the wait timed out: render once regardless
+    uint16_t owner;              // canvas the switch/mode belongs to
+    uint32_t pending_since_ms;
+    uint32_t switches;           // completed switches, for the log
+    // The owner was resized (UPDATE_WINDOW) and has not yet shown that it
+    // handled the resize; its presents until then are laid out for the old
+    // size. The acknowledgement is the SET_SPRITE_CLIP FmrbApp sends from its
+    // resize handler.
+    bool     owner_resize_unacked;
+    // On the high-resolution screen, since when the owner has had nothing
+    // that can be shown; 0 while it has.
+    uint32_t owner_unshowable_since_ms;
+    // The owner the screen was taken back from because it had nothing to
+    // show in time (screen_mode_poll), not because it left or was asked to.
+    // An app that is slow to draw its first frame -- the mahjong table loads
+    // its tile sheets over the link first, seconds in the simulator -- gets
+    // the screen back when that frame does arrive at 640x360. Cleared by any
+    // request and when that canvas is hidden or deleted.
+    uint16_t late_owner;
+} screen_mode_state_t;
+
+static screen_mode_state_t s_smode;
+
+static uint32_t screen_mode_now_ms(void) {
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+static void screen_mode_base_size(int *w, int *h) {
+    uint16_t bw = 0, bh = 0;
+    shm_display_get_base_size(&bw, &bh);
+    *w = bw;
+    *h = bh;
+}
+
+// A canvas at the high-resolution size seen while on the base screen: a
+// fullscreen app's that is about to get (or has just left) the
+// high-resolution screen. Laid out for 640x360, it would show as its top-left
+// corner; it is left out until the switch completes.
+static bool screen_mode_hide_on_base(const canvas_state_t *c) {
+    if (s_smode.hires) return false;
+    int bw, bh;
+    screen_mode_base_size(&bw, &bh);
+    if (bw == SCREEN_MODE_HIRES_W && bh == SCREEN_MODE_HIRES_H) return false;
+    return c->active_width == SCREEN_MODE_HIRES_W && c->active_height == SCREEN_MODE_HIRES_H;
+}
+
+// On the high-resolution screen: the owner has a frame at that size, on a
+// visible canvas.
+static bool screen_mode_owner_showable(void) {
+    canvas_state_t *c = canvas_state_find(s_smode.owner);
+    return c && c->is_visible && c->committed_fresh && c->render_buffer &&
+           c->active_width == SCREEN_MODE_HIRES_W && c->active_height == SCREEN_MODE_HIRES_H;
+}
+
+// The switch itself. The screen sprite is resized by the render task
+// (screen_mode_fit_screen), so this only changes the mode.
+static void screen_mode_apply(bool hires, const char *why) {
+    uint32_t waited = s_smode.pending ? screen_mode_now_ms() - s_smode.pending_since_ms : 0;
+    s_smode.pending = false;
+    s_smode.hires = hires;
+    if (!hires) {
+        s_smode.owner = 0;
+        s_smode.owner_resize_unacked = false;
+    }
+    s_smode.switches++;
+    s_smode.owner_unshowable_since_ms = 0;
+    ESP_LOGI(TAG, "screen mode: %s owner=%u (%s, waited %lums, switch #%lu)",
+             hires ? "640x360" : "base", s_smode.owner, why,
+             (unsigned long)waited, (unsigned long)s_smode.switches);
+}
+
+// The owner the screen was taken back from presented its 640x360 frame after
+// all (late_owner): it gets the screen now.
+static void screen_mode_late_present(uint16_t canvas_id) {
+    if (canvas_id == 0 || canvas_id != s_smode.late_owner) return;
+    if (s_smode.hires || s_smode.pending) return;
+    canvas_state_t *c = canvas_state_find(canvas_id);
+    if (!c || !c->is_visible || !c->committed_fresh ||
+        c->active_width != SCREEN_MODE_HIRES_W || c->active_height != SCREEN_MODE_HIRES_H) return;
+    s_smode.late_owner = 0;
+    s_smode.owner = canvas_id;
+    s_smode.owner_resize_unacked = false;
+    screen_mode_apply(true, "owner presented late");
+}
+
+static void screen_mode_try_complete(void) {
+    if (!s_smode.pending) return;
+    canvas_state_t *c = canvas_state_find(s_smode.owner);
+    if (s_smode.pending_hires) {
+        if (!c) {
+            s_smode.pending = false;
+            s_smode.owner = 0;
+            s_smode.owner_resize_unacked = false;
+            ESP_LOGW(TAG, "screen mode: owner canvas gone before the switch, staying on the base screen");
+            return;
+        }
+        if (c->committed_fresh &&
+            c->active_width == SCREEN_MODE_HIRES_W && c->active_height == SCREEN_MODE_HIRES_H) {
+            screen_mode_apply(true, "owner presented");
+        }
+    } else {
+        int bw, bh;
+        screen_mode_base_size(&bw, &bh);
+        if (!c || !c->is_visible) {
+            screen_mode_apply(false, "owner gone");
+        } else if (c->committed_fresh && c->active_width <= bw && c->active_height <= bh) {
+            screen_mode_apply(false, "owner presented");
+        }
+    }
+}
+
+// SET_SCREEN_MODE. 0x0 (or the base size) asks for the base screen. The last
+// request wins.
+static void screen_mode_request(uint16_t owner, uint16_t w, uint16_t h, uint8_t flags) {
+    int bw, bh;
+    screen_mode_base_size(&bw, &bh);
+    const bool want_hires = (w != 0 && h != 0 && !(w == bw && h == bh));
+    if (want_hires) {
+        if (w != SCREEN_MODE_HIRES_W || h != SCREEN_MODE_HIRES_H) {
+            ESP_LOGW(TAG, "SET_SCREEN_MODE: %ux%u is not a mode (only %dx%d)",
+                     w, h, SCREEN_MODE_HIRES_W, SCREEN_MODE_HIRES_H);
+            return;
+        }
+        if (bw >= SCREEN_MODE_HIRES_W || bh >= SCREEN_MODE_HIRES_H) {
+            ESP_LOGW(TAG, "SET_SCREEN_MODE: the screen is already %dx%d, ignored", bw, bh);
+            return;
+        }
+        if (!canvas_state_find(owner)) {
+            ESP_LOGW(TAG, "SET_SCREEN_MODE: owner canvas %u not found", owner);
+            return;
+        }
+    }
+    s_smode.late_owner = 0;
+    ESP_LOGI(TAG, "SET_SCREEN_MODE: owner=%u %ux%u flags=0x%02x (now %s%s)",
+             owner, w, h, flags, s_smode.hires ? "640x360" : "base",
+             s_smode.pending ? ", a switch pending" : "");
+
+    if (want_hires == s_smode.hires) {
+        // Already in that mode. Drop a pending switch the other way, and
+        // (high-resolution) hand the screen to this owner.
+        s_smode.pending = false;
+        if (want_hires && owner != s_smode.owner) {
+            s_smode.owner = owner;
+            s_smode.owner_resize_unacked = false;
+            s_smode.owner_unshowable_since_ms = 0;
+        }
+        return;
+    }
+
+    s_smode.pending = true;
+    s_smode.pending_hires = want_hires;
+    s_smode.pending_since_ms = screen_mode_now_ms();
+    // Going back, the canvas to wait for is the one on screen now.
+    if (want_hires && owner != s_smode.owner) {
+        s_smode.owner = owner;
+        s_smode.owner_resize_unacked = false;
+    }
+    screen_mode_try_complete();
+}
+
+// A canvas is hidden or about to be deleted. If it owns the high-resolution
+// screen, the screen goes back now.
+static void screen_mode_owner_leaving(uint16_t canvas_id, const char *why) {
+    if (canvas_id != 0 && canvas_id == s_smode.late_owner) s_smode.late_owner = 0;
+    if (canvas_id == 0 || canvas_id != s_smode.owner) return;
+    if (s_smode.hires) {
+        screen_mode_apply(false, why);
+    } else if (s_smode.pending && s_smode.pending_hires) {
+        s_smode.pending = false;
+        s_smode.owner = 0;
+        s_smode.owner_resize_unacked = false;
+        ESP_LOGI(TAG, "screen mode: switch cancelled (%s)", why);
+    }
+}
+
+// Render task: give up waiting after SCREEN_MODE_WAIT_MS, and leave the
+// high-resolution screen when the owner has had nothing to show for as long.
+static void screen_mode_poll(void) {
+    const uint32_t now = screen_mode_now_ms();
+    if (s_smode.pending) {
+        if (now - s_smode.pending_since_ms < SCREEN_MODE_WAIT_MS) return;
+        screen_mode_apply(s_smode.pending_hires, "timed out");
+        s_smode.force_render = true;
+        return;
+    }
+    if (!s_smode.hires) return;
+    if (screen_mode_owner_showable()) {
+        s_smode.owner_unshowable_since_ms = 0;
+        return;
+    }
+    if (s_smode.owner_unshowable_since_ms == 0) {
+        s_smode.owner_unshowable_since_ms = now ? now : 1;
+        return;
+    }
+    if (now - s_smode.owner_unshowable_since_ms < SCREEN_MODE_WAIT_MS) return;
+    canvas_state_t *c = canvas_state_find(s_smode.owner);
+    ESP_LOGW(TAG, "screen mode: owner %u has shown no %dx%d frame for %lums (%s), "
+             "back to the base screen", s_smode.owner, SCREEN_MODE_HIRES_W, SCREEN_MODE_HIRES_H,
+             (unsigned long)(now - s_smode.owner_unshowable_since_ms),
+             !c ? "gone" : !c->is_visible ? "hidden" :
+             (c->active_width != SCREEN_MODE_HIRES_W || c->active_height != SCREEN_MODE_HIRES_H)
+                 ? "wrong size" : "no frame");
+    const uint16_t late = c ? s_smode.owner : 0;
+    screen_mode_apply(false, "owner unshowable");
+    s_smode.late_owner = late;
+    s_smode.force_render = true;
+}
+
+// Render task: bring the screen sprite to the size of the current mode. The
+// cursor keeps its place on the screen (scaled by the ratio of the sizes)
+// until the next input event sets it in the new coordinates.
+static void screen_mode_fit_screen(void) {
+    int w, h;
+    if (s_smode.hires) {
+        w = SCREEN_MODE_HIRES_W;
+        h = SCREEN_MODE_HIRES_H;
+    } else {
+        screen_mode_base_size(&w, &h);
+    }
+    const int ow = g_lgfx->width();
+    const int oh = g_lgfx->height();
+    if (ow == w && oh == h) return;
+    if (shm_display_set_screen_size((uint16_t)w, (uint16_t)h) != 0) return;
+    if (ow > 0 && oh > 0) {
+        g_cursor_x = g_cursor_x * w / ow;
+        g_cursor_y = g_cursor_y * h / oh;
+    }
+    g_cursor_drawn = false;
+}
+
+// The canvas whose frame is the picture on the high-resolution screen, for
+// EXPORT_FRAME; NULL on the base screen.
+static LGFX_Sprite* screen_mode_picture(void) {
+    if (!s_smode.hires || !screen_mode_owner_showable()) return NULL;
+    return canvas_state_find(s_smode.owner)->render_buffer;
+}
+
+// Render task, one frame. Returns true when the frame is handled here (drawn
+// on the high-resolution screen, or the previous picture held), false when
+// the usual composite of the base screen should run.
+static bool screen_mode_render_frame(void) {
+    screen_mode_poll();
+    const bool forced = s_smode.force_render;
+    s_smode.force_render = false;
+    if (s_smode.pending && !forced) return true;  // hold the previous picture
+    screen_mode_fit_screen();
+    if (!s_smode.hires) return false;
+
+    canvas_state_t *c = canvas_state_find(s_smode.owner);
+    if (!screen_mode_owner_showable()) {
+        // Nothing at this size yet. Hold the picture, unless the wait has
+        // already run out: then show what the owner has (or black).
+        if (!forced) return true;
+        if (!c || !c->render_buffer) {
+            g_lgfx->fillScreen(0x00);
+            return true;
+        }
+    }
+    c->dirty = false;
+    c->render_buffer->pushSprite(g_lgfx, 0, 0);
+    if (g_cursor_visible && g_cursor_sprite) {
+        // The owner's frame is copied anew every frame, so the cursor is drawn
+        // on the screen itself and needs no saved background.
+        g_cursor_sprite->pushSprite(g_lgfx, g_cursor_x, g_cursor_y, CURSOR_TRANSPARENT_COLOR);
+    }
+    return true;
+}
+#endif  // CONFIG_IDF_TARGET_LINUX
 
 // Composite a single sub-rect of canvas->render_buffer onto dst (8bpp RGB332).
 // LovyanGFX's LGFXBase::pushImage overwrites pixelcopy_t::src_bitwidth at entry,
@@ -485,6 +818,9 @@ static LGFX_Sprite* compose_screen_buffer(bool with_cursor = true) {
         canvas_state_t* canvas = &g_canvases[i];
         if (canvas == bg_canvas) continue;
         if (!canvas->is_visible || !canvas->render_buffer) continue;
+#if defined(CONFIG_IDF_TARGET_LINUX)
+        if (screen_mode_hide_on_base(canvas)) continue;
+#endif
         if (canvas->region_count != 0) continue;
         if (canvas->use_transparent) continue;
         if (canvas->push_x != 0 || canvas->push_y != 0) continue;
@@ -505,6 +841,9 @@ static LGFX_Sprite* compose_screen_buffer(bool with_cursor = true) {
     for (size_t i = 0; i < g_canvas_count; i++) {
         canvas_state_t* canvas = &g_canvases[i];
         if (canvas == bg_canvas) continue;
+#if defined(CONFIG_IDF_TARGET_LINUX)
+        if (screen_mode_hide_on_base(canvas)) continue;
+#endif
         if (canvas->is_visible && canvas->render_buffer) {
             ESP_LOGD(TAG, "Composite canvas ID=%u to screen buffer at (%d,%d), active_size=%dx%d, z_order=%d, regions=%u",
                     canvas->canvas_id, canvas->push_x, canvas->push_y,
@@ -647,6 +986,10 @@ static void export_frame_mkdirs(const char *path)
 #endif
 
 static void graphics_handler_render_frame_internal() {
+#if defined(CONFIG_IDF_TARGET_LINUX)
+    if (!s_first_present_seen) return;  // the boot screen stays (compose_screen_buffer)
+    if (screen_mode_render_frame()) return;
+#endif
     LGFX_Sprite* screen_buffer = compose_screen_buffer();
     if (!screen_buffer) {
         return;
@@ -1232,6 +1575,13 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // Auto-cleanup all GfxBlock programs belonging to this canvas
                 gfx_vm_delete_progs_by_canvas(cmd->canvas_id);
 
+#if defined(CONFIG_IDF_TARGET_LINUX)
+                // The owner of the high-resolution screen ends: the screen
+                // goes back by itself (the kernel's request may come later).
+                xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
+                screen_mode_owner_leaving(cmd->canvas_id, "owner deleted");
+                xSemaphoreGive(g_canvas_mutex);
+#endif
                 canvas_state_free(canvas);
                 ESP_LOGI(TAG, "Canvas deleted: ID=%u", cmd->canvas_id);
                 return 0;
@@ -1272,6 +1622,9 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
                 canvas->is_visible = (cmd->visible != 0);
+#if defined(CONFIG_IDF_TARGET_LINUX)
+                if (!canvas->is_visible) screen_mode_owner_leaving(cmd->canvas_id, "owner hidden");
+#endif
                 xSemaphoreGive(g_canvas_mutex);
                 ESP_LOGI(TAG, "Canvas %u visibility set to %d", cmd->canvas_id, cmd->visible);
                 return 0;
@@ -1390,6 +1743,14 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 canvas->clip_w = (cmd->w < max_w) ? cmd->w : max_w;
                 canvas->clip_h = (cmd->h < max_h) ? cmd->h : max_h;
             }
+#if defined(CONFIG_IDF_TARGET_LINUX)
+            // FmrbApp re-sends the clip from its resize handler: from here on
+            // the owner's presents are laid out for its new size.
+            if (canvas->canvas_id == s_smode.owner && s_smode.owner_resize_unacked) {
+                s_smode.owner_resize_unacked = false;
+                ESP_LOGI(TAG, "screen mode: owner %u handled its resize", canvas->canvas_id);
+            }
+#endif
             xSemaphoreGive(g_canvas_mutex);
             ESP_LOGI(TAG, "Canvas %u sprite clip set: (%u,%u) %ux%u",
                      cmd->canvas_id, canvas->clip_x, canvas->clip_y,
@@ -1625,8 +1986,29 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 // Update active size by calling setBuffer with new dimensions
                 // This reuses the same external memory buffer with new width/height
+#if defined(CONFIG_IDF_TARGET_LINUX)
+                {
+                    // A size past the allocation would draw past the buffer.
+                    uint16_t nw = (uint16_t)cmd->width;
+                    uint16_t nh = (uint16_t)cmd->height;
+                    if (nw > canvas->width || nh > canvas->height) {
+                        ESP_LOGW(TAG, "UPDATE_WINDOW: canvas %u %ux%u is larger than its buffer (%ux%u), cut down",
+                                 cmd->canvas_id, nw, nh, canvas->width, canvas->height);
+                        if (nw > canvas->width) nw = canvas->width;
+                        if (nh > canvas->height) nh = canvas->height;
+                    }
+                    if (nw != canvas->active_width || nh != canvas->active_height) {
+                        // The frame in the render buffer was laid out for the old size.
+                        canvas->committed_fresh = false;
+                        if (canvas->canvas_id == s_smode.owner) s_smode.owner_resize_unacked = true;
+                    }
+                    canvas->active_width = nw;
+                    canvas->active_height = nh;
+                }
+#else
                 canvas->active_width = (uint16_t)cmd->width;
                 canvas->active_height = (uint16_t)cmd->height;
+#endif
 
                 // Reconfigure sprites with new dimensions (reusing same memory buffers)
                 canvas->draw_buffer->setBuffer(canvas->draw_buffer_mem,
@@ -1657,6 +2039,19 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 return 0;
             }
             break;
+
+#if defined(CONFIG_IDF_TARGET_LINUX)
+        case FMRB_LINK_GFX_SET_SCREEN_MODE:
+            if (size >= sizeof(fmrb_link_graphics_set_screen_mode_t)) {
+                const fmrb_link_graphics_set_screen_mode_t *cmd =
+                    (const fmrb_link_graphics_set_screen_mode_t*)data;
+                xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
+                screen_mode_request(cmd->owner_canvas_id, cmd->width, cmd->height, cmd->flags);
+                xSemaphoreGive(g_canvas_mutex);
+                return 0;
+            }
+            break;
+#endif
 
         case FMRB_LINK_GFX_SET_TARGET:
             if (size >= sizeof(fmrb_link_graphics_set_target_t)) {
@@ -1702,6 +2097,13 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                     src_canvas->push_x = cmd->x;
                     src_canvas->push_y = cmd->y;
                     src_canvas->is_visible = true;  // Make visible on first present()
+#if defined(CONFIG_IDF_TARGET_LINUX)
+                    // The owner's frame counts only once it has handled its
+                    // resize (owner_resize_unacked).
+                    if (src_canvas->canvas_id != s_smode.owner || !s_smode.owner_resize_unacked) {
+                        src_canvas->committed_fresh = true;
+                    }
+#endif
                     s_first_present_seen = true;
                     s_present_count++;
                     push_x = 0;
@@ -1756,6 +2158,10 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
 
                 // Release mutex if we locked for render_buffer path
                 if (cmd->dest_canvas_id == FMRB_CANVAS_RENDER) {
+#if defined(CONFIG_IDF_TARGET_LINUX)
+                    if (src_canvas->canvas_id == s_smode.owner) screen_mode_try_complete();
+                    else screen_mode_late_present(src_canvas->canvas_id);
+#endif
                     xSemaphoreGive(g_canvas_mutex);
                 }
 
@@ -1788,7 +2194,10 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // the display from this task is what we must not do, which
                 // is why only the compositing half is called.
                 xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
-                LGFX_Sprite *fb = compose_screen_buffer(false);
+                // On the high-resolution screen the picture is the owner's
+                // frame alone, as the render task shows it.
+                LGFX_Sprite *fb = screen_mode_picture();
+                if (!fb) fb = compose_screen_buffer(false);
                 bool ok = fb ? export_frame_bmp(fb, full_path) : false;
                 xSemaphoreGive(g_canvas_mutex);
                 if (ok) {
@@ -2143,7 +2552,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             long file_size = ftell(fp);
             fseek(fp, 0, SEEK_SET);
 
-            if (file_size <= 0 || file_size > 65536) {
+            if (file_size <= 0 || file_size > GH_SPRITE_BMP_MAX_FILE) {
                 ESP_LOGE(TAG, "LOAD_SPRITE_BMP: invalid size %ld", file_size);
                 fclose(fp);
                 return -1;

@@ -72,6 +72,11 @@ typedef struct __attribute__((packed)) {
     uint8_t margin_y;       // Vertical margin (top+bottom) in pixels
 } fmrb_control_init_display_t;
 
+// INIT_DISPLAY's ACK payload is [status] (0 = ready), optionally followed by
+// one byte of display capabilities. A display that sends only the status byte
+// has none of them; the core must not assume a capability it was not told.
+#define FMRB_LINK_DISPLAY_CAP_SCREEN_MODE 0x01  // SET_SCREEN_MODE, 640x360 canvases
+
 typedef struct __attribute__((packed)) {
     int64_t tv_sec;
     int32_t tv_usec;
@@ -149,6 +154,10 @@ typedef enum {
     FMRB_LINK_GFX_SET_COMPOSITE_REGIONS = 0x56,
     // 0x57 (SET_CANVAS_VIEWPORT) is Modern/P4 only, see the Core-side header.
     FMRB_LINK_GFX_SET_SPRITE_CLIP = 0x58,
+    // Fullscreen high-resolution mode (fmruby-core doc/fullscreen_hires/).
+    // Only the Linux build answers it, and it says so in the INIT_DISPLAY ACK
+    // (FMRB_LINK_DISPLAY_CAP_SCREEN_MODE); the ESP32 build does not know it.
+    FMRB_LINK_GFX_SET_SCREEN_MODE = 0x59,
 
     // Cursor control (global resource, no canvas_id)
     FMRB_LINK_GFX_CURSOR_SET_POSITION = 0x60,
@@ -427,6 +436,20 @@ typedef struct __attribute__((packed)) {
     uint16_t x, y;
     uint16_t w, h;
 } fmrb_link_graphics_set_sprite_clip_t;
+
+// SET_SCREEN_MODE: switch the whole screen between the base screen
+// (INIT_DISPLAY's size) and the fullscreen high-resolution one (640x360),
+// which shows owner_canvas_id alone. width == 0 / height == 0 (or the base
+// size) asks for the base screen. The rules (hold the picture until the owner
+// presents at the new size, give the screen back when the owner is deleted or
+// hidden) are described with the same struct in fmruby-core's copy of this
+// header; graphics_handler.cpp follows them.
+typedef struct __attribute__((packed)) {
+    uint16_t owner_canvas_id;
+    uint16_t width;
+    uint16_t height;
+    uint8_t  flags;
+} fmrb_link_graphics_set_screen_mode_t;
 
 // GET_PIXEL: read a single RGB332 pixel from a canvas back buffer.
 typedef struct __attribute__((packed)) {
