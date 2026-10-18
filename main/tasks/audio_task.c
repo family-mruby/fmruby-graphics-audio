@@ -145,6 +145,16 @@ void audio_task_set_output(const fmrb_audio_output_cmd_t *out) {
     g_out_saved = *out;
 }
 
+/* The MAIN instance's volume (the BGM under the effects), handed to
+ * apuif_process_mix with every frame. 65536 = unity, as at boot. */
+static volatile uint32_t g_main_gain_q16 = 65536;
+
+void audio_task_set_main_volume(uint8_t percent) {
+    if (percent > 100) percent = 100;
+    g_main_gain_q16 = ((uint32_t)percent * 65536u) / 100u;
+    ESP_LOGI(TAG, "main volume: %u%%", percent);
+}
+
 /* The last stage before the output: every frame goes out through here. */
 static void audio_out_write(int16_t *buf, int count) {
     if (count <= 0) return;
@@ -396,7 +406,7 @@ int audio_task_fmsq_play_slot(uint32_t music_id, uint8_t instance) {
     {
         int16_t buf[(NTSC_SAMPLE + 1) * 2];
         memset(buf, 0, sizeof(buf));
-        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]));
+        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]), g_main_gain_q16);
         wav_mix_frame(buf, count);
         audio_out_write(buf, count);
         audio_handler_push_samples();
@@ -445,7 +455,7 @@ int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t d
     {
         int16_t buf[(NTSC_SAMPLE + 1) * 2];
         memset(buf, 0, sizeof(buf));
-        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]));
+        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]), g_main_gain_q16);
         wav_mix_frame(buf, count);
         audio_out_write(buf, count);
         audio_handler_push_samples();
@@ -542,7 +552,7 @@ void audio_task(void *pvParameters) {
         /* Process both APU instances and mix output */
         int16_t buffer[(NTSC_SAMPLE + 1) * 2];
         memset(buffer, 0, sizeof(buffer));
-        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
+        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]), g_main_gain_q16);
         wav_mix_frame(buffer, count);
         audio_out_write(buffer, count);
 
@@ -614,7 +624,7 @@ void audio_task(void *pvParameters) {
         /* Process both APU instances and mix output */
         int16_t buffer[(NTSC_SAMPLE + 1) * 2];
         memset(buffer, 0, sizeof(buffer));
-        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]));
+        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]), g_main_gain_q16);
         wav_mix_frame(buffer, count);
         audio_out_write(buffer, count);
 

@@ -386,6 +386,15 @@ int audio_handler_process_command(const uint8_t *data, size_t size) {
             }
             break;
 
+        case FMRB_AUDIO_CMD_SET_MAIN_VOLUME:
+            if (size >= sizeof(fmrb_audio_main_volume_cmd_t)) {
+                const fmrb_audio_main_volume_cmd_t *cmd =
+                    (const fmrb_audio_main_volume_cmd_t*)data;
+                audio_task_set_main_volume(cmd->percent);
+                return 0;
+            }
+            break;
+
         case FMRB_AUDIO_CMD_NOTE_OFF:
             if (size >= sizeof(fmrb_audio_note_off_cmd_t)) {
                 const fmrb_audio_note_off_cmd_t *cmd = (const fmrb_audio_note_off_cmd_t*)data;

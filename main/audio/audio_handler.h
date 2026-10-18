@@ -120,6 +120,15 @@ int audio_task_note_off(uint8_t channel);
 void audio_task_set_output(const fmrb_audio_output_cmd_t *out);
 
 /**
+ * @brief The MAIN instance's volume (FMRB_AUDIO_CMD_SET_MAIN_VOLUME)
+ *
+ * NSF and an FMSQ on MAIN are scaled before they are mixed with SUB, so a
+ * BGM can sit under the effects. Percent, 0-100 (above is 100). Not saved:
+ * 100 after a reboot, and the core puts it back when the app ends.
+ */
+void audio_task_set_main_volume(uint8_t percent);
+
+/**
  * @brief Play a WAV file on top of the APU
  *
  * PCM 16-bit mono, 8-48 kHz, up to FMRB_WAV_MAX_BYTES, read whole from this
