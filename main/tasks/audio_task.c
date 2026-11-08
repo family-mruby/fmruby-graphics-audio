@@ -155,6 +155,62 @@ void audio_task_set_main_volume(uint8_t percent) {
     ESP_LOGI(TAG, "main volume: %u%%", percent);
 }
 
+/* ---- End of an NSF song (fmruby-core doc/nsf_player_v2) ---------------
+ *
+ * The player decides when a song is over (nsf_player_end_frame: silence, a
+ * loop heard NSF_END_LAPS times, or the time limit) and fades it out through
+ * the MAIN volume; this task stops it once it is over and answers
+ * FMRB_AUDIO_CMD_NSF_STATUS, which is how the app learns it should move on.
+ * g_nsf_gen counts play commands so the app can tell its song from the last. */
+static volatile uint16_t g_nsf_gen = 0;
+
+/* The MAIN volume for this frame: the app's, times the song's fade. */
+static uint32_t main_gain_now(void) {
+    uint32_t g = g_main_gain_q16;
+    nsf_player_t *p = g_nsf_player;
+    if (p && p->playing) {
+        g = (uint32_t)(((uint64_t)g * nsf_player_end_gain_q16(p)) >> 16);
+    }
+    return g;
+}
+
+/* After each frame's mix: feed the end detector, and stop the song once it
+ * is over (the fade has reached silence, or it fell silent by itself). */
+static void nsf_end_after_mix(void) {
+    nsf_player_t *p = g_nsf_player;
+    if (!p || !p->playing) return;
+    nsf_player_end_frame(p, apuif_main_level());
+    if (!p->end.done) return;
+    p->playing = 0;
+    apuif_select(APUIF_INSTANCE_MAIN);
+    apuif_write_reg(0x4015, 0x00);
+    static const char *const names[] = { "?", "silence", "loop", "time limit" };
+    ESP_LOGI(TAG, "NSF ended: %s after %lu frames (loop %lu frames)",
+             names[p->end.reason & 3], (unsigned long)p->end.frames,
+             (unsigned long)p->end.period);
+}
+
+void audio_task_nsf_status(fmrb_audio_nsf_status_t *st) {
+    memset(st, 0, sizeof(*st));
+    st->gen = g_nsf_gen;
+    nsf_player_t *p = g_nsf_player;
+    if (!p) return;
+    const nsf_end_t *e = &p->end;
+    if (e->done) {
+        st->state = FMRB_AUDIO_NSF_ENDED;
+    } else if (p->playing) {
+        st->state = e->fade_left ? FMRB_AUDIO_NSF_FADING : FMRB_AUDIO_NSF_PLAYING;
+    }
+    st->reason = e->reason;
+    st->track = (uint8_t)p->current_song;
+    st->frames = e->frames;
+    if (e->period) {
+        st->period_frames = e->period > 0xFFFF ? 0xFFFF : (uint16_t)e->period;
+        uint32_t laps = 1 + e->run / e->period;
+        st->laps = laps > 255 ? 255 : (uint8_t)laps;
+    }
+}
+
 /* The last stage before the output: every frame goes out through here. */
 static void audio_out_write(int16_t *buf, int count) {
     if (count <= 0) return;
@@ -314,6 +370,7 @@ int audio_task_nsf_play(const char *path, int track) {
 
     apuif_select(APUIF_INSTANCE_MAIN);
     nsf_player_start(g_nsf_player, track);
+    g_nsf_gen++;
     return 0;
 }
 
@@ -406,7 +463,7 @@ int audio_task_fmsq_play_slot(uint32_t music_id, uint8_t instance) {
     {
         int16_t buf[(NTSC_SAMPLE + 1) * 2];
         memset(buf, 0, sizeof(buf));
-        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]), g_main_gain_q16);
+        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]), main_gain_now());
         wav_mix_frame(buf, count);
         audio_out_write(buf, count);
         audio_handler_push_samples();
@@ -455,7 +512,7 @@ int audio_task_note_on(uint8_t channel, uint16_t freq, uint8_t volume, uint8_t d
     {
         int16_t buf[(NTSC_SAMPLE + 1) * 2];
         memset(buf, 0, sizeof(buf));
-        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]), g_main_gain_q16);
+        int count = apuif_process_mix(buf, sizeof(buf) / sizeof(buf[0]), main_gain_now());
         wav_mix_frame(buf, count);
         audio_out_write(buf, count);
         audio_handler_push_samples();
@@ -552,7 +609,8 @@ void audio_task(void *pvParameters) {
         /* Process both APU instances and mix output */
         int16_t buffer[(NTSC_SAMPLE + 1) * 2];
         memset(buffer, 0, sizeof(buffer));
-        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]), g_main_gain_q16);
+        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]), main_gain_now());
+        nsf_end_after_mix();
         wav_mix_frame(buffer, count);
         audio_out_write(buffer, count);
 
@@ -624,7 +682,8 @@ void audio_task(void *pvParameters) {
         /* Process both APU instances and mix output */
         int16_t buffer[(NTSC_SAMPLE + 1) * 2];
         memset(buffer, 0, sizeof(buffer));
-        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]), g_main_gain_q16);
+        int count = apuif_process_mix(buffer, sizeof(buffer) / sizeof(buffer[0]), main_gain_now());
+        nsf_end_after_mix();
         wav_mix_frame(buffer, count);
         audio_out_write(buffer, count);
 

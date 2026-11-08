@@ -187,13 +187,23 @@ static int handle_file_transfer_message(uint8_t type, uint8_t seq, uint8_t sub_c
 static int handle_audio_message(uint8_t type, uint8_t seq, uint8_t sub_cmd,
                                const uint8_t *payload, size_t payload_len,
                                uint64_t rx_us) {
-    (void)type;
-    (void)seq;
     (void)sub_cmd;
 
     // Note commands are the real-time path (a MIDI transport drives them),
     // so time how long they take from arrival to being applied.
     uint8_t cmd = (payload_len > 0) ? payload[0] : 0;
+
+    // The one audio command with an answer: where the NSF is, for the player
+    // app to move on at the end of a song (fmruby-core doc/nsf_player_v2).
+    if (cmd == FMRB_AUDIO_CMD_NSF_STATUS) {
+        fmrb_audio_nsf_status_t st;
+        audio_task_nsf_status(&st);
+        const comm_interface_t *comm = comm_get_interface();
+        if (comm && (type & FMRB_LINK_FLAG_ACK_REQUIRED)) {
+            comm->send_ack(type, seq, (const uint8_t *)&st, sizeof(st));
+        }
+        return 0;
+    }
     bool timed = (cmd == FMRB_AUDIO_CMD_NOTE_ON || cmd == FMRB_AUDIO_CMD_NOTE_OFF);
 
     int result = audio_handler_process_command(payload, payload_len);
