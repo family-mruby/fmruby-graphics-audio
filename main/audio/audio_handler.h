@@ -73,6 +73,15 @@ int audio_handler_get_track(uint32_t music_id, const uint8_t **out_data, uint32_
 int audio_task_nsf_play(const char *path, int track);
 
 /**
+ * @brief Where the NSF on MAIN is (FMRB_AUDIO_CMD_NSF_STATUS)
+ *
+ * Playing, fading out, or over by itself (silence, its loop heard enough
+ * times, or the time limit; fmruby-core doc/nsf_player_v2), with the count of
+ * play commands taken so far so the caller can tell its song from the last.
+ */
+void audio_task_nsf_status(fmrb_audio_nsf_status_t *st);
+
+/**
  * @brief Stop every player and silence both APU instances
  *
  * What the "stop" command means: the caller wants the sound to end, whichever
