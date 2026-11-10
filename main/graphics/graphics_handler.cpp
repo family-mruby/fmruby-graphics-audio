@@ -414,6 +414,9 @@ static void canvas_sort_by_zorder() {
 
 #define SCREEN_MODE_HIRES_W  FMRB_CANVAS_HIRES_WIDTH
 #define SCREEN_MODE_HIRES_H  FMRB_CANVAS_HIRES_HEIGHT
+// Canvases at or above this z are the system's own (the core's
+// FMRB_GFX_Z_SYSTEM_OVERLAY), shown over the full-screen picture too.
+#define SCREEN_MODE_SYSTEM_OVERLAY_Z 30000
 #define SCREEN_MODE_WAIT_MS  500
 
 typedef struct {
@@ -680,6 +683,20 @@ static bool screen_mode_render_frame(void) {
     }
     c->dirty = false;
     c->render_buffer->pushSprite(g_lgfx, 0, 0);
+    // The system's own canvases (z at or above SCREEN_MODE_SYSTEM_OVERLAY_Z,
+    // the core's FMRB_GFX_Z_SYSTEM_OVERLAY: the kana-kanji conversion line)
+    // stay above the owner's picture, as display_local does on the devices.
+    for (size_t i = 0; i < g_canvas_count; i++) {
+        canvas_state_t *o = &g_canvases[i];
+        if (o == c || o->z_order < SCREEN_MODE_SYSTEM_OVERLAY_Z) continue;
+        if (!o->is_visible || !o->render_buffer) continue;
+        o->dirty = false;
+        if (o->use_transparent) {
+            o->render_buffer->pushSprite(g_lgfx, o->push_x, o->push_y, o->transparent_color);
+        } else {
+            o->render_buffer->pushSprite(g_lgfx, o->push_x, o->push_y);
+        }
+    }
     if (g_cursor_visible && g_cursor_sprite) {
         // The owner's frame is copied anew every frame, so the cursor is drawn
         // on the screen itself and needs no saved background.
