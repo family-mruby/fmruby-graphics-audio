@@ -114,16 +114,16 @@ for (uint8_t i = 0; i < canvas->region_count; i++) {
 
 - **main/app/fmrb_app.c:1269** 周辺: `ctx->rounded_corners = attr->rounded_corners;` を追加 (`fmrb_app_task_context_t` に新規フィールド)
 
-- **lib/add/picoruby-fmrb-app/ports/esp32/app.c:184-192**: CREATE_CANVAS 呼び出しの `use_transparent` 引数を現状の `!ctx->fullscreen` から `!ctx->fullscreen && ctx->rounded_corners` に変更
+- **lib/gems/picoruby-fmrb-app/ports/esp32/app.c:184-192**: CREATE_CANVAS 呼び出しの `use_transparent` 引数を現状の `!ctx->fullscreen` から `!ctx->fullscreen && ctx->rounded_corners` に変更
 
-- **lib/add/picoruby-fmrb-app/mrblib/fmrb-app.rb**:
+- **lib/gems/picoruby-fmrb-app/mrblib/fmrb-app.rb**:
   - 新規 Ruby API: `gfx.set_composite_regions(regions)` — regions は `[{ src_x:, src_y:, dst_x:, dst_y:, w:, h:, transparent: }, ...]` または `nil`/`[]` で fallback
   - 簡易呼び出し用に `src_x/src_y` 省略時は `dst_x/dst_y` と同値、`dst_x/dst_y` 省略時は 0,0 とするデフォルト処理を Ruby 側で吸収
   - 内部で C API `fmrb_gfx_set_composite_regions` を呼ぶラッパーメソッドを追加 (`ports/esp32/app.c` 側に Ruby メソッドバインド追加が必要かを確認)
 
 ### fmruby-core (system_desktop 統合)
 
-- **main/prebuild_scripts/kernel/system_desktop.app.rb**:
+- **main/ruby/kernel/system_desktop.app.rb**:
   - 起動完了後 (boot animation 終了時 = 既存の `finish_boot_animation`) に menu bar 領域のみを宣言:
     ```ruby
     @gfx.set_composite_regions([
