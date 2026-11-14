@@ -9,12 +9,26 @@ on:
 jobs:
   build-esp32:
     runs-on: ubuntu-latest
+    # The wire format shared with fmruby-core (its components/fmrb_wire) is
+    # read from an fmruby-core checkout next to this one, so both are checked
+    # out side by side and the steps run in this repository's directory.
+    defaults:
+      run:
+        working-directory: fmruby-graphics-audio
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          path: fmruby-graphics-audio
           submodules: recursive
           fetch-depth: 0
+
+      - name: Checkout fmruby-core next to it (same branch)
+        uses: actions/checkout@v7
+        with:
+          repository: family-mruby/fmruby-core
+          ref: ${{ github.base_ref || github.ref_name }}
+          path: fmruby-core
 
       - name: Fix file permissions
         run: sudo chown -R $(id -u):$(id -g) .
@@ -64,12 +78,26 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    # The wire format shared with fmruby-core (its components/fmrb_wire) is
+    # read from an fmruby-core checkout next to this one, so both are checked
+    # out side by side and the steps run in this repository's directory.
+    defaults:
+      run:
+        working-directory: fmruby-graphics-audio
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          path: fmruby-graphics-audio
           submodules: recursive
           fetch-depth: 0
+
+      - name: Checkout fmruby-core next to it (same branch)
+        uses: actions/checkout@v7
+        with:
+          repository: family-mruby/fmruby-core
+          ref: ${{ github.base_ref || github.ref_name }}
+          path: fmruby-core
 
       - name: Fix file permissions
         run: sudo chown -R $(id -u):$(id -g) .
