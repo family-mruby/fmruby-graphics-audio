@@ -7,9 +7,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy shared headers
-COPY main/common/shm_display.h /app/include/
-COPY main/include/fmrb_hid_event.h /app/include/
+# The wire headers (shared memory layout, HID event packets) have one copy, in
+# fmruby-core: components/fmrb_wire/include. The build context is this
+# repository; the root docker-compose.yml adds that directory of the
+# fmruby-core checkout next to it as the extra context "wire"
+# (additional_contexts), and they are copied from there.
+COPY --from=wire shm_display.h fmrb_hid_event.h /app/include/
 
 # Copy source
 COPY sdl2-display/main.c /app/

@@ -35,6 +35,22 @@ rake build:esp32
 rake build:linux
 ```
 
+## fmruby-core と共有するヘッダ
+
+リンクのプロトコル (`fmrb_link_protocol.h`・`fmrb_link_version.h`)、フレーム
+(`spi_frame.h`・`uart_link_frame.h`)、COBS (`fmrb_link_cobs.h` と `.c`)、HID イベント
+(`fmrb_hid_event.h`)、sim の共有メモリ (`shm_display.h`) は、**隣の fmruby-core の
+`components/fmrb_wire/include` が正で、このリポジトリに写しは置かない**。
+
+- `main/CMakeLists.txt` が `../fmruby-core` を直接 include する。fmruby-core が隣に
+  無いと CMake が止まる。
+- `rake build:*` のコンテナには `../fmruby-core` を `/fmruby-core` に読み取り専用で
+  mount する (ルートの docker-compose.yml の graphics-audio も同じ)。
+- sdl2-display のイメージは compose の `additional_contexts` (`wire`) から取り込む。
+- 写しの残り・参照の外れは fmruby-core の `rake wire:check` が止める。
+- 入力イベントの型を足すときに直すのは fmruby-core の `fmrb_hid_event.h` と、
+  `main/input_linux/input_handler_ipc.c` の switch。
+
 ## LovyanGFXについて
 
 ESP32では、CVBS実装を利用する。

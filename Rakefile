@@ -49,11 +49,26 @@ DEVICE_ARGS = Dir.glob("/dev/ttyUSB*").concat(Dir.glob("/dev/ttyACM*"))
 # Always use current user's UID:GID to avoid permission issues
 USER_OPT = "--user #{UID}:#{GID}"
 
+# The wire format shared with fmruby-core (components/fmrb_wire: the link
+# protocol, the HID events, the simulation's shared memory) is read from the
+# fmruby-core checkout next to this one, never copied (main/CMakeLists.txt).
+# The container sees it read-only at /fmruby-core, beside /project, so the
+# relative path main/CMakeLists.txt uses is the same inside and outside.
+CORE_DIR = File.expand_path("../fmruby-core", __dir__)
+CORE_MOUNT = "-v #{CORE_DIR}:/fmruby-core:ro"
+
+def need_core!
+  return if File.exist?(File.join(CORE_DIR, "components/fmrb_wire/include/fmrb_link_protocol.h"))
+  abort "fmruby-core is not next to this repository (#{CORE_DIR}): graphics-audio " \
+        "reads the link protocol headers from its components/fmrb_wire. Check it out there."
+end
+
 DOCKER_CMD = [
   "docker run --rm",
   USER_OPT,
   "-e HOME=/tmp",
   "-v #{PWD_}:/project",
+  CORE_MOUNT,
   IMAGE
 ].join(" ")
 
@@ -64,6 +79,7 @@ DOCKER_CMD_PRIVILEGED = [
   USER_OPT,
   "-e HOME=/tmp",
   "-v #{PWD_}:/project",
+  CORE_MOUNT,
   "-v /dev/bus/usb:/dev/bus/usb",
   IMAGE
 ].join(" ")
@@ -75,6 +91,7 @@ DOCKER_CMD_INTERACTIVE = [
   USER_OPT,
   "-e HOME=/tmp",
   "-v #{PWD_}:/project",
+  CORE_MOUNT,
   "-v /dev/bus/usb:/dev/bus/usb",
   IMAGE
 ].join(" ")
@@ -136,11 +153,13 @@ end
 namespace :set_target do
   desc "Linux target (dev/test)"
   task :linux => :apply_patches do
+    need_core!
     sh "#{DOCKER_CMD} idf.py --preview set-target linux"
   end
 
   desc "Set ESP32 target"
   task :esp32 => :apply_patches do
+    need_core!
     sh "#{DOCKER_CMD} idf.py set-target esp32"
   end
 end
@@ -148,6 +167,7 @@ end
 namespace :build do
   desc "ESP-IDF Linux simulation build (SDL2 host)"
   task :linux do
+    need_core!
     unless Dir.exist?('build')
       Rake::Task['set_target:linux'].invoke
     end
@@ -159,6 +179,7 @@ namespace :build do
   # Comm transport: default is UART. To use SPI instead:
   #   CMAKE_OPTS="-DFMRB_COMM_TRANSPORT=SPI" rake build:esp32
   task :esp32 do
+    need_core!
     unless Dir.exist?('build')
       Rake::Task['set_target:esp32'].invoke
     end
@@ -225,6 +246,7 @@ task :menuconfig do
     "-e HOME=/tmp",
     "-e TERM=#{term}",
     "-v #{PWD_}:/project",
+    CORE_MOUNT,
     IMAGE
   ].join(" ")
   sh "#{docker_cmd_interactive} idf.py menuconfig"

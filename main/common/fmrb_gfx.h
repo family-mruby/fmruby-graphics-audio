@@ -31,7 +31,7 @@ typedef enum {
 } fmrb_font_size_t;
 
 // Text buffer size for draw_text commands
-#define FMRB_GFX_MAX_TEXT_LEN 256
+#define FMRB_GFX_MAX_TEXT_LEN 128
 
 // Graphics error codes
 typedef enum {

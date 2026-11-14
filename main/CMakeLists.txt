@@ -1,3 +1,18 @@
+# The wire format shared with fmruby-core (link protocol, HID events, the
+# simulation's shared memory) has one copy, in the fmruby-core checkout next
+# to this one: components/fmrb_wire. It is read from there, never copied.
+# In the build container the checkout is mounted read-only at /fmruby-core
+# (Rakefile, the root docker-compose.yml), which is the same relative place.
+get_filename_component(FMRB_CORE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../fmruby-core" ABSOLUTE)
+set(FMRB_WIRE_DIR "${FMRB_CORE_DIR}/components/fmrb_wire/include")
+if(NOT EXISTS "${FMRB_WIRE_DIR}/fmrb_link_protocol.h")
+    message(FATAL_ERROR
+        "fmruby-core is not next to fmruby-graphics-audio (looked for "
+        "${FMRB_WIRE_DIR}). The link protocol headers live there; check out "
+        "fmruby-core beside this repository, and build through rake so the "
+        "container mounts it.")
+endif()
+
 set(SRCS
     "main.cpp"
     "tasks/audio_task.c"
@@ -5,7 +20,7 @@ set(SRCS
     "tasks/comm_task.c"
     "tasks/message_handler_task.c"
     "tasks/graphics_task.cpp"
-    "common/fmrb_link_cobs.c"
+    "${FMRB_CORE_DIR}/components/fmrb_cobs/fmrb_link_cobs.c"
     "common/fmrb_link_fragment.c"
     "common/fmrb_bmp332.c"
     "common/fmrb_wav.c"
@@ -61,6 +76,7 @@ set(INCLUDE_DIRS
     "mempool/tlsf"
     "tasks"
     "file_transfer"
+    "${FMRB_WIRE_DIR}"
 )
 
 set(REQUIRES

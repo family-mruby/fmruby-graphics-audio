@@ -9,5 +9,6 @@
 // otherwise drop those commands silently.
 #define FMRB_GA_FW_VERSION "3.0.0"
 
-// Link protocol version (GA side's local value; must match Core's FMRB_LINK_VERSION in fmrb.h)
-#define FMRB_LINK_VERSION 6
+// FMRB_LINK_VERSION: the one in fmruby-core (components/fmrb_wire), which
+// both sides are built from.
+#include "fmrb_link_version.h"
