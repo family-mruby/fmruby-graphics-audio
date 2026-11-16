@@ -33,9 +33,10 @@ extern "C" {
 
 static const char *TAG = "graphics_handler";
 
-// Largest sprite sheet file LOAD_SPRITE_IMAGE_BMP reads. The Linux simulator
-// takes the sheets the Modern machines load (fmrb_bmp332.c has the matching
-// side limit); the ESP32 keeps its 64 KB.
+// Largest sprite sheet file LOAD_SPRITE_IMAGE_BMP reads (an 8-bit BMP or a
+// PNG; the name is older than the PNG). The Linux simulator takes the sheets
+// the Modern machines load (fmrb_bmp332.c has the matching side limit); the
+// ESP32 keeps its 64 KB, which only a BMP comes near.
 #if defined(CONFIG_IDF_TARGET_LINUX)
 #define GH_SPRITE_BMP_MAX_FILE (256 * 1024)
 #else
@@ -2558,7 +2559,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             uint16_t img_w, img_h;
             sprite_manager_get_image_size(cmd->image_id, &img_w, &img_h);
 
-            // Read BMP file
+            // The picture is an 8-bit BMP or a PNG; the first bytes tell.
             FILE *fp = fopen(full_path, "rb");
             if (!fp) {
                 ESP_LOGE(TAG, "LOAD_SPRITE_BMP: cannot open %s", full_path);
@@ -2573,6 +2574,43 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 ESP_LOGE(TAG, "LOAD_SPRITE_BMP: invalid size %ld", file_size);
                 fclose(fp);
                 return -1;
+            }
+
+            static const uint8_t k_png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+            uint8_t head[8] = {0};
+            size_t head_len = fread(head, 1, sizeof(head), fp);
+            fseek(fp, 0, SEEK_SET);
+            const bool is_png = head_len == sizeof(head) &&
+                                memcmp(head, k_png_sig, sizeof(head)) == 0;
+
+            if (is_png) {
+                // A PNG goes straight into the RGB332 sprite: the decoder's
+                // RGB888 keeps its top 3/3/2 bits there, so a palette made of
+                // expanded RGB332 colours gives back the same pixel values a
+                // BMP holds. The file sits in PSRAM on the board, not in the
+                // internal RAM the BMP below takes.
+#if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
+                uint8_t *png_buf = (uint8_t *)malloc(file_size);
+#else
+                uint8_t *png_buf = (uint8_t *)heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM);
+#endif
+                if (!png_buf) {
+                    ESP_LOGE(TAG, "LOAD_SPRITE_BMP: alloc failed");
+                    fclose(fp);
+                    return -1;
+                }
+                size_t got = fread(png_buf, 1, file_size, fp);
+                fclose(fp);
+                bool ok = (long)got == file_size &&
+                          spr->drawPng(png_buf, (size_t)file_size, 0, 0, img_w, img_h);
+                free(png_buf);
+                if (!ok) {
+                    ESP_LOGE(TAG, "LOAD_SPRITE_BMP: PNG decode failed for %s", full_path);
+                    return -1;
+                }
+                ESP_LOGI(TAG, "LOAD_SPRITE_BMP: loaded %s (PNG) into image %u",
+                         full_path, cmd->image_id);
+                return 0;
             }
 
             uint8_t *bmp_buf = (uint8_t *)malloc(file_size);
