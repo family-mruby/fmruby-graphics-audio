@@ -150,11 +150,37 @@ task :apply_patches do
   puts "Patches applied successfully"
 end
 
+# The Linux sim builds in build-linux/ with its own sdkconfig, beside the
+# ESP32 build in build/ (sdkconfig at the top, as idf.py expects), so
+# switching between the two rebuilds neither. sdkconfig.defaults and
+# sdkconfig.defaults.linux (which idf.py adds for the linux target) are the
+# defaults of both, as before.
+LINUX_BUILD_DIR = "build-linux"
+LINUX_SDKCONFIG = "#{LINUX_BUILD_DIR}/sdkconfig"
+LINUX_IDF_ARGS = "-B #{LINUX_BUILD_DIR} -DSDKCONFIG=#{LINUX_SDKCONFIG}"
+ELF_NAME = "fmruby-graphics-audio.elf"
+
+# The sim build's stamp (fmrb_build_stamp.json): which sources it was made
+# from, so sim_up and tools/dev_run_check.sh refuse a stale one. The helper
+# is fmruby-core's (kind ga-linux), the same one its sim build uses.
+def build_stamp
+  need_core!
+  require File.join(CORE_DIR, "tools/build_stamp")
+  FmrbBuildStamp
+end
+
+# idf.py set-target runs a first configure that writes the sdkconfig; it is
+# needed when the build directory has no CMake cache for that target.
+def configured_for?(dir, target)
+  cache = File.join(dir, "CMakeCache.txt")
+  File.exist?(cache) && File.read(cache)[/^IDF_TARGET:\w+=(.*)$/, 1] == target
+end
+
 namespace :set_target do
-  desc "Linux target (dev/test)"
+  desc "Linux target (dev/test), in build-linux/"
   task :linux => :apply_patches do
     need_core!
-    sh "#{DOCKER_CMD} idf.py --preview set-target linux"
+    sh "#{DOCKER_CMD} idf.py --preview #{LINUX_IDF_ARGS} set-target linux"
   end
 
   desc "Set ESP32 target"
@@ -165,14 +191,22 @@ namespace :set_target do
 end
 
 namespace :build do
-  desc "ESP-IDF Linux simulation build (SDL2 host)"
+  desc "ESP-IDF Linux simulation build (SDL2 host), in build-linux/"
   task :linux do
     need_core!
-    unless Dir.exist?('build')
-      Rake::Task['set_target:linux'].invoke
-    end
-    sh "#{DOCKER_CMD} bash -c 'export IDF_TARGET=linux && idf.py --preview -DCMAKE_BUILD_TYPE=Debug build'"
-    puts 'ESP-IDF Linux build complete. Run with: ./build/fmruby-graphics-audio.elf'
+    stamp = build_stamp
+    # The sources this build is made from, taken before it starts: a file
+    # changed while it runs makes the build stale, as it should.
+    stamp_state = stamp.state(CORE_DIR, "ga-linux")
+    Rake::Task['set_target:linux'].invoke unless configured_for?(LINUX_BUILD_DIR, "linux")
+    sh "#{DOCKER_CMD} bash -c 'export IDF_TARGET=linux && idf.py --preview #{LINUX_IDF_ARGS} -DCMAKE_BUILD_TYPE=Debug build'"
+    # Believe the ELF header, not this task's word: a Linux build directory
+    # that somehow holds another ISA must not be stamped as good.
+    elf = "#{LINUX_BUILD_DIR}/#{ELF_NAME}"
+    machine = File.exist?(elf) ? File.binread(elf, 20)[18, 2].unpack1('v') : nil
+    abort "build:linux: #{elf} is not an x86-64 ELF (e_machine #{machine.inspect})" unless machine == 0x3E
+    stamp.write(CORE_DIR, "ga-linux", LINUX_BUILD_DIR, state: stamp_state)
+    puts "ESP-IDF Linux build complete: #{elf}. Start it with the sim tools (sim_up, tools/dev_run_check.sh)."
   end
 
   desc "ESP32 build"
@@ -180,9 +214,7 @@ namespace :build do
   #   CMAKE_OPTS="-DFMRB_COMM_TRANSPORT=SPI" rake build:esp32
   task :esp32 do
     need_core!
-    unless Dir.exist?('build')
-      Rake::Task['set_target:esp32'].invoke
-    end
+    Rake::Task['set_target:esp32'].invoke unless configured_for?("build", "esp32")
     cmake_opts = ENV['CMAKE_OPTS'].to_s
     sh "#{DOCKER_CMD} idf.py #{cmake_opts} build".squeeze(' ')
   end
@@ -252,15 +284,22 @@ task :menuconfig do
   sh "#{docker_cmd_interactive} idf.py menuconfig"
 end
 
-desc "Full clean build artifacts (including host)"
+desc "Clean the ESP32 build (build/ and sdkconfig); the sim build (build-linux/) stays"
 task :clean_all do
   sh "rm -f sdkconfig"
   sh "rm -rf build"
 end
 
-desc "Clean ESP32 build artifacts"
+desc "Clean ESP32 build artifacts (build/)"
 task :clean do
   sh "rm -rf build"
+end
+
+namespace :clean do
+  desc "Clean the Linux sim build (build-linux/, its sdkconfig inside)"
+  task :linux do
+    sh "rm -rf #{LINUX_BUILD_DIR}"
+  end
 end
 
 desc "Serial monitor"

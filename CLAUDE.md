@@ -35,6 +35,17 @@ rake build:esp32
 rake build:linux
 ```
 
+### ビルドの置き場 (2026-11-17)
+
+- Linux (sim) は `build-linux/` (sdkconfig は `build-linux/sdkconfig`。
+  `-DSDKCONFIG` で分けている)、ESP32 は `build/` (sdkconfig は一番上)。
+  切り替えに `rake clean_all` は要らない (2 回目からはどちらも数秒)。
+- `rake clean_all` は ESP32 の分 (build/・sdkconfig) だけ。sim は `rake clean:linux`。
+- `rake build:linux` は作ったソースの印 (`build-linux/fmrb_build_stamp.json`。
+  道具は fmruby-core の `tools/build_stamp.rb`、種類 `ga-linux`) を書き、
+  sim_up と tools/dev_run_check.sh が古いビルドを断る (fmruby-core
+  doc/regression/usage.md 2.1)。
+
 ## fmruby-core と共有するヘッダ
 
 リンクのプロトコル (`fmrb_link_protocol.h`・`fmrb_link_version.h`)、フレーム
