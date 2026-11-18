@@ -250,7 +250,7 @@ static canvas_state_t* canvas_state_alloc(uint16_t canvas_id, uint16_t req_width
     // Always allocate at display screen size to avoid reallocation on resize
 #if defined(CONFIG_IDF_TARGET_LINUX)
     // The pool buffers also hold a 640x360 canvas (fmrb_mempool.c), and the
-    // screen itself changes size in the high-resolution mode, so the
+    // screen itself changes size in the screen mode, so the
     // allocation is the pool's and not g_lgfx's. A request larger than that
     // would draw past the buffer: it is cut down to what fits.
     fmrb_mempool_canvas_max_size(&canvas->width, &canvas->height);
@@ -390,7 +390,7 @@ static void canvas_sort_by_zorder() {
 
 #if defined(CONFIG_IDF_TARGET_LINUX)
 // ============================================================
-// Screen mode: the fullscreen high-resolution mode (Linux build only)
+// Screen mode: another screen for one fullscreen app (Linux build only)
 //
 // The Modern simulator's counterpart of display_local's screen mode in
 // fmruby-core (main/drivers/display_local/display_local_task.cpp). The rules
@@ -398,13 +398,16 @@ static void canvas_sort_by_zorder() {
 // fmrb_link_protocol.h; when one side changes, change the other.
 //
 // Normally every visible canvas is composited into the base screen (426x240
-// on the Modern simulator). SET_SCREEN_MODE asks for the high-resolution
-// screen instead: one canvas, the owner (a fullscreen app's), is shown alone
-// on a 640x360 screen. The switch waits: a request makes it PENDING and the
-// previous picture is held until the owner presents a frame at the new size
-// (either direction), at most SCREEN_MODE_WAIT_MS. While on the
-// high-resolution screen, the screen goes back by itself when the owner
-// canvas is deleted or hidden, or has had no 640x360 frame for
+// or 640x360 on the Modern simulator). SET_SCREEN_MODE asks for the other of
+// Modern's two screens instead (the "alternate" one): one canvas, the owner
+// (a fullscreen app's), is shown alone on a screen of that size -- 640x360 on
+// a 426x240 base, for an app laid out for 640x360 (doc/fullscreen_hires);
+// 426x240 on a 640x360 base, for an app laid out for 426x240
+// (doc/modern_resolution R1b). The switch waits: a request makes it PENDING
+// and the previous picture is held until the owner presents a frame at the
+// new size (either direction), at most SCREEN_MODE_WAIT_MS. While on the
+// alternate screen, the screen goes back by itself when the owner canvas is
+// deleted or hidden, or has had no frame at that size for
 // SCREEN_MODE_WAIT_MS.
 //
 // The state is read and written with g_canvas_mutex held: by the command
@@ -415,16 +418,19 @@ static void canvas_sort_by_zorder() {
 
 #define SCREEN_MODE_HIRES_W  FMRB_CANVAS_HIRES_WIDTH
 #define SCREEN_MODE_HIRES_H  FMRB_CANVAS_HIRES_HEIGHT
+#define SCREEN_MODE_STD_W    426
+#define SCREEN_MODE_STD_H    240
 // Canvases at or above this z are the system's own (the core's
 // FMRB_GFX_Z_SYSTEM_OVERLAY), shown over the full-screen picture too.
 #define SCREEN_MODE_SYSTEM_OVERLAY_Z 30000
 #define SCREEN_MODE_WAIT_MS  500
 
 typedef struct {
-    bool     hires;              // the high-resolution screen is current
+    bool     alt;                // the alternate screen is current
     bool     pending;            // a switch was asked for and is waiting
-    bool     pending_hires;      // ... towards this mode
+    bool     pending_alt;        // ... towards this mode
     bool     force_render;       // the wait timed out: render once regardless
+    uint16_t alt_w, alt_h;       // the alternate screen's size (0 before a request)
     uint16_t owner;              // canvas the switch/mode belongs to
     uint32_t pending_since_ms;
     uint32_t switches;           // completed switches, for the log
@@ -433,15 +439,15 @@ typedef struct {
     // size. The acknowledgement is the SET_SPRITE_CLIP FmrbApp sends from its
     // resize handler.
     bool     owner_resize_unacked;
-    // On the high-resolution screen, since when the owner has had nothing
-    // that can be shown; 0 while it has.
+    // On the alternate screen, since when the owner has had nothing that can
+    // be shown; 0 while it has.
     uint32_t owner_unshowable_since_ms;
     // The owner the screen was taken back from because it had nothing to
     // show in time (screen_mode_poll), not because it left or was asked to.
     // An app that is slow to draw its first frame -- the mahjong table loads
     // its tile sheets over the link first, seconds in the simulator -- gets
-    // the screen back when that frame does arrive at 640x360. Cleared by any
-    // request and when that canvas is hidden or deleted.
+    // the screen back when that frame does arrive at the alternate size.
+    // Cleared by any request and when that canvas is hidden or deleted.
     uint16_t late_owner;
 } screen_mode_state_t;
 
@@ -458,51 +464,84 @@ static void screen_mode_base_size(int *w, int *h) {
     *h = bh;
 }
 
-// A canvas at the high-resolution size seen while on the base screen: a
-// fullscreen app's that is about to get (or has just left) the
-// high-resolution screen. Laid out for 640x360, it would show as its top-left
-// corner; it is left out until the switch completes.
-static bool screen_mode_hide_on_base(const canvas_state_t *c) {
-    if (s_smode.hires) return false;
+// Whether w x h is the alternate screen for this base: 640x360 from a base
+// smaller than that, 426x240 from the 640x360 base.
+static bool screen_mode_alt_ok(int w, int h) {
     int bw, bh;
     screen_mode_base_size(&bw, &bh);
-    if (bw == SCREEN_MODE_HIRES_W && bh == SCREEN_MODE_HIRES_H) return false;
+    if (w == SCREEN_MODE_HIRES_W && h == SCREEN_MODE_HIRES_H) {
+        return bw < SCREEN_MODE_HIRES_W && bh < SCREEN_MODE_HIRES_H;
+    }
+    if (w == SCREEN_MODE_STD_W && h == SCREEN_MODE_STD_H) {
+        return bw == SCREEN_MODE_HIRES_W && bh == SCREEN_MODE_HIRES_H;
+    }
+    return false;
+}
+
+static bool screen_mode_at_alt(const canvas_state_t *c) {
+    return s_smode.alt_w != 0 &&
+           c->active_width == s_smode.alt_w && c->active_height == s_smode.alt_h;
+}
+
+// A canvas seen on the base screen that is a fullscreen app's about to get
+// (or just leaving) the alternate screen. Laid out for that screen, it would
+// show as its top-left corner; it is left out until the switch completes.
+// - On a base smaller than 640x360: a canvas at 640x360.
+// - On the 640x360 base: an opaque canvas at 426x240 placed at the origin,
+//   as a fullscreen app's is. A window can be 426x240 too; the core's
+//   display_local asks the app context whether the canvas is a fullscreen
+//   app's, which is not known here, so this goes by the shape: a window with
+//   rounded (colour-keyed) corners is never left out, but an opaque 426x240
+//   window placed exactly at the origin would be.
+static bool screen_mode_hide_on_base(const canvas_state_t *c) {
+    if (s_smode.alt) return false;
+    int bw, bh;
+    screen_mode_base_size(&bw, &bh);
+    if (bw == SCREEN_MODE_HIRES_W && bh == SCREEN_MODE_HIRES_H) {
+        return c->active_width == SCREEN_MODE_STD_W && c->active_height == SCREEN_MODE_STD_H &&
+               c->push_x == 0 && c->push_y == 0 && !c->use_transparent &&
+               c->region_count == 0;
+    }
     return c->active_width == SCREEN_MODE_HIRES_W && c->active_height == SCREEN_MODE_HIRES_H;
 }
 
-// On the high-resolution screen: the owner has a frame at that size, on a
-// visible canvas.
+// On the alternate screen: the owner has a frame at that size, on a visible
+// canvas.
 static bool screen_mode_owner_showable(void) {
     canvas_state_t *c = canvas_state_find(s_smode.owner);
     return c && c->is_visible && c->committed_fresh && c->render_buffer &&
-           c->active_width == SCREEN_MODE_HIRES_W && c->active_height == SCREEN_MODE_HIRES_H;
+           screen_mode_at_alt(c);
 }
 
 // The switch itself. The screen sprite is resized by the render task
 // (screen_mode_fit_screen), so this only changes the mode.
-static void screen_mode_apply(bool hires, const char *why) {
+static void screen_mode_apply(bool alt, const char *why) {
     uint32_t waited = s_smode.pending ? screen_mode_now_ms() - s_smode.pending_since_ms : 0;
     s_smode.pending = false;
-    s_smode.hires = hires;
-    if (!hires) {
+    s_smode.alt = alt;
+    if (!alt) {
         s_smode.owner = 0;
         s_smode.owner_resize_unacked = false;
     }
     s_smode.switches++;
     s_smode.owner_unshowable_since_ms = 0;
-    ESP_LOGI(TAG, "screen mode: %s owner=%u (%s, waited %lums, switch #%lu)",
-             hires ? "640x360" : "base", s_smode.owner, why,
-             (unsigned long)waited, (unsigned long)s_smode.switches);
+    if (alt) {
+        ESP_LOGI(TAG, "screen mode: %ux%u owner=%u (%s, waited %lums, switch #%lu)",
+                 s_smode.alt_w, s_smode.alt_h, s_smode.owner, why,
+                 (unsigned long)waited, (unsigned long)s_smode.switches);
+    } else {
+        ESP_LOGI(TAG, "screen mode: base owner=%u (%s, waited %lums, switch #%lu)",
+                 s_smode.owner, why, (unsigned long)waited, (unsigned long)s_smode.switches);
+    }
 }
 
-// The owner the screen was taken back from presented its 640x360 frame after
-// all (late_owner): it gets the screen now.
+// The owner the screen was taken back from presented its frame at the
+// alternate size after all (late_owner): it gets the screen now.
 static void screen_mode_late_present(uint16_t canvas_id) {
     if (canvas_id == 0 || canvas_id != s_smode.late_owner) return;
-    if (s_smode.hires || s_smode.pending) return;
+    if (s_smode.alt || s_smode.pending) return;
     canvas_state_t *c = canvas_state_find(canvas_id);
-    if (!c || !c->is_visible || !c->committed_fresh ||
-        c->active_width != SCREEN_MODE_HIRES_W || c->active_height != SCREEN_MODE_HIRES_H) return;
+    if (!c || !c->is_visible || !c->committed_fresh || !screen_mode_at_alt(c)) return;
     s_smode.late_owner = 0;
     s_smode.owner = canvas_id;
     s_smode.owner_resize_unacked = false;
@@ -512,7 +551,7 @@ static void screen_mode_late_present(uint16_t canvas_id) {
 static void screen_mode_try_complete(void) {
     if (!s_smode.pending) return;
     canvas_state_t *c = canvas_state_find(s_smode.owner);
-    if (s_smode.pending_hires) {
+    if (s_smode.pending_alt) {
         if (!c) {
             s_smode.pending = false;
             s_smode.owner = 0;
@@ -520,8 +559,7 @@ static void screen_mode_try_complete(void) {
             ESP_LOGW(TAG, "screen mode: owner canvas gone before the switch, staying on the base screen");
             return;
         }
-        if (c->committed_fresh &&
-            c->active_width == SCREEN_MODE_HIRES_W && c->active_height == SCREEN_MODE_HIRES_H) {
+        if (c->committed_fresh && screen_mode_at_alt(c)) {
             screen_mode_apply(true, "owner presented");
         }
     } else {
@@ -540,32 +578,29 @@ static void screen_mode_try_complete(void) {
 static void screen_mode_request(uint16_t owner, uint16_t w, uint16_t h, uint8_t flags) {
     int bw, bh;
     screen_mode_base_size(&bw, &bh);
-    const bool want_hires = (w != 0 && h != 0 && !(w == bw && h == bh));
-    if (want_hires) {
-        if (w != SCREEN_MODE_HIRES_W || h != SCREEN_MODE_HIRES_H) {
-            ESP_LOGW(TAG, "SET_SCREEN_MODE: %ux%u is not a mode (only %dx%d)",
-                     w, h, SCREEN_MODE_HIRES_W, SCREEN_MODE_HIRES_H);
-            return;
-        }
-        if (bw >= SCREEN_MODE_HIRES_W || bh >= SCREEN_MODE_HIRES_H) {
-            ESP_LOGW(TAG, "SET_SCREEN_MODE: the screen is already %dx%d, ignored", bw, bh);
+    const bool want_alt = (w != 0 && h != 0 && !(w == bw && h == bh));
+    if (want_alt) {
+        if (!screen_mode_alt_ok(w, h)) {
+            ESP_LOGW(TAG, "SET_SCREEN_MODE: %ux%u is not a mode on the %dx%d screen", w, h, bw, bh);
             return;
         }
         if (!canvas_state_find(owner)) {
             ESP_LOGW(TAG, "SET_SCREEN_MODE: owner canvas %u not found", owner);
             return;
         }
+        s_smode.alt_w = w;
+        s_smode.alt_h = h;
     }
     s_smode.late_owner = 0;
     ESP_LOGI(TAG, "SET_SCREEN_MODE: owner=%u %ux%u flags=0x%02x (now %s%s)",
-             owner, w, h, flags, s_smode.hires ? "640x360" : "base",
+             owner, w, h, flags, s_smode.alt ? "alternate" : "base",
              s_smode.pending ? ", a switch pending" : "");
 
-    if (want_hires == s_smode.hires) {
+    if (want_alt == s_smode.alt) {
         // Already in that mode. Drop a pending switch the other way, and
-        // (high-resolution) hand the screen to this owner.
+        // (alternate) hand the screen to this owner.
         s_smode.pending = false;
-        if (want_hires && owner != s_smode.owner) {
+        if (want_alt && owner != s_smode.owner) {
             s_smode.owner = owner;
             s_smode.owner_resize_unacked = false;
             s_smode.owner_unshowable_since_ms = 0;
@@ -574,24 +609,24 @@ static void screen_mode_request(uint16_t owner, uint16_t w, uint16_t h, uint8_t 
     }
 
     s_smode.pending = true;
-    s_smode.pending_hires = want_hires;
+    s_smode.pending_alt = want_alt;
     s_smode.pending_since_ms = screen_mode_now_ms();
     // Going back, the canvas to wait for is the one on screen now.
-    if (want_hires && owner != s_smode.owner) {
+    if (want_alt && owner != s_smode.owner) {
         s_smode.owner = owner;
         s_smode.owner_resize_unacked = false;
     }
     screen_mode_try_complete();
 }
 
-// A canvas is hidden or about to be deleted. If it owns the high-resolution
+// A canvas is hidden or about to be deleted. If it owns the alternate
 // screen, the screen goes back now.
 static void screen_mode_owner_leaving(uint16_t canvas_id, const char *why) {
     if (canvas_id != 0 && canvas_id == s_smode.late_owner) s_smode.late_owner = 0;
     if (canvas_id == 0 || canvas_id != s_smode.owner) return;
-    if (s_smode.hires) {
+    if (s_smode.alt) {
         screen_mode_apply(false, why);
-    } else if (s_smode.pending && s_smode.pending_hires) {
+    } else if (s_smode.pending && s_smode.pending_alt) {
         s_smode.pending = false;
         s_smode.owner = 0;
         s_smode.owner_resize_unacked = false;
@@ -600,16 +635,16 @@ static void screen_mode_owner_leaving(uint16_t canvas_id, const char *why) {
 }
 
 // Render task: give up waiting after SCREEN_MODE_WAIT_MS, and leave the
-// high-resolution screen when the owner has had nothing to show for as long.
+// alternate screen when the owner has had nothing to show for as long.
 static void screen_mode_poll(void) {
     const uint32_t now = screen_mode_now_ms();
     if (s_smode.pending) {
         if (now - s_smode.pending_since_ms < SCREEN_MODE_WAIT_MS) return;
-        screen_mode_apply(s_smode.pending_hires, "timed out");
+        screen_mode_apply(s_smode.pending_alt, "timed out");
         s_smode.force_render = true;
         return;
     }
-    if (!s_smode.hires) return;
+    if (!s_smode.alt) return;
     if (screen_mode_owner_showable()) {
         s_smode.owner_unshowable_since_ms = 0;
         return;
@@ -620,12 +655,11 @@ static void screen_mode_poll(void) {
     }
     if (now - s_smode.owner_unshowable_since_ms < SCREEN_MODE_WAIT_MS) return;
     canvas_state_t *c = canvas_state_find(s_smode.owner);
-    ESP_LOGW(TAG, "screen mode: owner %u has shown no %dx%d frame for %lums (%s), "
-             "back to the base screen", s_smode.owner, SCREEN_MODE_HIRES_W, SCREEN_MODE_HIRES_H,
+    ESP_LOGW(TAG, "screen mode: owner %u has shown no %ux%u frame for %lums (%s), "
+             "back to the base screen", s_smode.owner, s_smode.alt_w, s_smode.alt_h,
              (unsigned long)(now - s_smode.owner_unshowable_since_ms),
              !c ? "gone" : !c->is_visible ? "hidden" :
-             (c->active_width != SCREEN_MODE_HIRES_W || c->active_height != SCREEN_MODE_HIRES_H)
-                 ? "wrong size" : "no frame");
+             !screen_mode_at_alt(c) ? "wrong size" : "no frame");
     const uint16_t late = c ? s_smode.owner : 0;
     screen_mode_apply(false, "owner unshowable");
     s_smode.late_owner = late;
@@ -637,9 +671,9 @@ static void screen_mode_poll(void) {
 // until the next input event sets it in the new coordinates.
 static void screen_mode_fit_screen(void) {
     int w, h;
-    if (s_smode.hires) {
-        w = SCREEN_MODE_HIRES_W;
-        h = SCREEN_MODE_HIRES_H;
+    if (s_smode.alt) {
+        w = s_smode.alt_w;
+        h = s_smode.alt_h;
     } else {
         screen_mode_base_size(&w, &h);
     }
@@ -654,15 +688,15 @@ static void screen_mode_fit_screen(void) {
     g_cursor_drawn = false;
 }
 
-// The canvas whose frame is the picture on the high-resolution screen, for
+// The canvas whose frame is the picture on the alternate screen, for
 // EXPORT_FRAME; NULL on the base screen.
 static LGFX_Sprite* screen_mode_picture(void) {
-    if (!s_smode.hires || !screen_mode_owner_showable()) return NULL;
+    if (!s_smode.alt || !screen_mode_owner_showable()) return NULL;
     return canvas_state_find(s_smode.owner)->render_buffer;
 }
 
 // Render task, one frame. Returns true when the frame is handled here (drawn
-// on the high-resolution screen, or the previous picture held), false when
+// on the alternate screen, or the previous picture held), false when
 // the usual composite of the base screen should run.
 static bool screen_mode_render_frame(void) {
     screen_mode_poll();
@@ -670,7 +704,7 @@ static bool screen_mode_render_frame(void) {
     s_smode.force_render = false;
     if (s_smode.pending && !forced) return true;  // hold the previous picture
     screen_mode_fit_screen();
-    if (!s_smode.hires) return false;
+    if (!s_smode.alt) return false;
 
     canvas_state_t *c = canvas_state_find(s_smode.owner);
     if (!screen_mode_owner_showable()) {
@@ -1594,7 +1628,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 gfx_vm_delete_progs_by_canvas(cmd->canvas_id);
 
 #if defined(CONFIG_IDF_TARGET_LINUX)
-                // The owner of the high-resolution screen ends: the screen
+                // The owner of the alternate screen ends: the screen
                 // goes back by itself (the kernel's request may come later).
                 xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
                 screen_mode_owner_leaving(cmd->canvas_id, "owner deleted");
@@ -2212,7 +2246,7 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 // the display from this task is what we must not do, which
                 // is why only the compositing half is called.
                 xSemaphoreTake(g_canvas_mutex, portMAX_DELAY);
-                // On the high-resolution screen the picture is the owner's
+                // On the alternate screen the picture is the owner's
                 // frame alone, as the render task shows it.
                 LGFX_Sprite *fb = screen_mode_picture();
                 if (!fb) fb = compose_screen_buffer(false);
