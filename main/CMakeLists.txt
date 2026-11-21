@@ -77,6 +77,10 @@ set(INCLUDE_DIRS
     "tasks"
     "file_transfer"
     "${FMRB_WIRE_DIR}"
+    # The PNG colour rule shared with the core's readers (fmrb_png332.h and
+    # fmrb_png332_pngle.h). Last, so this firmware's own fmrb_bmp332.h in
+    # common/ is the one its sources find.
+    "${FMRB_CORE_DIR}/lib/gems/picoruby-fmrb-bmp332/include"
 )
 
 set(REQUIRES

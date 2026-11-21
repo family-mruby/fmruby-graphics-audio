@@ -6,6 +6,9 @@
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include "lgfx/Fonts/misaki/lgfx_misaki_fonts.hpp"
+// A PNG into a sprite image with the system's transparency rule; from the
+// fmruby-core checkout next to this one (main/CMakeLists.txt), not copied.
+#include "fmrb_png332_pngle.h"
 
 extern "C" {
 #include "graphics_handler.h"
@@ -42,6 +45,79 @@ static const char *TAG = "graphics_handler";
 #else
 #define GH_SPRITE_BMP_MAX_FILE 65536
 #endif
+
+// The sprite image a PNG is decoded into (RGB332, one byte a pixel, rows of
+// stride bytes). fmrb_png332_pngle_decode stops at the image's size.
+typedef struct {
+    uint8_t *buf;
+    int32_t stride;
+} sprite_png_dst_t;
+
+static void sprite_png_put(void *ud, uint32_t x, uint32_t y, uint8_t rgb332)
+{
+    sprite_png_dst_t *d = (sprite_png_dst_t *)ud;
+    d->buf[(size_t)y * (size_t)d->stride + x] = rgb332;
+}
+
+// DRAW_TILE_SCALED (fmrb_link_protocol.h): each source pixel as a k x k block
+// (scale k >= 1), or every d-th pixel of every d-th row (scale -d). A row's
+// run of one colour is one fillRect, transparent runs are skipped, and every
+// rect is cut to the canvas and to the command's clip rect here, so the
+// canvas's own clip state is never touched.
+static void draw_tile_scaled(LGFX_Sprite *src, LGFX_Sprite *dst,
+                             const fmrb_link_graphics_draw_tile_scaled_t *cmd,
+                             bool has_transparent, uint8_t transparent_color)
+{
+    int k = cmd->scale;
+    if (k > FMRB_LINK_TILE_SCALE_MAX) k = FMRB_LINK_TILE_SCALE_MAX;
+    if (k < -FMRB_LINK_TILE_SCALE_MAX) k = -FMRB_LINK_TILE_SCALE_MAX;
+    const int step = k < -1 ? -k : 1;   // source pixels per destination pixel
+    const int cell = k > 1 ? k : 1;     // destination pixels per source pixel
+
+    int cx0 = 0, cy0 = 0, cx1 = dst->width(), cy1 = dst->height();
+    if (cmd->clip_w > 0 && cmd->clip_h > 0) {
+        if (cmd->clip_x > cx0) cx0 = cmd->clip_x;
+        if (cmd->clip_y > cy0) cy0 = cmd->clip_y;
+        if (cmd->clip_x + (int)cmd->clip_w < cx1) cx1 = cmd->clip_x + (int)cmd->clip_w;
+        if (cmd->clip_y + (int)cmd->clip_h < cy1) cy1 = cmd->clip_y + (int)cmd->clip_h;
+    }
+    if (cx0 >= cx1 || cy0 >= cy1) return;
+
+    const int sw = src->width();
+    const int sh = src->height();
+    const int out_w = ((int)cmd->w + step - 1) / step;
+    const int out_h = ((int)cmd->h + step - 1) / step;
+    for (int j = 0; j < out_h; j++) {
+        const int sy = cmd->src_y + j * step;
+        if (sy < 0 || sy >= sh) continue;
+        int y0 = cmd->dst_y + j * cell;
+        int y1 = y0 + cell;
+        if (y1 <= cy0) continue;
+        if (y0 >= cy1) break;
+        if (y0 < cy0) y0 = cy0;
+        if (y1 > cy1) y1 = cy1;
+        int i = 0;
+        while (i < out_w) {
+            const int sx = cmd->src_x + i * step;
+            if (sx < 0 || sx >= sw) { i++; continue; }
+            const uint8_t c = (uint8_t)src->readPixelValue(sx, sy);
+            int n = 1;
+            while (i + n < out_w) {
+                const int nx = cmd->src_x + (i + n) * step;
+                if (nx < 0 || nx >= sw || (uint8_t)src->readPixelValue(nx, sy) != c) break;
+                n++;
+            }
+            if (!(has_transparent && c == transparent_color)) {
+                int x0 = cmd->dst_x + i * cell;
+                int x1 = x0 + n * cell;
+                if (x0 < cx0) x0 = cx0;
+                if (x1 > cx1) x1 = cx1;
+                if (x0 < x1) dst->fillRect(x0, y0, x1 - x0, y1 - y0, c);
+            }
+            i += n;
+        }
+    }
+}
 
 // Present counter for stats
 static uint32_t s_present_count = 0;
@@ -2016,6 +2092,33 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             }
             break;
 
+        case FMRB_LINK_GFX_DRAW_TILE_SCALED:
+            if (size >= sizeof(fmrb_link_graphics_draw_tile_scaled_t)) {
+                const fmrb_link_graphics_draw_tile_scaled_t *cmd =
+                    (const fmrb_link_graphics_draw_tile_scaled_t *)data;
+
+                LGFX_Sprite *src = (LGFX_Sprite *)sprite_manager_get_image_sprite(cmd->image_id);
+                if (!src) {
+                    ESP_LOGE(TAG, "DRAW_TILE_SCALED: image %u not found", cmd->image_id);
+                    return -1;
+                }
+                canvas_state_t *canvas = canvas_state_find(cmd->canvas_id);
+                if (cmd->canvas_id == FMRB_CANVAS_SCREEN || !canvas || !canvas->draw_buffer) {
+                    ESP_LOGE(TAG, "DRAW_TILE_SCALED: canvas %u not found", cmd->canvas_id);
+                    return -1;
+                }
+                LGFX_Sprite *dst = canvas->draw_buffer;
+                canvas->dirty = true;
+
+                uint8_t transparent_color = 0;
+                bool has_transparent =
+                    sprite_manager_get_image_transparent(cmd->image_id,
+                                                         &transparent_color) == 1;
+                draw_tile_scaled(src, dst, cmd, has_transparent, transparent_color);
+                return 0;
+            }
+            break;
+
         case FMRB_LINK_GFX_UPDATE_WINDOW:
             if (size >= sizeof(fmrb_link_graphics_update_window_t)) {
                 const fmrb_link_graphics_update_window_t *cmd = (const fmrb_link_graphics_update_window_t*)data;
@@ -2559,6 +2662,37 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
             return 0;
         }
 
+        case FMRB_LINK_GFX_SPRITE_IMAGE_DATA: {
+            if (size < sizeof(fmrb_link_graphics_sprite_image_data_t)) break;
+            const fmrb_link_graphics_sprite_image_data_t *cmd =
+                (const fmrb_link_graphics_sprite_image_data_t *)data;
+            const size_t n = (size_t)cmd->w * cmd->h;
+            if (sizeof(*cmd) + n > size) {
+                ESP_LOGE(TAG, "SPRITE_IMAGE_DATA: %ux%u extends beyond payload", cmd->w, cmd->h);
+                return -1;
+            }
+            LGFX_Sprite *spr = (LGFX_Sprite *)sprite_manager_get_image_sprite(cmd->image_id);
+            uint8_t *buf = spr ? (uint8_t *)spr->getBuffer() : nullptr;
+            if (!buf) {
+                ESP_LOGE(TAG, "SPRITE_IMAGE_DATA: image %u not found", cmd->image_id);
+                return -1;
+            }
+            // RGB332 straight into the RGB332 buffer, rows clipped to the image.
+            const uint8_t *px = data + sizeof(*cmd);
+            const int iw = spr->width();
+            const int ih = spr->height();
+            int x0 = cmd->x < 0 ? 0 : cmd->x;
+            int x1 = cmd->x + (int)cmd->w;
+            if (x1 > iw) x1 = iw;
+            for (int r = 0; r < (int)cmd->h && x0 < x1; r++) {
+                int y = cmd->y + r;
+                if (y < 0 || y >= ih) continue;
+                memcpy(buf + (size_t)y * iw + x0, px + (size_t)r * cmd->w + (x0 - cmd->x),
+                       (size_t)(x1 - x0));
+            }
+            return 0;
+        }
+
         case FMRB_LINK_GFX_LOAD_SPRITE_IMAGE_BMP: {
             if (size < sizeof(fmrb_link_graphics_load_sprite_image_bmp_t)) break;
             const fmrb_link_graphics_load_sprite_image_bmp_t *cmd =
@@ -2618,11 +2752,14 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                                 memcmp(head, k_png_sig, sizeof(head)) == 0;
 
             if (is_png) {
-                // A PNG goes straight into the RGB332 sprite: the decoder's
-                // RGB888 keeps its top 3/3/2 bits there, so a palette made of
-                // expanded RGB332 colours gives back the same pixel values a
-                // BMP holds. The file sits in PSRAM on the board, not in the
-                // internal RAM the BMP below takes.
+                // A PNG goes straight into the RGB332 sprite through pngle
+                // with the system's colour rule (fmrb_png332_pngle.h): the top
+                // 3/3/2 bits, so a palette made of expanded RGB332 colours
+                // gives back the same pixel values a BMP holds, and a
+                // transparent pixel (alpha below 128, tRNS) becomes 0x01
+                // instead of being left as the buffer was. The file sits in
+                // PSRAM on the board, not in the internal RAM the BMP below
+                // takes.
 #if defined(CONFIG_IDF_TARGET_LINUX) || defined(LGFX_USE_SDL)
                 uint8_t *png_buf = (uint8_t *)malloc(file_size);
 #else
@@ -2635,8 +2772,14 @@ extern "C" int graphics_handler_process_command(uint8_t msg_type, uint8_t cmd_ty
                 }
                 size_t got = fread(png_buf, 1, file_size, fp);
                 fclose(fp);
-                bool ok = (long)got == file_size &&
-                          spr->drawPng(png_buf, (size_t)file_size, 0, 0, img_w, img_h);
+                // drawPng's own decoder state (44 KB, kept by LovyanGFX) is
+                // let go first, so only one is held at a time.
+                spr->releasePngMemory();
+                sprite_png_dst_t dst = { (uint8_t *)spr->getBuffer(), spr->width() };
+                bool ok = (long)got == file_size && dst.buf &&
+                          fmrb_png332_pngle_decode(png_buf, (size_t)file_size, img_w, img_h,
+                                                   sprite_png_put, &dst, nullptr, nullptr) ==
+                              FMRB_PNG332_PNGLE_OK;
                 free(png_buf);
                 if (!ok) {
                     ESP_LOGE(TAG, "LOAD_SPRITE_BMP: PNG decode failed for %s", full_path);
